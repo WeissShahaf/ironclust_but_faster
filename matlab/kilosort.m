@@ -1,7 +1,7 @@
 function varargout = kilosort(varargin)
 % Marius Pachitariu Kilosort
-addpath('./kilosort');
-addpath('./npy-matlab');
+addpath('G:\spi_sorters\KS\Kilosort-2.5.2\Kilosort-2.5.2');
+addpath('G:\spi_sorters\npy-matlab');
 
 % kilosort
 vcMode = varargin{1};
@@ -43,7 +43,7 @@ elseif nargin==0
 end
 
 ops.GPU                 = useGPU; % whether to run this code on an Nvidia GPU (much faster, mexGPUall first)		
-ops.parfor              = 0; % whether to use parfor to accelerate some parts of the algorithm		
+ops.parfor              = 1; % whether to use parfor to accelerate some parts of the algorithm		
 ops.verbose             = 1; % whether to print command line progress		
 ops.showfigures         = 1; % whether to plot figures during optimization		
 		
@@ -52,7 +52,13 @@ ops.fbinary             = P.vcFile; %fullfile(fpath, 'sim_binary.dat'); % will b
 ops.fproc               = fullfile(fpath, 'temp_wh.dat'); % residual from RAM of preprocessed data		
 ops.root                = fpath; % 'openEphys' only: where raw files are		
 % define the channel map as a filename (string) or simply an array		
-ops.chanMap             = fullfile(fpath, 'chanMap.mat'); % make this file using createChannelMapFile.m		
+%find channel map
+files = dir('*chanMap*.mat');
+if ~isempty(files)
+    % Save the filename of the first matching file
+    filename = files(1).name;
+end
+ops.chanMap             = fullfile(fpath,filename); % make this file using createChannelMapFile.m		
 % ops.chanMap = 1:ops.Nchan; % treated as linear probe if unavailable chanMap file		
 
 % ops.Nfilt               = ceil(nSites*Nfilt_per_site/32)*32;  % number of clusters to use (2-4 times more than Nchan, should be a multiple of 32)     		
@@ -71,8 +77,8 @@ ops.criterionNoiseChannels = 0.2; % fraction of "noise" templates allowed to spa
 ops.Nrank               = 3;    % matrix rank of spike template model (3)		
 ops.nfullpasses         = 6;    % number of complete passes through data during optimization (6)		
 ops.maxFR               = 20000;  % maximum number of spikes to extract per batch (20000)		
-ops.fshigh              = 200;   % frequency for high pass filtering		
-% ops.fslow             = 2000;   % frequency for low pass filtering (optional)
+ops.fshigh              = 300;   % frequency for high pass filtering		
+ops.fslow             = 3000;   % frequency for low pass filtering (optional)
 ops.ntbuff              = 64;    % samples of symmetrical buffer for whitening and spike detection		
 ops.scaleproc           = 200;   % int16 scaling of whitened data		
 ops.NT                  = 128*1024+ ops.ntbuff;% this is the batch size (try decreasing if out of memory) 		

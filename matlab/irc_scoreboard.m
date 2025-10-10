@@ -949,6 +949,10 @@ function vcStr = field2str_(val, fDoubleQuote)
 % convert a value to a strong
 if nargin<2, fDoubleQuote = false; end
 
+if isgpuarray(val)
+    val=gather(val);
+end
+
 switch class(val)
     case {'int', 'int16', 'int32', 'uint16', 'uint32'}
         vcFormat = '%d';

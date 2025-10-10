@@ -5733,19 +5733,31 @@ try
             % Neuropix 3A            
             S_meta.vcProbe = sprintf('imec3_opt%d', S_sglx.imProbeOpt);            
             S_meta.ADC_bits = 10;
-        else            
+        else
             probe_type = vrHeader_imro(1);
             switch probe_type
                 case 0 % Neuropix 3B2
-                    S_meta.vcProbe = 'imec3B2';  
+                    S_meta.vcProbe = 'imec3B2';
                     S_meta.ADC_bits = 10;
-                case [21, 24] % Neuropix Phase 2
+                case 21 % Neuropix 2.0 single shank (NP2000, NP2003, NP2004)
+                    S_meta.vcProbe = 'imec_NP2_1shank';
                     S_meta.auxGain = 80; %fixed
                     S_meta.ADC_bits = 14;
-                    error('Neuropixels 2.0 is not supported');
+                case 24 % Neuropix 2.0 four shank (NP2010, NP2013, NP2014)
+                    S_meta.vcProbe = 'imec_NP2_4shank';
+                    S_meta.auxGain = 80; %fixed
+                    S_meta.ADC_bits = 14;
+                case 2013 % Legacy probe type code for NP2013 (4-shank)
+                    S_meta.vcProbe = 'imec_NP2_4shank';
+                    S_meta.auxGain = 80; %fixed
+                    S_meta.ADC_bits = 14;
+                case 2014 % Legacy probe type code for NP2014 (4-shank)
+                    S_meta.vcProbe = 'imec_NP2_4shank';
+                    S_meta.auxGain = 80; %fixed
+                    S_meta.ADC_bits = 14;
                 otherwise
                     error('read_meta_spikeglx_: unsupported probe: %d', probe_type);
-            end            
+            end
         end
     else
         error('read_meta_spikeglx_: unsupported format');

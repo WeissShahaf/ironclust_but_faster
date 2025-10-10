@@ -71,7 +71,15 @@ if ~isempty(iClu2)
 else
     vcTitle = sprintf('Clu%d (black); %s', iClu1, vcTitle);
 end
+% Fix for identical position limits (causes MATLAB axis error)
+if diff(ypos_lim1) == 0
+    ypos_lim1 = ypos_lim1 + [-1, 1];
+end
+if diff(xpos_lim1) == 0
+    xpos_lim1 = xpos_lim1 + [-1, 1];
+end
 ypos_lim1 = ypos_lim1 + um_per_pix * [-.5,.5];
+xpos_lim1 = xpos_lim1 + um_per_pix * [-.5,.5];
 viSpk0 = find(mrPos_spk(:,2) >= ypos_lim1(1) & mrPos_spk(:,2) <= ypos_lim1(end));
 try
     viSpk0 = viSpk0(P.viShank_site(viSite_spk(viSpk0)) == iShank1);

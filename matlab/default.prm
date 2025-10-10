@@ -18,13 +18,13 @@ header_offset = 0;          % File header offset (set to 0 for files containing 
 % #Execution parameters
 version = '';               % IronClust version
 fVerbose = 0;               % Verbose flag, set to 0 to suppress displaying extra information 
-fParfor = 0;                % Use Multiple CPU cores (if parallel processing toolbox is installed)
+fParfor = 1;                % Use Multiple CPU cores (if parallel processing toolbox is installed)
 fGpu = 1;                   % Use GPU if parallel processing toolbox is installed
 fGpu_sort = 1;              % Use GPU for clustering if parallel processing toolbox is installed
 fGpu_rho = 1;               % Use GPU for computing KNN and Rho
 iGpu = 1;                   % Use specific GPU ID (run 'gpuDevice()' to retrieve the list of GPUs)
 MAX_BYTES_LOAD = [];        % Default memory loading block size (bytes)
-MAX_LOAD_SEC = [];          % Maximum loading duration (seconds). This overrides "MAX_BYTES_LOAD".
+MAX_LOAD_SEC = [2];          % Maximum loading duration (seconds). This overrides "MAX_BYTES_LOAD".
 MAX_LOG = 5;                % Maximum number of histories to track for 'manual' GUI
 nLoads_gpu = 8;             % Ratio of RAM to GPU memory. If your GPU memory is 12 GB and RAM is 96 GB, set nLoads_gpu = 8. Increase this number if you get GPU memory error.
 vcFile_thresh = '';         % Name of .mat file taht stores the spike detection threshold in 'vnThresh_site' variable. Created by 'preview' GUI
@@ -45,17 +45,17 @@ maxAmp = 250;               % Amplitude range in uV (initial setting, changeable
 nShow = 200;                % Maximum number of traces to show [D?# spikes to show]
 corrLim = [.9 1];           % Correlation color plot range
 nSpk_show = 30;             % show spike waveforms for manual clustering
-nShow_proj = 500;           % Max. number of spikes to show in the projection view
+nShow_proj = 50;           % Max. number of spikes to show in the projection view
 vcFet_show = 'vpp';         % Feature to show in time plot {'vpp', 'cov', 'pca'} (*)
 mrColor_proj = [.75 .75 .75; 0 0 0; 1 0 0];     % background, selected, comparison color
 vcFilter_show = '';         % Filter to apply in the "traces" view. Choices: {'', 'bandpass', 'sgdiff'}. '' uses vcFilter setting.
-fText = 1;                  % Show spike count per unit (*, press 'n' to toggle in manual GUI)
+fText = 0;                  % Show spike count per unit (*, press 'n' to toggle in manual GUI)
 
 % #Pre-processing (run "jrc spikesort" after change)
 vcDataType_filter = 'single';   % Internal data representation after filtering
 tlim_load = [];             % Time range to load in sec (uses all time range if set to empty)
 vcFilter = 'bandpass';         % {'ndiff', 'sgdiff', 'bandpass', 'fir1', 'user', 'fftdiff', 'none'}
-vcFilter_detect = '';  % Filter choice to run spike detection {'bandpass', 'wiener', 'matched', 'corr', 'xcov', 'banddiff'}
+vcFilter_detect = 'wiener';  % Filter choice to run spike detection {'bandpass', 'wiener', 'matched', 'corr', 'xcov', 'banddiff'}
 nDiff_filt = 3;			    % Differentiation filter for vcFilter='sgdiff', ignored otherwise. Set to [] to disable. 2n+1 samples used for centered differentiation
 freqLim = [300, 6000];      % Frequency cut-off limit for vcFilter='bandpass', ignored otherwise. to use high-pass set to [f_lo, nan], to use low-pass set to [nan, f_hi]
 freqLim_detect = [300, 3000];      % Used by vcFilter_detect
@@ -65,23 +65,24 @@ fEllip = 1;                 % Use Elliptic filter. set to 0 for Butterworth filt
 vnFilter_user = [];         % User-specified filter kernel. Used if vcFilter='user' is set.
 fft_thresh = 8;             % Automatically remove frequency outliers (unit:MAD, 10 recommended, 0 to disable). Verify by running "jrc traces" and press "p" to view the power spectrum.
 fft_thresh_low = [];        % lower threshold for dual-threshold scheme. set to [] to disable dual thresholding. low threshold gets activated if it connects to the higher threshold
-freqLimNotch = {};          % Notch filter frequency range to exclude manually. {[start1, end1], [start2, end2]}. Can be used in conjunction with fft_thresh.
+freqLimNotch = {[52,48]};          % Notch filter frequency range to exclude manually. {[start1, end1], [start2, end2]}. Can be used in conjunction with fft_thresh.
 vcCommonRef = 'mean';       % common reference mode {'none', 'mean', 'median', 'whiten', 'whiten-mean', 'whiten-median'}
 nSites_whiten = 32;         % number of sites to use local whtening (only active when vcCommonRef=`whiten`).
 nChans_min_car = 8;        % minimum number of common average referencing
 viSiteZero = [];            % Site# to ignore manually
 viSiteExcl = [];            % Site to exclude manually
-nPad_filt = 300;            % Number of samples to overlap between multiple loading (filter edge safe).
+nPad_filt = 30000;            % Number of samples to overlap between multiple loading (filter edge safe).
 thresh_corr_bad_site = [];  % Automatically reject bad sites based on the max. correlation with neighboring sites using raw waveforms. Set to [] to disable
 scale_filter = 8;			% filter multiplier for int16 interal representation (only used if vcDataType_filter='int16', otherwise set to 1)
 
 % #Spike detection and grouping (run "jrc spikesort" after change)
 vcDetect = 'min';           % Spike detection method. {'min', 'xcov'}
-qqFactor = 4.5;             % Spike detection thresold (Threshold = qqFactor*S, S = median(abs(x-median(x)))/.6745). (RQ Quiroga'04).
+qqFactor = 5;             % Spike detection thresold (Threshold = qqFactor*S, S = median(abs(x-median(x)))/.6745). (RQ Quiroga'04).
 qqSample = 4;               % Median subsample factor (1 every n)
+fDiagnosticMode = 0;        % Enable detailed diagnostic logging for spike detection (0=off, 1=on)
 spkThresh_uV = [];          % Manual threshold (applies to all channels)
 spkThresh_max_uV = [];      % maximum absolute amp. allowed
-spkLim_ms = [-.25, .75];    % Time range to capture the filtered spike waveforms; spkLim = round(P.spkLim_ms/1000*P.sRateHz)
+spkLim_ms = [-.3, 1.25];    % Time range to capture the filtered spike waveforms; spkLim = round(P.spkLim_ms/1000*P.sRateHz)
 spkLim_raw_ms = [];         % Raw spike waveform range, setting to [] will use spkLim_raw_factor to determine spkLim_raw (# samples)
 spkLim_raw_factor = 2;      % if spkLim_raw_ms==[] then spkLim_raw = spkLim * spkLim_raw_factor
 spkRefrac_ms = .25;         % Detection refractory period in milliseconds
@@ -90,13 +91,49 @@ vcSpatialFilter = 'none';   % Spatial filter for detection {'mean', 'imec2', 'su
 fSaveEvt = 1;               % Flag to save event file
 fDetectBipolar = 0;         % bipolar amplitude detection (0 means negative)
 fSaveRawSpk = 0;            % Save spike detected per site (saves minimum peak)
-blank_thresh = [];          % reject spikes exceeding the channel mean after filtering (MAD unit), ignored if [] or 0
+blank_thresh = [8];          % reject spikes exceeding the channel mean after filtering (MAD unit), ignored if [] or 0
 blank_period_ms = 5;        % (miliseconds) Duration of blanking when the common mean exceeds a threhold (blank_thresh)
 nneigh_min_detect = 0;      % Min. number of neighbors near the spike below threshold. choose between [0,1,2]
 maxDist_site_um = 50;       % Radius of spike event merging. Keep spikes that has most negative peaks within x um radius.
-maxDist_site_spk_um = 75;   % Max. radius for extracting waveforms. Used if maxSite=[] and nSites_ref=[]
+maxDist_site_spk_um = 85;   % Max. radius for extracting waveforms. Used if maxSite=[] and nSites_ref=[]
 fGroup_shank = 0;           % Group all sites in the same shank
 fSave_spkwav = 1;           % Save spikewaveform (myparam_spkwav.jrc file)
+
+% THRESHOLD HIERARCHY (in order of precedence):
+% 1. vcFile_thresh: Load FIXED thresholds from file (already includes qqFactor, not modified further)
+% 2. fUseGlobalThresh: Compute FIXED median across chunks (already includes qqFactor, not modified further)
+% 3. fSmoothThresh: Apply FIXED smoothing with sliding window (already includes qqFactor, not modified further)
+% 4. Original per-chunk thresholds (computed fresh each chunk with qqFactor)
+
+%vcFile_thresh = '';         % Path to .mat file containing FIXED threshold values per channel (highest priority)
+                            % File should contain variable 'vnThresh_site' with nChannels x 1 vector
+                            % IMPORTANT: Values must be in ADC units (NOT microvolts)
+                            % These values are used directly, NOT multiplied by qqFactor or uV_per_bit
+                            % Example: 'thresholds.mat' or '/path/to/custom_thresholds.mat'
+
+%fUseGlobalThresh = 1;       % Use FIXED global thresholds (median across chunks) to eliminate chunk boundary artifacts
+                            % These thresholds are NOT affected by qqFactor parameter
+                            % Only used if vcFile_thresh is empty or file doesn't exist
+                            % 1=enabled (recommended), 0=disabled
+
+%fSmoothThresh = 0;          % Apply FIXED smoothing with sliding window approach (only if above methods disabled)
+                            % These thresholds are NOT affected by qqFactor parameter
+                            % Uses 100-chunk windows with 50-chunk overlap for smooth transitions
+                            % 1=enabled, 0=disabled (falls back to per-chunk thresholds with qqFactor)
+
+%vcSmoothMethod = 'sgolay';  % Smoothing method for sliding window approach (only used if fSmoothThresh=1)
+                            % Available methods:
+                            %   'sgolay' (Savitzky-Golay): Preserves features while smoothing, best for gradual variations
+                            %   'gaussian': Weighted smoothing with Gaussian kernel, good for noise reduction
+                            %   'movmean': Simple moving average, fastest but may oversmooth
+                            %   'median': Median filter, robust to outliers and preserves edges
+
+nSmoothWindow = 100;        % Window size in chunks for sliding window smoothing (only if fSmoothThresh=1)
+                            % Default: 100 chunks per window
+nSmoothOverlap = 50;        % Overlap between windows in chunks (only if fSmoothThresh=1)
+                            % Default: 50 chunks overlap for smooth transitions
+smoothSigma = 1.5;          % Sigma parameter for Gaussian smoothing (only used if vcSmoothMethod='gaussian')
+                            % Controls width of Gaussian kernel: larger = smoother, typical range: 1.0-3.0
 
 % #Feature extraction (run "jrc spikesort" after change)
 vcFet = 'gpca';             % Feature list: {'gpca', 'cov', 'vpp', 'vmin', 'vminmax', 'energy', 'pca', 'xcov'}
@@ -182,7 +219,7 @@ nPc_dip = 3;                    % Number of principal components for dipole fitt
 vcMode_track = 'mt_cpsd2_mr';   % LFP tracking method {'mt_psd_mr', 'mt_cpsd_mr', 'cpsd_mr', 'corr_mr', 'mt_cpsd1_mr', 'mt_fft_mr', 'mt_cpsd2_mr', 'mt_cpsd1_mr', 'mt_dpsd_mr'}
 tBin_track = 9;                 % Duration (sec) per bin
 freqLim_track = [15 150];       % Filter range
-freqLim_excl_track = [58 62];   % Filter range to exclude. Change this for Europe
+freqLim_excl_track = [48 52];   % Filter range to exclude. Change this for Europe
 thresh_corr_track = [];         % Deprecated. correlation drop-off
 viDepth_track = [];             % Range of sites to track. set to empty to ignore
 fUseCache_track = 0;            % Use pre-stored result
@@ -226,7 +263,7 @@ maxAmp_lfp = 1000;          % Amplitude range in uV (LFP) [D]
 freqLim_corr = [15 150];    % LFP correlation frequency limit [D]
 time_tick_show = [];        % Time interval tick marks in secondds, [] for auto [D]
 viChan_show = [];           % Show all if empty [D]
-fWav_raw_show = 0;          % Show raw waveform (0 to show filtered); [D]
+fWav_raw_show = 1;          % Show raw waveform (0 to show filtered); [D]
 
 % Pre-processing
 nSites_excl_ref = 6;        % excl three nearest sites when perfomaing 'nmean' local referencing [D]
@@ -240,7 +277,7 @@ fLoad_lfp = 0;              % Load LFP file [D?]
 S_imec3 = [];               % imec3 struct [D]
 fMeanSite = 1;              % Subtract background noise (mean across sites, nSite=4*maxSite); [D]
 fMeanSite_drift = 0;        % Average nearest vertical neighbors (top and down) [D]
-fCheckSites = 0;            % Automatically reject bad sites if set to 1
+fCheckSites = 1;            % Automatically reject bad sites if set to 1
 maxLfpSdZ = 4.500000;       % site rejection threshold (valid if fCheckSites=1)
 %gain_boost = 1;             % multiply the raw recording by this gain to boost uV per bit
 
