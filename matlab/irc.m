@@ -193,7 +193,7 @@ switch lower(vcCmd)
     case {'kilosort', 'ksort'}, kilosort_(vcFile_prm); import_ksort_(vcFile_prm, 0); 
     case 'export-imec-sync', export_imec_sync_(vcFile_prm);
     case 'export-prm', export_prm_(vcFile_prm, vcArg2);
-    case {'export-phy', 'phy'}, irc2phy(vcFile_prm, vcArg2);
+    case {'export-phy', 'phy'}, irc_export_phy_(vcFile_prm, vcArg2);
     case {'export-klusters', 'klusters', 'neurosuite'}, irc2klusters(vcFile_prm, vcArg2);
     case 'save-wav', save_wav(vcFile_prm); return;
                 
@@ -5481,7 +5481,7 @@ create_figure_('FigMap', [0 .5 .15 .5], ['Probe map; ', P.vcFile_prm], 1, 0);
 create_figure_('FigWav', [.15 .25 .35 .75],['Averaged waveform: ', P.vcFile_prm], 0, 1);
 create_figure_('FigTime', [.15 0 .7 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
 
-create_figure_('FigProj', [.5 .25 .35 .5], ['Feature projection: ', P.vcFile_prm]);
+create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm]);
 create_figure_('FigWavCor', [.5 .75 .35 .25], ['Waveform correlation (click): ', P.vcFile_prm]);
 
 create_figure_('FigHist', [.85 .75 .15 .25], ['ISI Histogram: ', P.vcFile_prm]);
@@ -5490,7 +5490,7 @@ create_figure_('FigCorr', [.85 .25 .15 .25], ['Time correlation: ', P.vcFile_prm
 create_figure_('FigRD', [.85 0 .15 .25], ['Cluster rho-delta: ', P.vcFile_prm]);
 
 % drawnow_();
-csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigProj', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
+csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
 cvrFigPos0 = cellfun(@(vc)get(get_fig_(vc), 'OuterPosition'), csFig, 'UniformOutput', 0);
 S0 = set0_(cvrFigPos0, csFig);
 end %func
@@ -6511,17 +6511,17 @@ S_clu = S0.S_clu; P = S0.P;
 %----------------
 % collect info
 iSite = S_clu.viSite_clu(S0.iCluCopy);
-fprintf('DEBUG plot_FigTime_: Cluster %d, iSite=%d, nSpikes=%d\n', S0.iCluCopy, iSite, S_clu.vnSpk_clu(S0.iCluCopy));
+%fprintf('DEBUG plot_FigTime_: Cluster %d, iSite=%d, nSpikes=%d\n', S0.iCluCopy, iSite, S_clu.vnSpk_clu(S0.iCluCopy));
 [vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background
 [vrFet1, vrTime1, vcYlabel, viSpk1, iSite_actual] = getFet_site_(iSite, S0.iCluCopy, S0); % plot iCluCopy
 % Update iSite to the corrected value if different
 if exist('iSite_actual', 'var') && ~isempty(iSite_actual) && iSite_actual ~= iSite
-    fprintf('DEBUG plot_FigTime_: Using corrected site %d instead of %d\n', iSite_actual, iSite);
+    %fprintf('DEBUG plot_FigTime_: Using corrected site %d instead of %d\n', iSite_actual, iSite);
     iSite = iSite_actual;
 end
-fprintf('DEBUG plot_FigTime_: After getFet_site_, numel(vrFet1)=%d, numel(viSpk1)=%d\n', numel(vrFet1), numel(viSpk1));
+%fprintf('DEBUG plot_FigTime_: After getFet_site_, numel(vrFet1)=%d, numel(viSpk1)=%d\n', numel(vrFet1), numel(viSpk1));
 if ~isempty(vrFet1)
-    fprintf('DEBUG plot_FigTime_: vrFet1 range=[%g, %g], all_zeros=%d, all_nan=%d\n', min(vrFet1), max(vrFet1), all(vrFet1==0), all(isnan(vrFet1)));
+    %fprintf('DEBUG plot_FigTime_: vrFet1 range=[%g, %g], all_zeros=%d, all_nan=%d\n', min(vrFet1), max(vrFet1), all(vrFet1==0), all(isnan(vrFet1)));
 end
 
 vcTitle = '[H]elp; (Sft)[Left/Right]:Sites/Features; (Sft)[Up/Down]:Scale; [B]ackground; [S]plit; [R]eset view; [P]roject; [M]erge; (sft)[Z] pos; [E]xport selected; [C]hannel PCA';
@@ -6632,9 +6632,9 @@ if ~isempty(iClu) && ~isempty(S0) && isfield(S0, 'S_clu') && iClu <= numel(S0.S_
     end
 end
 if ~isempty(iClu) && isempty(viSpk1)
-    fprintf(2, 'DEBUG: Cluster %d has no spikes at site %d\n', iClu, iSite);
+   % %fprintf(2, 'DEBUG: Cluster %d has no spikes at site %d\n', iClu, iSite);
 elseif ~isempty(iClu) && isempty(vrFet1)
-    fprintf(2, 'DEBUG: Cluster %d has empty features at site %d (nSpikes=%d)\n', iClu, iSite, numel(viSpk1));
+   % %fprintf(2, 'DEBUG: Cluster %d has empty features at site %d (nSpikes=%d)\n', iClu, iSite, numel(viSpk1));
 end
 vrTime1 = double(S0.viTime_spk(viSpk1)) / P.sRateHz;
 
@@ -7482,9 +7482,9 @@ try
     tnWav = get_spkwav_(P, fWav_raw_show);
     tnWav1 = tnWav(:,:,viSpk1);
     nT_spk = size(tnWav, 1);
-    fprintf(2, 'DEBUG tnWav_spk_sites_: Loaded tnWav, size=%s, extracting %d spikes\n', mat2str(size(tnWav)), numel(viSpk1));
+   % %fprintf(2, 'DEBUG tnWav_spk_sites_: Loaded tnWav, size=%s, extracting %d spikes\n', mat2str(size(tnWav)), numel(viSpk1));
 catch % decompress from pc
-    fprintf(2, 'DEBUG tnWav_spk_sites_: Using PC decompression for %d spikes\n', numel(viSpk1));
+   % %fprintf(2, 'DEBUG tnWav_spk_sites_: Using PC decompression for %d spikes\n', numel(viSpk1));
     tnWav1 = pc2wav_(S0.mrPv_global, S0.trPc_spk(:,:,viSpk1));
     nT_spk = size(S0.mrPv_global,1);
 end
@@ -7492,22 +7492,22 @@ nSpk1 = numel(viSpk1);
 viSites_spk1 = viSite_spk(viSpk1);
 viSites_spk_unique = unique(viSites_spk1);
 tnWav_spk1 = zeros([nT_spk, numel(viSites1), nSpk1], 'like', tnWav1);
-fprintf(2, 'DEBUG tnWav_spk_sites_: Initialized tnWav_spk1 size=%s, will fill for %d unique sites\n', ...
-    mat2str(size(tnWav_spk1)), numel(viSites_spk_unique));
+%fprintf(2, 'DEBUG tnWav_spk_sites_: Initialized tnWav_spk1 size=%s, will fill for %d unique sites\n', ...
+%    mat2str(size(tnWav_spk1)), numel(viSites_spk_unique));
 for iSite1 = 1:numel(viSites_spk_unique) %only care about the first site
     iSite11 = viSites_spk_unique(iSite1); %center sites group
     viSpk11 = find(viSites_spk1 == iSite11); %dangerous error
     viSites11 = P.miSites(:, iSite11);
     [vlA11, viiB11] = ismember(viSites11, viSites1);
     nFilled = sum(vlA11);
-    fprintf(2, 'DEBUG tnWav_spk_sites_: Site %d: %d spikes, filling %d/%d channels (miSites=[%s], viSites1=[%s])\n', ...
-        iSite11, numel(viSpk11), nFilled, numel(viSites1), mat2str(viSites11'), mat2str(viSites1));
+%    fprintf(2, 'DEBUG tnWav_spk_sites_: Site %d: %d spikes, filling %d/%d channels (miSites=[%s], viSites1=[%s])\n', ...
+%        iSite11, numel(viSpk11), nFilled, numel(viSites1), mat2str(viSites11'), mat2str(viSites1));
     if nFilled == 0 && any(viSites1 == iSite11)
         % Fallback: if no neighboring sites match but the target site is requested, use it directly
         iIdx = find(viSites1 == iSite11);
         % Site iSite11 not in its own neighbor list - use the waveform data directly from that site
         if iSite11 <= size(tnWav1, 2)
-            fprintf(2, 'DEBUG tnWav_spk_sites_: Using direct fallback for site %d (not in own neighbor list)\n', iSite11);
+           % %fprintf(2, 'DEBUG tnWav_spk_sites_: Using direct fallback for site %d (not in own neighbor list)\n', iSite11);
             tnWav_spk1(:, iIdx, viSpk11) = tnWav1(:, iSite11, viSpk11);
         else
             fprintf(2, 'WARNING tnWav_spk_sites_: Site %d not available in waveform data (size=%s)\n', ...
@@ -7522,7 +7522,7 @@ for iSite1 = 1:numel(viSites_spk_unique) %only care about the first site
         tnWav_spk1(:,viiB11(vlA11),viSpk11) = tnWav1(:,vlA11,viSpk11);
     end
 end
-fprintf(2, 'DEBUG tnWav_spk_sites_: Final tnWav_spk1 range=[%g, %g]\n', min(tnWav_spk1(:)), max(tnWav_spk1(:)));    
+%fprintf(2, 'DEBUG tnWav_spk_sites_: Final tnWav_spk1 range=[%g, %g]\n', min(tnWav_spk1(:)), max(tnWav_spk1(:)));    
 end %func
 
 
@@ -8378,7 +8378,7 @@ if nargin<3
 else
     [S_clu, P, viSite_spk] = deal(S0.S_clu, S0.P, S0.viSite_spk);
 end
-fprintf(2, 'DEBUG getFet_clu_: iClu1=%s, iSite=%d, vcFet_show=%s\n', mat2str(iClu1), iSite, P.vcFet_show);
+%fprintf(2, 'DEBUG getFet_clu_: iClu1=%s, iSite=%d, vcFet_show=%s\n', mat2str(iClu1), iSite, P.vcFet_show);
 % if nargin<2, viSite = P.miSites(:, S0.S_clu.viSite_clu(iClu1)); end
 if isempty(iClu1) % select spikes based on sites
 %     n_use = 1 + round(P.maxSite);
@@ -8409,8 +8409,8 @@ switch lower(P.vcFet_show)
             mrWav_spk1 = squeeze_(tnWav2uV_(tnWav_spk_sites_(viSpk1, iSite, S0), P));
             mrFet1 = max(mrWav_spk1)-min(mrWav_spk1);
             if isempty(mrFet1) && ~isempty(viSpk1)
-                fprintf(2, 'DEBUG getFet_clu_: mrWav_spk1 size=%s, mrFet1 empty, nSpikes=%d, iSite=%d\n', ...
-                    mat2str(size(mrWav_spk1)), numel(viSpk1), iSite);
+%                fprintf(2, 'DEBUG getFet_clu_: mrWav_spk1 size=%s, mrFet1 empty, nSpikes=%d, iSite=%d\n', ...
+%                    mat2str(size(mrWav_spk1)), numel(viSpk1), iSite);
             elseif ~isempty(iClu1) && all(mrFet1 == 0)
                 % All amplitudes are zero - viSite_clu is incorrect, need to recompute
                 fprintf(2, 'ERROR getFet_clu_: Cluster %d has incorrect viSite_clu=%d (zero amplitudes). Needs recomputation.\n', ...
@@ -8452,8 +8452,8 @@ if ~isempty(mrFet1)
     mrFet1 = squeeze_(abs(mrFet1));
 else
     if ~isempty(iClu1)
-        fprintf(2, 'DEBUG getFet_clu_: Final mrFet1 is empty for cluster (iSite=%d, vcFet_show=%s)\n', ...
-            iSite, P.vcFet_show);
+%        fprintf(2, 'DEBUG getFet_clu_: Final mrFet1 is empty for cluster (iSite=%d, vcFet_show=%s)\n', ...
+%            iSite, P.vcFet_show);
     end
 end
 end %func
@@ -8476,11 +8476,11 @@ try
     try
         tnWav = get_spkwav_(P, 0);
         nSites_available = size(tnWav, 2);
-        fprintf(2, 'DEBUG recompute_cluster_site_: Available sites: 1-%d\n', nSites_available);
+       % %fprintf(2, 'DEBUG recompute_cluster_site_: Available sites: 1-%d\n', nSites_available);
     catch
         % Use global PV data
         nSites_available = size(S0.mrPv_global, 2);
-        fprintf(2, 'DEBUG recompute_cluster_site_: Using PV data, available sites: 1-%d\n', nSites_available);
+       % %fprintf(2, 'DEBUG recompute_cluster_site_: Using PV data, available sites: 1-%d\n', nSites_available);
     end
 
     % Sample subset of spikes for efficiency
@@ -8507,8 +8507,8 @@ try
         iSite_corrected = [];
         fprintf(2, 'WARNING recompute_cluster_site_: No valid sites found for cluster %d\n', iClu1);
     else
-        fprintf(2, 'DEBUG recompute_cluster_site_: Cluster %d best site: %d (amplitude=%.1f)\n', ...
-            iClu1, iSite_corrected, maxAmp);
+%        fprintf(2, 'DEBUG recompute_cluster_site_: Cluster %d best site: %d (amplitude=%.1f)\n', ...
+%            iClu1, iSite_corrected, maxAmp);
     end
 
 catch ME
@@ -20440,8 +20440,11 @@ try
         case 4
             [out1, out2, out3, out4] = feval(vcFunc, cell_Input{:});
             S_out = makeStruct_(out1, out2, out3, out4);
+        case 5
+            [out1, out2, out3, out4, out5] = feval(vcFunc, cell_Input{:});
+            S_out = makeStruct_(out1, out2, out3, out4, out5);
         otherwise
-            error('test_: nOutput=%d not supported (max is 4)', nOutput);
+            error('test_: nOutput=%d not supported (max is 5)', nOutput);
             S_out = [];
     end %switch
     if fVerbose
@@ -20449,6 +20452,7 @@ try
         if nOutput>=2, fprintf('[%s: out2]\n', vcFunc); disp(S_out.out2); end
         if nOutput>=3, fprintf('[%s: out3]\n', vcFunc); disp(S_out.out3); end
         if nOutput>=4, fprintf('[%s: out4]\n', vcFunc); disp(S_out.out4); end
+        if nOutput>=5, fprintf('[%s: out5]\n', vcFunc); disp(S_out.out5); end
     end
 catch
     disperr_();
@@ -20476,6 +20480,7 @@ else
         case 2, [varargout{1}, varargout{2}] = deal(S_out.out1, S_out.out2);
         case 3, [varargout{1}, varargout{2}, varargout{3}] = deal(S_out.out1, S_out.out2, S_out.out3);
         case 4, [varargout{1}, varargout{2}, varargout{3}, varargout{4}] = deal(S_out.out1, S_out.out2, S_out.out3, S_out.out4);
+        case 5, [varargout{1}, varargout{2}, varargout{3}, varargout{4}, varargout{5}] = deal(S_out.out1, S_out.out2, S_out.out3, S_out.out4, S_out.out5);
     end %switch
 end
 end %func
@@ -25000,10 +25005,10 @@ IsiRat = S.vrIsiRatio_clu(:);
 note = S.csNote_clu(:);
 
 % Debug: Check array sizes
-fprintf('DEBUG export_quality__: Array sizes - nClu=%d\n', S.nClu);
-fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
-fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
-fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d\n', length(IsoDist), length(LRatio), length(IsiRat), length(note));
+%fprintf('DEBUG export_quality__: Array sizes - nClu=%d\n', S.nClu);
+% fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
+% fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
+% fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d\n', length(IsoDist), length(LRatio), length(IsiRat), length(note));
 
 % Ensure all arrays are the same length as nClu
 arrays_to_fix = {SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note};
@@ -25045,11 +25050,11 @@ if length(viSite2Chan) ~= S.nClu
 end
 
 % Final size check before creating table
-fprintf('DEBUG export_quality__: Final array sizes before table creation:\n');
-fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
-fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
-fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d, viSite2Chan=%d\n', ...
-    length(IsoDist), length(LRatio), length(IsiRat), length(note), length(viSite2Chan));
+%fprintf('DEBUG export_quality__: Final array sizes before table creation:\n');
+%fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
+%fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
+%fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d, viSite2Chan=%d\n', ...
+%    length(IsoDist), length(LRatio), length(IsiRat), length(note), length(viSite2Chan));
 
 table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note, viSite2Chan);
 disp(table_);
@@ -32414,18 +32419,28 @@ end %func
 function ui_show_drift_view_(fNewFig, hMenu)
 persistent hFig
 if nargin<2, hMenu = []; end
-% hFig = get_fig_('FigClust');
 if nargin<1, fNewFig=0; end
-if ~fNewFig && ~isvalid_(hFig), return; end
+
 S0 = get0_();
 P = S0.P;
+
+% Use the main FigDrift window if it exists
+hFig_main = get_fig_('FigDrift');
+if isvalid_(hFig_main)
+    hFig = hFig_main;
+elseif ~fNewFig && ~isvalid_(hFig)
+    return;
+end
+
 if fNewFig
-    if isvalid_(hFig) % close toggle
+    if isvalid_(hFig) && hFig ~= hFig_main % close toggle (only for separate window)
         close(hFig); hFig = []; set(hMenu, 'Checked', 'off'); return;
-    end 
-    hFig = create_figure_('FigDrift', [.15 0 .7 .25], ['Drift view: ', P.vcFile_prm], 0, 0);
-    set(hMenu, 'Checked', 'on');
-    set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
+    end
+    if ~isvalid_(hFig_main)
+        hFig = create_figure_('FigDrift', [.15 0 .7 .25], ['Drift view: ', P.vcFile_prm], 0, 0);
+        set(hMenu, 'Checked', 'on');
+        set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
+    end
 end
 try
     show_drift_view(S0, hFig);
@@ -32591,22 +32606,210 @@ end %func
 %--------------------------------------------------------------------------
 function export_phy_()
 P = get0_('P');
-vcDir_out = fullfile(get_dir_(P.vcFile_prm), 'phy'); 
+vcDir_out = fullfile(get_dir_(P.vcFile_prm), 'phy');
 
 csAns = inputdlg_('Export to location', 'Export to location', 1, {vcDir_out});
 if isempty(csAns), return; end
 vcDir_out = csAns{1};
 
 hFig_wait = figure_wait_(1);
-hMsg = msgbox_open_('Exporting to Klusters');
+hMsg = msgbox_open_('Exporting to Phy');
 try
-    irc2phy(P.vcFile_prm, vcDir_out);
+    irc_export_phy_(P.vcFile_prm, vcDir_out);
 catch
     errordlg(lasterr());
 end
 close_(hMsg);
 figure_wait_(0, hFig_wait);
 msgbox_(sprintf('Exported to %s', vcDir_out), 1);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Export IronClust results to Phy format (no irc2 dependency)
+function vcFile_params = irc_export_phy_(vcFile_prm, vcDir_out)
+% irc_export_phy_(vcFile_prm, vcDir_out)
+% Export spike sorting results to Phy format using only irc.m data structures
+%
+% Inputs:
+%   vcFile_prm: path to .prm file
+%   vcDir_out: output directory for Phy files (default: [prm_dir]/phy)
+
+if nargin<2, vcDir_out=''; end
+assert(exist_file_(vcFile_prm), ['File does not exist: ', vcFile_prm]);
+
+if isempty(vcDir_out)
+    vcDir_out = fullfile(fileparts(vcFile_prm), 'phy');
+end
+mkdir_(vcDir_out);
+delete(fullfile(vcDir_out, '*.npy'));
+
+% Load S0 structure from _jrc.mat file
+vcFile_jrc = strrep(vcFile_prm, '.prm', '_jrc.mat');
+fprintf('Loading %s...\n', vcFile_jrc);
+S_jrc = load(vcFile_jrc);
+S0 = S_jrc.S0;
+P = S0.P;
+
+% Check if sorting is complete
+assert(isfield(S0, 'S_clu') && ~isempty(S0.S_clu), 'Clustering not found. Run spike sorting first.');
+S_clu = S0.S_clu;
+
+nSites = numel(P.viSite2Chan);
+
+% Export spike data
+fprintf('Writing spike data...\n');
+writeNPY_(uint64(abs(S0.vrAmp_spk)), fullfile(vcDir_out, 'amplitudes.npy'));
+writeNPY_(uint64(S0.viTime_spk), fullfile(vcDir_out, 'spike_times.npy'));
+writeNPY_(int32(S0.viSite_spk) - 1, fullfile(vcDir_out, 'spike_sites.npy'));
+writeNPY_(uint32(S_clu.viClu) - 1, fullfile(vcDir_out, 'spike_templates.npy'));
+
+% Export probe geometry
+fprintf('Writing probe geometry...\n');
+writeNPY_(int32(P.viSite2Chan) - 1, fullfile(vcDir_out, 'channel_map.npy'));
+writeNPY_(double(P.mrSiteXY), fullfile(vcDir_out, 'channel_positions.npy'));
+
+% Export PCA features
+fprintf('Writing PCA features...\n');
+trFet_spk = load_spkfet_(S0, P);
+if ~isempty(trFet_spk)
+    [nPc, nSites_fet, nSpk] = size(trFet_spk);
+    % Phy expects [nSpikes, nPC, nFeatChannels]
+    writeNPY_(permute(trFet_spk(1:min(3,nPc),:,:), [3,1,2]), fullfile(vcDir_out, 'pc_features.npy'));
+
+    % PC feature channel indices per cluster
+    viSite_clu = S_clu.viSite_clu;
+    writeNPY_(uint32(P.miSites(1:nSites_fet, viSite_clu)') - 1, ...
+        fullfile(vcDir_out, 'pc_feature_ind.npy'));
+else
+    fprintf(2, 'Warning: Could not load spike features. Skipping pc_features.npy\n');
+    nSites_fet = get_set_(P, 'nSites_fet', 5);
+    viSite_clu = S_clu.viSite_clu;
+end
+
+% Export templates (cluster waveforms)
+fprintf('Writing templates...\n');
+if isfield(S_clu, 'tmrWav_clu') && ~isempty(S_clu.tmrWav_clu)
+    % Use pre-computed cluster waveforms
+    tmrWav_clu = S_clu.tmrWav_clu;
+    viSite_clu = S_clu.viSite_clu;
+else
+    % Compute cluster waveforms
+    fprintf('Computing cluster waveforms...\n');
+    [tmrWav_clu, viSite_clu] = compute_cluster_waveforms_(S0, S_clu, P);
+end
+
+% Phy expects [nTemplates, nTimePoints, nChannels]
+writeNPY_(permute(tmrWav_clu, [3,1,2]), fullfile(vcDir_out, 'templates.npy'));
+writeNPY_(uint32(P.miSites(1:nSites_fet, viSite_clu)') - 1, fullfile(vcDir_out, 'template_ind.npy'));
+
+% Export template similarity
+if isfield(S_clu, 'mrWavCor') && ~isempty(S_clu.mrWavCor)
+    writeNPY_(single(S_clu.mrWavCor), fullfile(vcDir_out, 'similar_templates.npy'));
+else
+    % Compute correlation between cluster waveforms
+    nClu = size(tmrWav_clu, 3);
+    mrWavCor = eye(nClu, 'single');
+    writeNPY_(mrWavCor, fullfile(vcDir_out, 'similar_templates.npy'));
+end
+
+% Export whitening matrices (identity - IronClust doesn't use whitening)
+writeNPY_(eye(nSites), fullfile(vcDir_out, 'whitening_mat.npy'));
+writeNPY_(eye(nSites), fullfile(vcDir_out, 'whitening_mat_inv.npy'));
+
+% Export params.py
+vcFile_params = write_phy_params_(vcDir_out, P);
+
+fprintf('Export complete: %s\n', vcDir_out);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Compute cluster waveforms for Phy export
+function [tmrWav_clu, viSite_clu] = compute_cluster_waveforms_(S0, S_clu, P)
+nClu = S_clu.nClu;
+viSite_clu = S_clu.viSite_clu;
+nSites_fet = get_set_(P, 'nSites_fet', 5);
+[nSamples, ~] = size(P.miSites);
+
+% Try to load spike waveforms
+tnWav_spk = load_spkwav_(S0, P);
+if isempty(tnWav_spk)
+    fprintf(2, 'Warning: Could not load spike waveforms. Templates will be empty.\n');
+    tmrWav_clu = zeros(nSamples, nSites_fet, nClu, 'single');
+    return;
+end
+
+% Compute mean waveform for each cluster
+tmrWav_clu = zeros(nSamples, nSites_fet, nClu, 'single');
+for iClu = 1:nClu
+    viSpk_clu = find(S_clu.viClu == iClu);
+    if isempty(viSpk_clu), continue; end
+
+    % Get waveforms for this cluster and average
+    iSite = viSite_clu(iClu);
+    viSite_fet = P.miSites(1:nSites_fet, iSite);
+
+    % Average waveforms across spikes
+    tmrWav_clu(:,:,iClu) = single(mean(tnWav_spk(:,viSite_fet,viSpk_clu), 3));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Write params.py for Phy
+function vcFile_params = write_phy_params_(vcDir_out, P)
+fOverwrite = 1;
+
+vcFile_params = fullfile(vcDir_out, 'params.py');
+if ~exist_file_(vcFile_params) || fOverwrite
+    fid = fopen(vcFile_params, 'w');
+    [vcDir, vcFile, vcExt] = fileparts(P.vcFile);
+    if isempty(vcDir), vcDir = pwd(); end
+
+    % Get raw data path
+    switch lower(vcExt)
+        case '.bin'
+            rawRecordings = fullfile(vcDir, [vcFile, vcExt]);
+        otherwise
+            rawRecordings = fullfile(vcDir, [vcFile, '.bin']);
+    end
+
+    if ispc()
+        rawRecordings = strrep(rawRecordings, filesep(), [filesep(),filesep()]);
+    end
+
+    fprintf(fid, 'dat_path = ''%s''\n', rawRecordings);
+    fprintf(fid, 'n_channels_dat = %i\n', P.nChans);
+    fprintf(fid, 'dtype = ''%s''\n', dtype2phy_(P.vcDataType));
+    fprintf(fid, 'offset = %d\n', get_set_(P, 'header_offset', 0));
+
+    if P.sRateHz == floor(P.sRateHz)
+        fprintf(fid,'sample_rate = %i\n', P.sRateHz);
+    else
+        fprintf(fid,'sample_rate = %0.1f\n', P.sRateHz);
+    end
+
+    fprintf(fid,'hp_filtered = False');
+    fclose(fid);
+    fprintf('Wrote to %s\n', vcFile_params);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Convert MATLAB data type to NumPy dtype
+function dtype = dtype2phy_(dtype)
+switch dtype
+    case 'single'
+        dtype = 'float32';
+    case 'double'
+        dtype = 'float64';
+    case 'int16'
+        dtype = 'int16';
+    case 'uint16'
+        dtype = 'uint16';
+end
 end %func
 
 

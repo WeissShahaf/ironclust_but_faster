@@ -5459,15 +5459,23 @@ switch vcRecordingType
         P.probe_file = vcFile_prb;
         switch vcRecordingType
             case 'spikeglx' % load neuropixels probe if meta has it
-                S_meta = read_meta_spikeglx_(strrep(vcFile_raw, '.bin', '.meta')); 
+                S_meta = read_meta_spikeglx_(strrep(vcFile_raw, '.bin', '.meta'));
                 if isempty(vcFile_prb) && ~isempty(get_(S_meta, 'vcProbe'))
                     P.probe_file = fullfile([S_meta.vcProbe, '.prb']);
-                end  
+                end
             case 'rhd', S_meta = rhd_header_(vcFile_raw);
             case 'neuroscope', S_meta = neuroscope_header_(vcFile_raw);
-        end                
+        end
         S_prb = load_prb_(P.probe_file);
-        assert(~isempty(S_prb), 'probe file must be provided');
+        % If probe file not found but we have SpikeGLX metadata, try to extract geometry from metadata
+        if isempty(S_prb) && strcmp(vcRecordingType, 'spikeglx')
+            S_prb = extract_geom_from_meta_(S_meta);
+            if ~isempty(S_prb)
+                fprintf('Using probe geometry from SpikeGLX metadata (probe file not found: %s)\n', P.probe_file);
+                P.probe_file = ''; % geometry extracted from metadata, no .prb file
+            end
+        end
+        assert(~isempty(S_prb), 'probe file must be provided or geometry must be in metadata');
         [P.sRateHz, P.uV_per_bit, P.vcDataType, P.nChans] = ...
             get_(S_meta, 'sRateHz', 'uV_per_bit', 'vcDataType', 'nChans');
         [P.mrSiteXY, P.vrSiteHW, P.viShank_site, P.viSite2Chan] = ...
@@ -5771,6 +5779,49 @@ try
     end    
 catch
     error('Parsing error: %s\n\t%s\n', vcFile_meta, lasterr());
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Extract probe geometry from SpikeGLX metadata
+% Returns struct with channels, geometry (mrSiteXY), pad, viShank_site
+function S_prb = extract_geom_from_meta_(S_meta)
+S_prb = [];
+try
+    % Check if metadata contains geometry map
+    if isfield(S_meta, 'snsGeomMap')
+        % Parse snsGeomMap: format is (pn,nShank,shankPitch,shankWidth)(shank:x:y:connected)...
+        geomStr = S_meta.snsGeomMap;
+        % Extract coordinates using textscan
+        C = textscan(geomStr, '(%d:%f:%f:%d', 'EndOfLine', ')', 'HeaderLines', 1);
+        shankInd = double(C{1});
+        xCoord = double(C{2});
+        yCoord = double(C{3});
+        connected = double(C{4});
+
+        % Build probe structure
+        S_prb.channels = find(connected)'; % Only connected channels
+        S_prb.geometry = [xCoord(connected==1), yCoord(connected==1)];
+        S_prb.pad = [12, 12]; % Default pad size
+        S_prb.viShank_site = shankInd(connected==1) + 1; % 1-indexed shanks
+        S_prb.mrSiteXY = S_prb.geometry;
+        S_prb.viSite2Chan = S_prb.channels;
+        S_prb.vrSiteHW = S_prb.pad;
+
+    elseif isfield(S_meta, 'snsShankMap')
+        % Parse snsShankMap: format is (pn,nShank,shankPitch)(shank:col:row:connected)...
+        % This requires hardcoded geometry parameters based on probe type
+        fprintf(2, 'Warning: snsShankMap found but geometry extraction not fully implemented\n');
+        fprintf(2, '         Please provide a .prb file or ensure metadata has snsGeomMap\n');
+        S_prb = [];
+    else
+        % No geometry information in metadata
+        S_prb = [];
+    end
+catch ME
+    fprintf(2, 'Error extracting geometry from metadata: %s\n', ME.message);
+    S_prb = [];
 end
 end %func
 
