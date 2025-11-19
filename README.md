@@ -31,6 +31,17 @@
   - 40,350 iterations × 2 = 80,700 wasted find() calls
   - Now: Only ~240 find() calls (when CUDA kernel needs indices)
 
+    ### currently working on:
+     | Phase                      | Locations    | Lines Changed | Expected Savings | Effort    |
+  |----------------------------|--------------|---------------|------------------|-----------|
+  | ✅ Phase 1 (CUDA loop)      | 1 function   | ~15 lines     | 6-32s            | DONE      |
+  | ❌ Phase 2 (cviSpk_clu)     | 3 lines      | ~6 lines      | 2-10s            | 30-60 min |
+  | ❌ Phase 3 (Redundant find) | ~20-30 sites | ~25-30 lines  | 2-10s            | 4-8 hours |
+ ### expected speedup from implemented optimizations:
+  - Detection: 130-160s faster
+  - GUI operations: 5-10x faster for batch merges/deletes
+  - CUDA loop: 6-32s faster
+  - Combined: 140-195 seconds saved (21-29% total speedup)
 
 ## GUI improvements:
 - merging in the GUI is now deffered, until the user presses a button (U).
@@ -221,6 +232,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 * We thank [Loren Frank's lab](https://www.cin.ucsf.edu/HTML/Loren_Frank.html) for contributing the terabyte-scale 10-day continuous recording data.
 
 * We thank [Dan English's lab](https://www.englishneurolab.com/) for contributing four-day uLED probe recordings.
+
 
 
 
