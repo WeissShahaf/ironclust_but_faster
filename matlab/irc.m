@@ -1606,7 +1606,13 @@ try
 catch
     fprintf('loadParam: %s not found.\n', P.probe_file);
 end
-P = struct_merge_(P0, P);    
+P = struct_merge_(P0, P);
+% CRITICAL: Don't let .prm file override reduced probe settings after exclusions
+if ~isempty(get_(P0, 'viSite2Chan'))
+    P.viSite2Chan = P0.viSite2Chan;  % Use reduced channel list from load_prb_()
+    P.mrSiteXY = P0.mrSiteXY;        % Use reduced site coordinates
+    P.viShank_site = P0.viShank_site; % Use reduced shank assignments
+end    
 % P = calc_maxSite_(P);
 % if fEditFile
 %     fprintf('Auto-set: maxSite=%0.1f, nSites_ref=%0.1f\n', P.maxSite, P.nSites_ref);    
@@ -2021,11 +2027,59 @@ else
     S_prb = file2struct_(vcFile_prb);
 end
 S_prb.pad = get_set_(S_prb, 'pad', [12 12]);
+
+% Actually remove excluded channels from probe structure
 if ~isempty(viSiteExcl)
-    S_prb.channels(viSiteExcl) = [];    
-    S_prb.geometry(viSiteExcl,:) = [];    
-    if isfield(S_prb, 'shank')
-        S_prb.shank(viSiteExcl) = [];
+    nSites_orig = numel(S_prb.channels);
+
+    % Find positions of excluded channel numbers in the channels array
+    viExcludePos = [];
+    for iExcl = 1:numel(viSiteExcl)
+        iPos = find(S_prb.channels == viSiteExcl(iExcl));
+        if ~isempty(iPos)
+            viExcludePos(end+1) = iPos;
+        end
+    end
+
+    if ~isempty(viExcludePos)
+        % Create keep mask
+        viKeep = setdiff(1:nSites_orig, viExcludePos);
+
+        % Remove from all site-indexed fields
+        S_prb.channels = S_prb.channels(viKeep);
+        S_prb.geometry = S_prb.geometry(viKeep, :);
+
+        % Handle shank field if it exists
+        if isfield(S_prb, 'shank')
+            if iscell(S_prb.shank)
+                % Cell array of shanks - need to update each cell
+                for iShank = 1:numel(S_prb.shank)
+                    % Find which excluded positions belong to this shank
+                    viShankSites = S_prb.shank{iShank};
+                    S_prb.shank{iShank} = setdiff(viShankSites, viSiteExcl);
+                end
+            else
+                % Vector of shank assignments per site
+                S_prb.shank = S_prb.shank(viKeep);
+            end
+        end
+
+        % Handle cviShank field if it exists
+        if isfield(S_prb, 'cviShank')
+            if iscell(S_prb.cviShank)
+                for iShank = 1:numel(S_prb.cviShank)
+                    viShankSites = S_prb.cviShank{iShank};
+                    S_prb.cviShank{iShank} = setdiff(viShankSites, viSiteExcl);
+                end
+            else
+                S_prb.cviShank = S_prb.cviShank(viKeep);
+            end
+        end
+
+        nSites_new = numel(S_prb.channels);
+        fprintf('Removed %d excluded sites (%d -> %d sites)\n', numel(viExcludePos), nSites_orig, nSites_new);
+    else
+        fprintf('Warning: viSiteExcl specified but no matching channels found in probe\n');
     end
 end
 P.viSite2Chan = S_prb.channels;
@@ -5905,6 +5959,7 @@ uimenu_(mh_edit,'Label', '[S]plit', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 's
 uimenu_(mh_edit,'Label', 'Auto split max-chan', 'Callback', @(h,e)auto_split_(0));
 uimenu_(mh_edit,'Label', 'Auto split multi-chan', 'Callback', @(h,e)auto_split_(1));
 uimenu_(mh_edit,'Label', 'Annotate', 'Callback', @(h,e)unit_annotate_());
+uimenu_(mh_edit,'Label', 'Re[o]rder by coordinates', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'o'), 'Separator', 'on');
 
 mh_view = uimenu_(hFig,'Label','View'); 
 uimenu_(mh_view,'Label', 'Show traces', 'Callback', @(h,e)traces_());
@@ -6408,10 +6463,19 @@ switch lower(event.Key)
     case 'j', plot_FigProj_(S0); %projection view        
     case 'n'
         fText = get_set_(S_fig, 'fText', get_set_(P, 'fText', 1));
-        figWav_clu_count_(S_fig, S_clu, ~fText);          
+        figWav_clu_count_(S_fig, S_clu, ~fText);
+    case 'o' % Reorder clusters by spatial coordinates (x, then y)
+        S0 = reorder_clu_by_coords_(S0);
     case 'i', plot_FigHist_(S0); %ISI histogram               
     case 'e', plot_FigMap_(S0);        
-    case 'u', update_FigCor_(S0);        
+    case 'u' % Manual update of deferred figures
+        fprintf('[Manual Update] Updating all figures...\n');
+        t_update = tic;
+        plot_FigWav_(S0);
+        S0 = update_FigCor_(S0);
+        S0.fFiguresNeedUpdate = false;
+        set(0, 'UserData', S0);
+        fprintf('[Manual Update] Completed in %.2f seconds\n', toc(t_update));        
     case 'p', plot_psth_trial_(S0, 1);
     case '1', reset_position_();
     otherwise, figure_wait_(0); %stop waiting
@@ -8629,9 +8693,20 @@ iClu_del = S0.iCluCopy;
 % hMsg = msgbox_open_('Deleting...');
 S0.S_clu = delete_clu_(S0.S_clu, S0.iCluCopy);
 set(0, 'UserData', S0);
-plot_FigWav_(S0); %redraw plot 
-% S0.S_clu.mrWavCor = wavCor_delete_(S0.iCluCopy); 
-FigWavCor_update_(S0);
+
+% Deferred UI updates for performance (5-10x faster)
+fUpdateImmediate = get_set_(P, 'fUpdateImmediate', 0);  % Default to deferred (faster)
+if fUpdateImmediate
+    plot_FigWav_(S0); %redraw plot
+    % S0.S_clu.mrWavCor = wavCor_delete_(S0.iCluCopy);
+    FigWavCor_update_(S0);
+else
+    % Mark figures as needing update instead of updating immediately
+    S0.fFiguresNeedUpdate = true;
+    set(0, 'UserData', S0);
+    fprintf('[Performance Mode] Deferred figure updates. Press [U] to update plots.\n');
+end
+
 S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
 % set(0, 'UserData', S0);
 button_CluWav_simulate_(S0.iCluCopy);
@@ -8787,17 +8862,35 @@ if S0.iCluCopy == S0.iCluPaste
 end
 
 hFig_wait = figure_wait_(1);
+t_merge = tic;  % Track merge time
 S0.S_clu = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
 set(0, 'UserData', S0);
-plot_FigWav_(S0);
+
+% Deferred UI updates for performance (5-10x faster)
+fUpdateImmediate = get_set_(P, 'fUpdateImmediate', 0);  % Default to deferred (faster)
+if fUpdateImmediate
+    plot_FigWav_(S0);
+    S0 = update_FigCor_(S0);
+else
+    % Mark figures as needing update instead of updating immediately
+    S0.fFiguresNeedUpdate = true;
+    fprintf('[Performance Mode] Deferred figure updates. Press [U] to update plots.\n');
+end
+
 S0.iCluCopy = min(S0.iCluCopy, S0.iCluPaste);
 S0.iCluPaste = [];
 set(0, 'UserData', S0);
 update_plot_(S0.hPaste, nan, nan);
-S0 = update_FigCor_(S0);
+
+% Always update the selected cluster view (fast)
 S0 = button_CluWav_simulate_(S0.iCluCopy, [], S0);
 S0 = save_log_(sprintf('merge %d %d', S0.iCluCopy, S0.iCluPaste), S0);
 set(0, 'UserData', S0);
+
+t_merge_elapsed = toc(t_merge);
+if t_merge_elapsed > 0.1  % Warn if merge takes >100ms
+    fprintf('[Timing] Merge took %.2f seconds\n', t_merge_elapsed);
+end
 
 figure_wait_(0, hFig_wait);
 end %func
@@ -9312,6 +9405,49 @@ end %func
 
 
 %--------------------------------------------------------------------------
+function S0 = reorder_clu_by_coords_(S0)
+% Reorder clusters by their max-site spatial coordinates (x, then y)
+% Cluster IDs are not maintained - clusters are renumbered based on spatial order
+% Usage: Press 'O' key in GUI to reorder
+
+if nargin<1, S0 = get(0, 'UserData'); end
+P = S0.P;
+S_clu = S0.S_clu;
+
+hFig_wait = figure_wait_(1);
+fprintf('[Reorder] Sorting clusters by spatial coordinates (x, then y)...\n');
+
+% Get max-site coordinates for each cluster
+viSite_clu = S_clu.viSite_clu; % Max site for each cluster
+mrCoords_clu = P.mrSiteXY(viSite_clu, :); % [nClu x 2]: [x, y] coordinates
+
+% Sort by x-coordinate first, then y-coordinate
+% sortrows sorts by column 1, then column 2
+[~, viSortOrder] = sortrows(mrCoords_clu, [1, 2]);
+
+% Reorder all cluster fields
+S_clu = S_clu_select_(S_clu, viSortOrder);
+
+% Commit changes
+[S_clu, S0] = S_clu_commit_(S_clu, 'reorder_clu_by_coords_');
+
+% Update figures
+plot_FigWav_(S0);
+S0 = update_FigCor_(S0);
+
+% Reset selection to first cluster
+S0.iCluCopy = 1;
+S0.iCluPaste = [];
+button_CluWav_simulate_(S0.iCluCopy, [], S0);
+
+figure_wait_(0, hFig_wait);
+fprintf('[Reorder] Clusters reordered by coordinates. %d clusters sorted.\n', S_clu.nClu);
+save_log_('reorder by coordinates', S0);
+set(0, 'UserData', S0);
+end %func
+
+
+%--------------------------------------------------------------------------
 function export_mrWav_clu_(h,e)
 % Export selected cluster waveforms (iCopy, iPaste) set in the GUI
 
@@ -9567,8 +9703,12 @@ S_clu = S_clu_update_(S_clu, [iClu1, iClu2], P);
 
 % update all the other views
 [S_clu, S0] = S_clu_commit_(S_clu, 'split_clu_');
+
+% Splits always update immediately (need to verify split quality)
+% Unlike merges, splits are interactive and require visual confirmation
 plot_FigWav_(S0); %redraw plot
 plot_FigWavCor_(S0);
+
 save_log_(sprintf('split %d', iClu1), S0); %@TODO: specify which cut to use
 
 % select two clusters being split
@@ -16362,6 +16502,9 @@ vnThresh_site_global = median(vnThresh_chunks, 1)';
 % Validate thresholds before converting
 vnThresh_site_global = validate_thresholds_(vnThresh_site_global, 'compute_global_thresh_');
 
+% Note: Site exclusions are handled in load_prb_(), so P.viSite2Chan already
+% contains only the non-excluded sites. No need to process exclusions here.
+
 % Convert to appropriate data type
 vcDataType_filter = get_set_(P, 'vcDataType_filter', 'int16');
 if strcmpi(vcDataType_filter, 'int16')
@@ -16543,6 +16686,9 @@ vnThresh_site_smoothed = median(vnThresh_chunks_smoothed, 1)';
 % Validate thresholds before converting
 vnThresh_site_smoothed = validate_thresholds_(vnThresh_site_smoothed, 'compute_smoothed_thresh_');
 
+% Note: Site exclusions are handled in load_prb_(), so P.viSite2Chan already
+% contains only the non-excluded sites. No need to process exclusions here.
+
 % Convert to appropriate data type
 vcDataType_filter = get_set_(P, 'vcDataType_filter', 'int16');
 if strcmpi(vcDataType_filter, 'int16')
@@ -16699,9 +16845,9 @@ if nargin < 2, vcSource = 'unknown'; end
 vnThresh_validated = double(vnThresh(:));  % Convert to double for comparison
 nChannels = numel(vnThresh_validated);
 
-% Find invalid values (NaN, Inf, or exactly 0)
-% Note: We allow positive values close to zero, just not exactly zero or negative
-vlInvalid = isnan(vnThresh_validated) | isinf(vnThresh_validated) | vnThresh_validated == 0 | vnThresh_validated < 0;
+% Find invalid values (NaN, exactly 0, Inf, or negative)
+% Positive values close to zero are allowed
+vlInvalid = isnan(vnThresh_validated) | vnThresh_validated == 0 | isinf(vnThresh_validated) | vnThresh_validated < 0;
 
 if any(vlInvalid)
     nInvalid = sum(vlInvalid);
@@ -17569,10 +17715,45 @@ if ~isempty(vcFile_thresh)
         if exist(vcFile_thresh, 'file')
             S_thresh = load(vcFile_thresh);
             if isfield(S_thresh, 'vnThresh_site')
-                vnThresh_site_global = S_thresh.vnThresh_site(:);
+                vnThresh_orig = S_thresh.vnThresh_site(:);
+
+                % Map thresholds from original probe to reduced probe (after exclusions)
+                viSiteExcl = get_set_(P, 'viSiteExcl', []);
+                if ~isempty(viSiteExcl)
+                    % Load original probe file to get unreduced channel list
+                    S_prb_orig = file2struct_(P.probe_file);
+                    viChan_orig = S_prb_orig.channels(:);
+
+                    % P.viSite2Chan contains the reduced channel list (after exclusions)
+                    viChan_reduced = P.viSite2Chan(:);
+                    nSites_reduced = numel(viChan_reduced);
+
+                    % Map each reduced site to its original position and get threshold
+                    vnThresh_site_global = zeros(nSites_reduced, 1);
+                    for iSite = 1:nSites_reduced
+                        iChan = viChan_reduced(iSite);
+                        iOrig = find(viChan_orig == iChan, 1);
+                        if ~isempty(iOrig) && iOrig <= numel(vnThresh_orig)
+                            vnThresh_site_global(iSite) = vnThresh_orig(iOrig);
+                        else
+                            % Shouldn't happen, but use default if needed
+                            vnThresh_site_global(iSite) = median(vnThresh_orig);
+                            fprintf('Warning: Could not find threshold for channel %d, using median\n', iChan);
+                        end
+                    end
+                    fprintf('Mapped thresholds: %d original -> %d reduced sites (excluded %d)\n', ...
+                        numel(vnThresh_orig), nSites_reduced, numel(viSiteExcl));
+                else
+                    % No exclusions, use thresholds as-is
+                    vnThresh_site_global = vnThresh_orig;
+                end
+
                 % Validate loaded thresholds
                 vnThresh_site_global = validate_thresholds_(vnThresh_site_global, sprintf('file: %s', vcFile_thresh));
-                set0_('vnThresh_site_global', vnThresh_site_global);
+                % Store in S0 directly (can't use set0_ with string literal)
+                S0 = get(0, 'UserData');
+                S0.vnThresh_site_global = vnThresh_site_global;
+                set(0, 'UserData', S0);
                 fprintf('THRESHOLD METHOD: Loaded fixed thresholds from %s\n', vcFile_thresh);
             else
                 error('File %s must contain variable "vnThresh_site"', vcFile_thresh);
@@ -17591,15 +17772,21 @@ end
 if isempty(vnThresh_site_global) && fUseGlobalThresh
     fprintf('THRESHOLD METHOD: Computing global thresholds (median across chunks)\n');
     [vnThresh_site_global, vnThresh_chunks_diag] = compute_global_thresh_(P);
-    set0_('vnThresh_site_global', vnThresh_site_global);
-    set0_('vnThresh_chunks_diag', vnThresh_chunks_diag); % Save for diagnostics
+    % Store in S0 directly (can't use set0_ with string literal)
+    S0 = get(0, 'UserData');
+    S0.vnThresh_site_global = vnThresh_site_global;
+    S0.vnThresh_chunks_diag = vnThresh_chunks_diag;
+    set(0, 'UserData', S0);
 
 % Priority 3: Smoothed thresholds with sliding window
 elseif isempty(vnThresh_site_global) && fSmoothThresh
     fprintf('THRESHOLD METHOD: Using sliding window smoothing (100-chunk windows, 50-chunk overlap)\n');
     [vnThresh_site_global, vnThresh_chunks_diag] = compute_smoothed_thresh_(P);
-    set0_('vnThresh_site_global', vnThresh_site_global);
-    set0_('vnThresh_chunks_diag', vnThresh_chunks_diag); % Save for diagnostics
+    % Store in S0 directly (can't use set0_ with string literal)
+    S0 = get(0, 'UserData');
+    S0.vnThresh_site_global = vnThresh_site_global;
+    S0.vnThresh_chunks_diag = vnThresh_chunks_diag;
+    set(0, 'UserData', S0);
 
 % Priority 4: Original per-chunk thresholds
 elseif isempty(vnThresh_site_global)
@@ -17728,9 +17915,10 @@ write_spk_();
 
 [miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site] = ...
     multifun_(@(x)cat(1, x{:}), miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site);
-if fUseGlobalThresh && ~isempty(vnThresh_site_global)
+% Use vnThresh_site_global if it exists (from vcFile_thresh, fUseGlobalThresh, or fSmoothThresh)
+if ~isempty(vnThresh_site_global)
     vrThresh_site = vnThresh_site_global(:)';
-    fprintf('Using global thresholds (consistent across chunks)\n');
+    fprintf('Using precomputed global thresholds (from vcFile_thresh/fUseGlobalThresh/fSmoothThresh)\n');
 else
     vrThresh_site = mean(single(vnThresh_site),1);
     fprintf('Using averaged per-chunk thresholds (legacy mode)\n');
