@@ -1,4 +1,5 @@
 # This is a a branch of IRONCLUST that is meant to optimize runtime and UX/UI.
+## contributed: Shahaf Weiss 2025
 
 ## the main differences between the main branch:
 ### the main branch's irc.m file had some undesired behaviors:
@@ -207,4 +208,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 * We thank [Loren Frank's lab](https://www.cin.ucsf.edu/HTML/Loren_Frank.html) for contributing the terabyte-scale 10-day continuous recording data.
 
 * We thank [Dan English's lab](https://www.englishneurolab.com/) for contributing four-day uLED probe recordings.
+
 
