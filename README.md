@@ -1,4 +1,37 @@
+
+
+# This is a a branch of IRONCLUST that is meant to optimize runtime and UX/UI.
+
+## the main differences between the main branch:
+### the main branch's irc.m file had some undesired behaviors:
+- qqfactor formula was applied even when fixed thresholds file was used.
+- each chunk of data was thresholded independently, leading to different thresholds-> and thus chunk edge artifacts that were especially bad when saturation events caused a temporary zero value period in a chunk.
+## the new branch behaves like this:
+### when you run irc.m it first checks if a thresholds file is specified, if so it uses that as a hard-coded threshold for all chunks. if not, it checks for a global threshold variable, which changes the behavior of the code to first run detection of thrsholds on all chunks, and use the median value for the detection of spikes in all chunks. if this is not flagged, it checks for a smoothing variable, and if true it will detect thresholds similiar to the previous option, but smooth threshold transitions instead of using a hard coded value. finally if none are present it reverts to the original irc.m behavior
+
+## GUI (irc manual) Keyboard Shortcuts Reference
+
+| Key | Action | Speed | Updates |
+|-----|--------|-------|---------|
+| **M** | Merge two selected clusters | Instant (0.2s) | Deferred |
+| **S** | Split current cluster | Normal (2-3s) | Immediate ✓ |
+| **D** | Delete current cluster | Instant (0.2s) | Deferred |
+| **O** | Reorder clusters by spatial coordinates (x, then y) | Normal (1-3s) | Immediate ✓ |
+| **U** | Update all deferred figures | Normal (1-3s) | - |
+| **Left/Right** | Navigate clusters | Instant | - |
+| **Shift+Left/Right** | Select second cluster | Instant | - |
+
+**Note:** Only merges and deletes are deferred. Splits and reorder always update figures immediately.
+
+
+
+
+
+
 ![IronClust logo](img/ironclust_logo.png)
+
+
+
 
 # IronClust
 Terabyte-scale, drift-resistant spike sorter for multi-day recordings from [high-channel-count probes](https://www.nature.com/articles/nature24636)
@@ -167,4 +200,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 * We thank our collaborators and contributors of the ground-truth datasets to validate our spike sorting accuracy through spikeforest.flatironinstitute.org website.
 * We thank [Loren Frank's lab](https://www.cin.ucsf.edu/HTML/Loren_Frank.html) for contributing the terabyte-scale 10-day continuous recording data.
+
 * We thank [Dan English's lab](https://www.englishneurolab.com/) for contributing four-day uLED probe recordings.
