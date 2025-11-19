@@ -70,10 +70,6 @@
   ---
   4. Detection Performance ⚠️
 
-  | Metric         | OLD         | NEW | Status          |
-  |----------------|-------------|-----|-----------------|
-  | detect_ calls  | 1           | 2   | Different test? |
-  | wav2spk_ calls | Not visible | 13  | Appears in NEW  |
 
   Note: The detection phase shows 2 calls vs 1 call in original, suggesting the test may have been run differently. Hard to compare directly.
 
@@ -98,7 +94,7 @@
   | Phase 1: CUDA find()       | 6-32s            | ~15s          | ✅ Confirmed                     |
   | Phase 2: cviSpk_clu        | 6-30s            | ~5-10s        | ✅ Likely                        |
   | Phase 3: Redundant find()  | 2-10s            | ~5s           | ✅ Confirmed (post_merge faster) |
-  | Other improvements         | Unknown          | ~1400s        | 🎁 Bonus!                       |
+
 
   ---
   Why Such Massive Speedup?
@@ -333,6 +329,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 * We thank [Loren Frank's lab](https://www.cin.ucsf.edu/HTML/Loren_Frank.html) for contributing the terabyte-scale 10-day continuous recording data.
 
 * We thank [Dan English's lab](https://www.englishneurolab.com/) for contributing four-day uLED probe recordings.
+
 
 
 
