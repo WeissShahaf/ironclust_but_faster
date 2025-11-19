@@ -15,6 +15,8 @@
 ## backend improvments:
 - multiple functions have been optimized
 - many "find()"  calls have been replaced by vectorized code. speeding up computations. especially for merging and splitting.
+
+- for 120 seconds of data:
   
  | Metric               | Before | After        | Improvement           |
   |----------------------|--------|--------------|-----------------------|
@@ -232,6 +234,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 * We thank [Loren Frank's lab](https://www.cin.ucsf.edu/HTML/Loren_Frank.html) for contributing the terabyte-scale 10-day continuous recording data.
 
 * We thank [Dan English's lab](https://www.englishneurolab.com/) for contributing four-day uLED probe recordings.
+
 
 
 
