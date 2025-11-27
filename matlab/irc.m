@@ -2,12 +2,7 @@
 % IronClust (irc)
 % James Jun, Flatiron Institute
 
-
 function varargout = irc(varargin)
-global all_vnthresh;    % Declare the global variable
-all_vnthresh = {};      % Initialize the global variable
-global iteration;
-iteration=1;
 % Memory-efficient version 
 % P is static and loaded from file
 % Dynamic variables are set in S0=get(0,'UserData')
@@ -193,7 +188,7 @@ switch lower(vcCmd)
     case {'kilosort', 'ksort'}, kilosort_(vcFile_prm); import_ksort_(vcFile_prm, 0); 
     case 'export-imec-sync', export_imec_sync_(vcFile_prm);
     case 'export-prm', export_prm_(vcFile_prm, vcArg2);
-    case {'export-phy', 'phy'}, irc_export_phy_(vcFile_prm, vcArg2);
+    case {'export-phy', 'phy'}, irc2phy(vcFile_prm, vcArg2);
     case {'export-klusters', 'klusters', 'neurosuite'}, irc2klusters(vcFile_prm, vcArg2);
     case 'save-wav', save_wav(vcFile_prm); return;
                 
@@ -558,7 +553,6 @@ if isempty(vcFile_prb), fprintf(2, 'Probe file doesn''t exist.\n'); return; end
 S_prb = load_prb_(vcFile_prb);
 hFig = create_figure_('FigProbe', [0 0 .5 1], vcFile_prb, 1, 1);
 hPatch = plot_probe_(S_prb.mrSiteXY, S_prb.vrSiteHW, S_prb.viSite2Chan, S_prb.viShank_site);
-writeNPY(S_prb.viSite2Chan, [vcFile_prb(1:end-4), '_sites.npy']);
 axis equal;
 edit_(vcFile_prb); %show probe file
 figure(hFig);
@@ -1606,13 +1600,7 @@ try
 catch
     fprintf('loadParam: %s not found.\n', P.probe_file);
 end
-P = struct_merge_(P0, P);
-% CRITICAL: Don't let .prm file override reduced probe settings after exclusions
-if ~isempty(get_(P0, 'viSite2Chan'))
-    P.viSite2Chan = P0.viSite2Chan;  % Use reduced channel list from load_prb_()
-    P.mrSiteXY = P0.mrSiteXY;        % Use reduced site coordinates
-    P.viShank_site = P0.viShank_site; % Use reduced shank assignments
-end    
+P = struct_merge_(P0, P);    
 % P = calc_maxSite_(P);
 % if fEditFile
 %     fprintf('Auto-set: maxSite=%0.1f, nSites_ref=%0.1f\n', P.maxSite, P.nSites_ref);    
@@ -2027,59 +2015,11 @@ else
     S_prb = file2struct_(vcFile_prb);
 end
 S_prb.pad = get_set_(S_prb, 'pad', [12 12]);
-
-% Actually remove excluded channels from probe structure
 if ~isempty(viSiteExcl)
-    nSites_orig = numel(S_prb.channels);
-
-    % Find positions of excluded channel numbers in the channels array
-    viExcludePos = [];
-    for iExcl = 1:numel(viSiteExcl)
-        iPos = find(S_prb.channels == viSiteExcl(iExcl));
-        if ~isempty(iPos)
-            viExcludePos(end+1) = iPos;
-        end
-    end
-
-    if ~isempty(viExcludePos)
-        % Create keep mask
-        viKeep = setdiff(1:nSites_orig, viExcludePos);
-
-        % Remove from all site-indexed fields
-        S_prb.channels = S_prb.channels(viKeep);
-        S_prb.geometry = S_prb.geometry(viKeep, :);
-
-        % Handle shank field if it exists
-        if isfield(S_prb, 'shank')
-            if iscell(S_prb.shank)
-                % Cell array of shanks - need to update each cell
-                for iShank = 1:numel(S_prb.shank)
-                    % Find which excluded positions belong to this shank
-                    viShankSites = S_prb.shank{iShank};
-                    S_prb.shank{iShank} = setdiff(viShankSites, viSiteExcl);
-                end
-            else
-                % Vector of shank assignments per site
-                S_prb.shank = S_prb.shank(viKeep);
-            end
-        end
-
-        % Handle cviShank field if it exists
-        if isfield(S_prb, 'cviShank')
-            if iscell(S_prb.cviShank)
-                for iShank = 1:numel(S_prb.cviShank)
-                    viShankSites = S_prb.cviShank{iShank};
-                    S_prb.cviShank{iShank} = setdiff(viShankSites, viSiteExcl);
-                end
-            else
-                S_prb.cviShank = S_prb.cviShank(viKeep);
-            end
-        end
-
-        nSites_new = numel(S_prb.channels);
-        fprintf('Removed %d excluded sites (%d -> %d sites)\n', numel(viExcludePos), nSites_orig, nSites_new);
-    else
-        fprintf('Warning: viSiteExcl specified but no matching channels found in probe\n');
+    S_prb.channels(viSiteExcl) = [];    
+    S_prb.geometry(viSiteExcl,:) = [];    
+    if isfield(S_prb, 'shank')
+        S_prb.shank(viSiteExcl) = [];
     end
 end
 P.viSite2Chan = S_prb.channels;
@@ -2827,18 +2767,12 @@ switch nFet_use
         viSpk3_ = int32(S0.cviSpk3_site{iSite});
         if ~isempty(viSpk3_), viSpk3_ = viSpk3_(vlRedo_spk(viSpk3_)); end
         mrFet12_ = [squeeze_(trFet_spk(:,1,viSpk1_),2), squeeze_(trFet_spk(:,2,viSpk2_),2), squeeze_(trFet_spk(:,3,viSpk3_),2)];
-        n1_ = numel(viSpk1_);
-        n2_ = numel(viSpk2_) + numel(viSpk3_);
-        viSpk12_ = zeros(n1_ + n2_, 1, 'like', viSpk1_);
-        viSpk12_(1:n1_) = viSpk1_;
-        viSpk12_(n1_+1:end) = [viSpk2_; viSpk3_];
+        viSpk12_ = [viSpk1_; viSpk2_; viSpk3_];
+        [n1_, n2_] = deal(numel(viSpk1_), numel(viSpk2_) + numel(viSpk3_));
     case 2
         mrFet12_ = [squeeze_(trFet_spk(:,1,viSpk1_),2), squeeze_(trFet_spk(:,2,viSpk2_),2)];
-        n1_ = numel(viSpk1_);
-        n2_ = numel(viSpk2_);
-        viSpk12_ = zeros(n1_ + n2_, 1, 'like', viSpk1_);
-        viSpk12_(1:n1_) = viSpk1_;
-        viSpk12_(n1_+1:end) = viSpk2_;
+        viSpk12_ = [viSpk1_; viSpk2_];
+        [n1_, n2_] = deal(numel(viSpk1_), numel(viSpk2_));
     case 1
         mrFet12_ = squeeze_(trFet_spk(:,1,viSpk1_),2);
         viSpk12_ = viSpk1_;
@@ -3547,11 +3481,8 @@ else
     nSites = max(viSite_spk);
 end
 
-% Pre-compute spike indices per site - major speedup
-cviSpk_site = vi2cell_(viSite_spk, nSites);
-
 for iSite = 1:nSites
-    viSpk1 = cviSpk_site{iSite};
+    viSpk1 = find(viSite_spk==iSite);
     if isempty(viSpk1), continue; end
     trWav1 = tnWav_spk(:,:,viSpk1);
     trWav1 = single(permute(trWav1, [1,3,2]));
@@ -3613,12 +3544,9 @@ nTemplates = get_set_(P, 'nTemplates_clu', 100); %P.knn;
 viSite_spk = get0_('viSite_spk');
 nSites = max(viSite_spk);
 
-% Pre-compute spike indices per cluster - major speedup
-cviSpk_clu_tmp = vi2cell_(S_clu.viClu, S_clu.nClu);
-
 for iClu = 1:S_clu.nClu
-    % identify spikes to recluster by segregating into core-set and outer-set
-    viSpk1 = cviSpk_clu_tmp{iClu};
+    % identify spikes to recluster by segregating into core-set and outer-set     
+    viSpk1 = find(S_clu.viClu == iClu);
     viSpk1 = viSpk1(:);
     viSite_clu1 = viSite_spk(viSpk1);
     miKnn_clu1 = miKnn(:,viSpk1);
@@ -3809,7 +3737,7 @@ if fMerge
     if maxWavCor < 1 && maxWavCor > 0
         S_clu = post_merge_wav4_(S_clu, merge_thresh, P);
     end %if
-    nClu_merge = nClu_pre - S_clu.nClu;
+    nClu_merge = S_clu.nClu - nClu_pre;
     if nClu_merge==0, return; end % do not change anythign if no merge occured
 end
 
@@ -3826,9 +3754,9 @@ if fRemove_duplicate && dimm1(2) >= get_set_(P, 'nChans_min_car', 8) && ndims(di
     if ~all(vlKeep_clu)
         S_clu = S_clu_keep_(S_clu, vlKeep_clu); 
         fprintf('%d duplicate units removed\n', sum(~vlKeep_clu));
-    end
+    end    
 end
-nClu_merge = nClu_pre - S_clu.nClu;
+nClu_merge = S_clu.nClu - nClu_pre;
 end %func
 
 
@@ -3845,13 +3773,7 @@ mrMin_clu(vrThresh_site==0,:) = nan;
 [~,viSite_min] = min(mrMin_clu);
 end %func
 
-function val = get_field_default_(S, field, default_val)
-    if isfield(S, field)
-        val = S.(field);
-    else
-        val = default_val;
-    end
-end
+
 %--------------------------------------------------------------------------
 function S_clu = post_merge_wav4_(S_clu, dist_merge_um, P)
 % use centroid based method
@@ -3959,14 +3881,6 @@ end
 
 % Generate a map and merge clusters by translating index
 viMap_clu = int32(ml2map_(mlWavCor_clu));
-fprintf('\n=== PRE S_clu_map_index_ DIAGNOSTICS ===\n');
-fprintf('S_clu.nClu = %d\n', S_clu.nClu);
-fprintf('length(S_clu.cviSpk_clu) = %d\n', length(S_clu.cviSpk_clu));
-fprintf('length(viMap_clu) = %d\n', length(viMap_clu));
-if ~isempty(viMap_clu)
-    fprintf('viMap_clu range: [%d, %d]\n', min(viMap_clu), max(viMap_clu));
-end
-fprintf('=======================================\n\n');
 S_clu = S_clu_map_index_(S_clu, viMap_clu);
 S_clu = S_clu_refresh_(S_clu);
 nClu_post = numel(unique(viMap_clu));
@@ -4134,11 +4048,8 @@ mrWavCor_cl = zeros(nCl);
 % nSites_fet = P.maxSite*2+1-P.nSites_ref;
 % nSites_fet = size(tnWav_,2);
 
-% Pre-compute spike indices per cluster - major speedup
-cviSpk_clu_tmp = vi2cell_(S_clu.viClu, nCl);
-
 for iCl1 = 1:nCl-1 % iterate by site pairs instead?
-    viSpk_cl1 = cviSpk_clu_tmp{iCl1};
+    viSpk_cl1 = find(S_clu.viClu == iCl1);
     viSite_cl1 = viSite_spk(viSpk_cl1);
     mrPos_cl1 = S0.mrPos_spk(viSpk_cl1,:);
 %     iSite_cl1 = mode(viSite_cl1);
@@ -5452,11 +5363,6 @@ else
         S0.mrPos_spk = spk_pos_(S0, trFet_spk);
         set(0, 'UserData', S0);
     end
-    if ~isfield(S0.S_clu, 'vrSnr_clu') || isempty(S0.S_clu.vrSnr_clu)
-        fprintf('Quality metrics missing, calculating...\n');
-        S0.S_clu = S_clu_quality_(S0.S_clu, P);
-        set(0, 'UserData', S0);
-    end
 end
 fDebug_ui = 0;
 P.fParfor = 0;
@@ -5535,7 +5441,7 @@ create_figure_('FigMap', [0 .5 .15 .5], ['Probe map; ', P.vcFile_prm], 1, 0);
 create_figure_('FigWav', [.15 .25 .35 .75],['Averaged waveform: ', P.vcFile_prm], 0, 1);
 create_figure_('FigTime', [.15 0 .7 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
 
-create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm]);
+create_figure_('FigProj', [.5 .25 .35 .5], ['Feature projection: ', P.vcFile_prm]);
 create_figure_('FigWavCor', [.5 .75 .35 .25], ['Waveform correlation (click): ', P.vcFile_prm]);
 
 create_figure_('FigHist', [.85 .75 .15 .25], ['ISI Histogram: ', P.vcFile_prm]);
@@ -5544,7 +5450,7 @@ create_figure_('FigCorr', [.85 .25 .15 .25], ['Time correlation: ', P.vcFile_prm
 create_figure_('FigRD', [.85 0 .15 .25], ['Cluster rho-delta: ', P.vcFile_prm]);
 
 % drawnow_();
-csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
+csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigProj', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
 cvrFigPos0 = cellfun(@(vc)get(get_fig_(vc), 'OuterPosition'), csFig, 'UniformOutput', 0);
 S0 = set0_(cvrFigPos0, csFig);
 end %func
@@ -5884,7 +5790,7 @@ end
 
 % create text
 % S0 = set0_(mh_info);
-fText = get_set_(S_fig, 'fText', get_set_(P, 'Text', 1));
+fText = get_set_(S_fig, 'fText', get_set_(P, 'fText', 0)); % default: no spike counts
 S_fig = figWav_clu_count_(S_fig, S_clu, fText);
 S_fig.csHelp = { ...            
     '[Left-click] Cluter select/unselect (point at blank)', ...
@@ -5950,16 +5856,18 @@ uimenu_(mh_file,'Label', 'Export to NeuroSuite Klusters', 'Callback', @(h,e)expo
 uimenu_(mh_file,'Label', 'Export to Phy', 'Callback', @(h,e)export_phy_, 'Separator', 'on');
 uimenu_(mh_file,'Label', 'Exit', 'Callback', @exit_manual_, 'Separator', 'on', 'Accelerator', 'Q', 'Separator', 'on');
 
-mh_edit = uimenu_(hFig,'Label','Edit'); 
-uimenu_(mh_edit,'Label', '[M]erge', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'm'));
+mh_edit = uimenu_(hFig,'Label','Edit');
+uimenu_(mh_edit,'Label', '[M]erge (queue)', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'm'));
 uimenu_(mh_edit,'Label', 'Merge auto', 'Callback', @(h,e)merge_auto_());
-uimenu_(mh_edit,'Label', '[D]elete', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'd'), 'Separator', 'on');
+uimenu_(mh_edit,'Label', '[D]elete (queue)', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'd'), 'Separator', 'on');
 uimenu_(mh_edit,'Label', 'Delete auto', 'Callback', @(h,e)delete_auto_());
+uimenu_(mh_edit,'Label', '[U]pdate (execute pending)', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'u'), 'Separator', 'on');
+uimenu_(mh_edit,'Label', 'Cancel pending (Esc)', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'escape'));
 uimenu_(mh_edit,'Label', '[S]plit', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 's'), 'Separator', 'on');
 uimenu_(mh_edit,'Label', 'Auto split max-chan', 'Callback', @(h,e)auto_split_(0));
 uimenu_(mh_edit,'Label', 'Auto split multi-chan', 'Callback', @(h,e)auto_split_(1));
-uimenu_(mh_edit,'Label', 'Annotate', 'Callback', @(h,e)unit_annotate_());
-uimenu_(mh_edit,'Label', 'Re[o]rder by coordinates', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'o'), 'Separator', 'on');
+uimenu_(mh_edit,'Label', 'Annotate', 'Callback', @(h,e)unit_annotate_(), 'Separator', 'on');
+uimenu_(mh_edit,'Label', 'Auto-label single units (refractory)', 'Callback', @(h,e)auto_annotate_single_units_());
 
 mh_view = uimenu_(hFig,'Label','View'); 
 uimenu_(mh_view,'Label', 'Show traces', 'Callback', @(h,e)traces_());
@@ -5967,10 +5875,10 @@ uimenu_(mh_view,'Label', 'View all [R]', 'Callback', @(h,e)keyPressFcn_cell_(hFi
 uimenu_(mh_view,'Label', '[Z]oom selected', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'z'));
 uimenu_(mh_view,'Label', '[W]aveform (toggle)', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'w'));
 uimenu_(mh_view,'Label', '[N]umbers (toggle)', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'n'));
-uimenu_(mh_view,'Label', 'Show raw waveform', 'Callback', @(h,e)raw_waveform_(h), ...
-    'Checked', ifeq_(get_(P, 'fWav_raw_show'), 'on', 'off'));
-uimenu_(mh_view,'Label', 'Threshold by sites', 'Callback', @(h,e)keyPressFcn_thresh_(hFig, 'n'));
-uimenu_(mh_view,'Label', '.prm file', 'Callback', @edit_prm_);
+% uimenu_(mh_view,'Label', 'Show raw waveform', 'Callback', @(h,e)raw_waveform_(h), ...
+%     'Checked', ifeq_(get_(P, 'fWav_raw_show'), 'on', 'off'));
+%uimenu_(mh_view,'Label', 'Threshold by sites', 'Callback', @(h,e)keyPressFcn_thresh_(hFig, 'n'));
+% uimenu_(mh_view,'Label', '.prm file', 'Callback', @edit_prm_);
 uimenu_(mh_view,'Label', 'Show averaged waveforms on all channels','Callback', @(h,e)ui_show_all_chan_(1,h));
 uimenu_(mh_view,'Label', 'Show global drift','Callback', @(h,e)plot_drift_());
 uimenu_(mh_view,'Label', 'Show drift view','Callback', @(h,e)ui_show_drift_view_(1,h));
@@ -5992,7 +5900,6 @@ update_menu_trials_(mh_trials);
 
 mh_info = uimenu_(hFig,'Label','','Tag', 'mh_info'); 
 uimenu_(mh_info, 'Label', 'Annotate unit', 'Callback', @unit_annotate_);
-uimenu_(mh_info, 'Label', 'axonal', 'Callback', @(h,e)unit_annotate_(h,e,'axonal'));
 uimenu_(mh_info, 'Label', 'single', 'Callback', @(h,e)unit_annotate_(h,e,'single'));
 uimenu_(mh_info, 'Label', 'multi', 'Callback', @(h,e)unit_annotate_(h,e,'multi'));
 uimenu_(mh_info, 'Label', 'noise', 'Callback', @(h,e)unit_annotate_(h,e,'noise'));
@@ -6079,9 +5986,11 @@ S = makeStruct_(cvrY, cviSite, vnSpk);
 try
     set(S_fig.hSpkAll, 'XData', cell2mat_(cvrX), 'YData', cell2mat_(cvrY), 'UserData', S);
 catch
-    S_fig.hSpkAll = plot_(S_fig.hAx, cell2mat_(cvrX), cell2mat_(cvrY), 'Color', [.5 .5 .5], 'LineWidth', .5); %, P.LineStyle); 
+    S_fig.hSpkAll = plot_(S_fig.hAx, cell2mat_(cvrX), cell2mat_(cvrY), 'Color', [.5 .5 .5], 'LineWidth', .5); %, P.LineStyle);
     set(S_fig.hSpkAll, 'UserData', S);
 end
+% Default: hide spike waveforms, show only median
+set(S_fig.hSpkAll, 'Visible', 'off');
 end %func
 
 
@@ -6436,7 +6345,7 @@ switch lower(event.Key)
         if strcmpi(event.Key, 'home') || strcmpi(event.Key, 'end') %'z' to recenter
             S0 = keyPressFcn_cell_(get_fig_cache_('FigWav'), {'z'}, S0); 
         end        
-    case 'm', S0 = ui_merge_(S0); % merge clusters
+    case 'm', S0 = ui_merge_pending_(S0); % queue merge (deferred)
     case 'space'
         ui_zoom_(S0, hFig);
         % auto-select nearest cluster for black
@@ -6444,40 +6353,35 @@ switch lower(event.Key)
         mrWavCor(S0.iCluCopy,S0.iCluCopy) = -inf;
         [~,S0.iCluPaste] = max(mrWavCor(:,S0.iCluCopy));
         set(0, 'UserData', S0);
-        button_CluWav_simulate_([], S0.iCluPaste);        
-    case 's', auto_split_(1, S0);        
+        button_CluWav_simulate_([], S0.iCluPaste);
+    case 's', auto_split_(1, S0);
     case 'r' %reset view
         hFig_wait = figure_wait_(1);
         axis_([0, S0.S_clu.nClu + 1, 0, numel(P.viSite2Chan) + 1]);
-        figure_wait_(0, hFig_wait);        
-    case {'d', 'backspace', 'delete'}, S0 = ui_delete_(S0);        
+        figure_wait_(0, hFig_wait);
+    case {'d', 'backspace', 'delete'}, S0 = ui_delete_pending_(S0); % queue delete (deferred)
     case 'z' %zoom
         ui_zoom_(S0, hFig);
-    case 'c', plot_FigCorr_(S0);        
-    case 'v', plot_FigIsi_(S0);        
-    case 'a', update_spikes_(S0); clu_info_(S0);        
-    case 'f', clu_info_(S0);               
+    case 'c', plot_FigCorr_(S0);
+    case 'v', plot_FigIsi_(S0);
+    case 'a', update_spikes_(S0); clu_info_(S0);
+    case 'f', clu_info_(S0);
     case 'h', msgbox_(S_fig.csHelp, 1);
-    case 'w', toggleVisible_(S_fig.hSpkAll); %toggle spike waveforms 
-    case 't', plot_FigTime_(S0); % time view        
-    case 'j', plot_FigProj_(S0); %projection view        
+    case 'w', toggleVisible_(S_fig.hSpkAll); %toggle spike waveforms
+    case 't', plot_FigTime_(S0); % time view
+    case 'j', plot_FigProj_(S0); %projection view
     case 'n'
         fText = get_set_(S_fig, 'fText', get_set_(P, 'fText', 1));
         figWav_clu_count_(S_fig, S_clu, ~fText);
-    case 'o' % Reorder clusters by spatial coordinates (x, then y)
-        S0 = reorder_clu_by_coords_(S0);
-    case 'i', plot_FigHist_(S0); %ISI histogram               
-    case 'e', plot_FigMap_(S0);        
-    case 'u' % Manual update of deferred figures
-        fprintf('[Manual Update] Updating all figures...\n');
-        t_update = tic;
-        plot_FigWav_(S0);
-        S0 = update_FigCor_(S0);
-        S0.fFiguresNeedUpdate = false;
-        set(0, 'UserData', S0);
-        fprintf('[Manual Update] Completed in %.2f seconds\n', toc(t_update));        
+    case 'i', plot_FigHist_(S0); %ISI histogram
+    case 'e', plot_FigMap_(S0);
+    case 'u', S0 = execute_pending_and_update_(S0); % execute pending ops + update
     case 'p', plot_psth_trial_(S0, 1);
-    case '1', reset_position_();
+    case 'escape', S0 = cancel_pending_operations_(S0); % cancel pending ops
+    case '1', unit_annotate_([], [], 'single'); % annotate as single
+    case '2', unit_annotate_([], [], 'multi'); % annotate as multi
+    case '3', unit_annotate_([], [], 'noise'); % annotate as noise
+    case '4', unit_annotate_([], [], 'axonal'); % annotate as axonal
     otherwise, figure_wait_(0); %stop waiting
 end
 figure_(hObject); %change the focus back to the current object
@@ -6541,15 +6445,26 @@ vrTime_lag = viLag * P.jitter_ms;
 
 %--------------
 % draw
+refrac_ms = 2; % refractory period display at +/- 2ms (hardcoded for ISI violation detection)
 if isempty(S_fig)
     S_fig.hAx = axes_new_(hFig);
-    S_fig.hBar = bar_(vrTime_lag, vnCnt, 1);     
-    xlabel('Time (ms)'); 
+    S_fig.hBar = bar_(vrTime_lag, vnCnt, 1);
+    xlabel('Time (ms)');
     ylabel('Counts');
-    grid on; 
+    grid on;
     set(S_fig.hAx, 'YScale', 'log');
+    % Add red refractory period lines at +/- 2ms
+    hold(S_fig.hAx, 'on');
+    S_fig.hLine_refrac_pos = xline(S_fig.hAx, refrac_ms, 'r-', 'LineWidth', 1.5);
+    S_fig.hLine_refrac_neg = xline(S_fig.hAx, -refrac_ms, 'r-', 'LineWidth', 1.5);
+    hold(S_fig.hAx, 'off');
 else
     set(S_fig.hBar, 'XData', vrTime_lag, 'YData', vnCnt);
+    % Update refractory lines position if they exist
+    if isfield(S_fig, 'hLine_refrac_pos') && ishandle(S_fig.hLine_refrac_pos)
+        set(S_fig.hLine_refrac_pos, 'Value', refrac_ms);
+        set(S_fig.hLine_refrac_neg, 'Value', -refrac_ms);
+    end
 end
 if iClu1==iClu2
     title_(S_fig.hAx, sprintf('Clu%d', iClu1));
@@ -6557,9 +6472,6 @@ else
     title_(S_fig.hAx, sprintf('Clu%d vs Clu%d', iClu1, iClu2));
 end
 xlim_(S_fig.hAx, [-nLags, nLags] * P.jitter_ms);
-ylimits=get(gca,'ylim');
-line( [-2, -2],[ylimits(1),ylimits(2)],'color','r','LineWidth',2)
-line( [2, 2],[ylimits(1),ylimits(2)],'color','r','LineWidth',2)
 set(hFig, 'UserData', S_fig);
 end %func
 
@@ -6575,18 +6487,8 @@ S_clu = S0.S_clu; P = S0.P;
 %----------------
 % collect info
 iSite = S_clu.viSite_clu(S0.iCluCopy);
-%fprintf('DEBUG plot_FigTime_: Cluster %d, iSite=%d, nSpikes=%d\n', S0.iCluCopy, iSite, S_clu.vnSpk_clu(S0.iCluCopy));
-[vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background
-[vrFet1, vrTime1, vcYlabel, viSpk1, iSite_actual] = getFet_site_(iSite, S0.iCluCopy, S0); % plot iCluCopy
-% Update iSite to the corrected value if different
-if exist('iSite_actual', 'var') && ~isempty(iSite_actual) && iSite_actual ~= iSite
-    %fprintf('DEBUG plot_FigTime_: Using corrected site %d instead of %d\n', iSite_actual, iSite);
-    iSite = iSite_actual;
-end
-%fprintf('DEBUG plot_FigTime_: After getFet_site_, numel(vrFet1)=%d, numel(viSpk1)=%d\n', numel(vrFet1), numel(viSpk1));
-if ~isempty(vrFet1)
-    %fprintf('DEBUG plot_FigTime_: vrFet1 range=[%g, %g], all_zeros=%d, all_nan=%d\n', min(vrFet1), max(vrFet1), all(vrFet1==0), all(isnan(vrFet1)));
-end
+[vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background    
+[vrFet1, vrTime1, vcYlabel, viSpk1] = getFet_site_(iSite, S0.iCluCopy, S0); % plot iCluCopy
 
 vcTitle = '[H]elp; (Sft)[Left/Right]:Sites/Features; (Sft)[Up/Down]:Scale; [B]ackground; [S]plit; [R]eset view; [P]roject; [M]erge; (sft)[Z] pos; [E]xport selected; [C]hannel PCA';
 if ~isempty(S0.iCluPaste)
@@ -6628,9 +6530,6 @@ if isempty(S_fig)
     end
 end
 vpp_lim = [0, abs(S_fig.maxAmp)];
-if isnan(vpp_lim(2)) || vpp_lim(2) <= 0 || isinf(vpp_lim(2))
-    vpp_lim = [0, 1]; % fallback to safe default
-end
 % iFet = S_fig.iFet;
 % iFet = 1;
 if ~isfield(S_fig, 'iSite'), S_fig.iSite = []; end
@@ -6673,7 +6572,7 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function [vrFet1, vrTime1, vcYlabel, viSpk1, iSite_actual] = getFet_site_(iSite, iClu, S0)
+function [vrFet1, vrTime1, vcYlabel, viSpk1] = getFet_site_(iSite, iClu, S0)
 % just specify iSite to obtain background info
 % 2016 07 07 JJJ
 % return feature correspojnding to a site and cluster
@@ -6685,29 +6584,14 @@ if nargin<3, S0 = get(0, 'UserData'); end
 P = S0.P;
 if ~isfield(P, 'vcFet_show'), P.vcFet_show = 'vpp'; end
 [vrFet1, viSpk1] = getFet_clu_(iClu, iSite, S0);
-
-% Check if the site was corrected during getFet_clu_
-iSite_actual = iSite;
-if ~isempty(iClu) && ~isempty(S0) && isfield(S0, 'S_clu') && iClu <= numel(S0.S_clu.viSite_clu)
-    iSite_updated = S0.S_clu.viSite_clu(iClu);
-    if iSite_updated ~= iSite
-        fprintf(2, 'INFO getFet_site_: Cluster %d site was corrected: %d -> %d\n', iClu, iSite, iSite_updated);
-        iSite_actual = iSite_updated;
-    end
-end
-if ~isempty(iClu) && isempty(viSpk1)
-   % %fprintf(2, 'DEBUG: Cluster %d has no spikes at site %d\n', iClu, iSite);
-elseif ~isempty(iClu) && isempty(vrFet1)
-   % %fprintf(2, 'DEBUG: Cluster %d has empty features at site %d (nSpikes=%d)\n', iClu, iSite, numel(viSpk1));
-end
 vrTime1 = double(S0.viTime_spk(viSpk1)) / P.sRateHz;
 
 % label
 switch lower(P.vcFet_show)
     case {'vpp', 'vmin'} %voltage feature
-        vcYlabel = sprintf('Site %d (\\mu%s)', iSite_actual, P.vcFet_show);
+        vcYlabel = sprintf('Site %d (\\mu%s)', iSite, P.vcFet_show);
     otherwise %other feature options
-        vcYlabel = sprintf('Site %d (%s)', iSite_actual, P.vcFet_show);
+        vcYlabel = sprintf('Site %d (%s)', iSite, P.vcFet_show);
 end
 
 end %func 
@@ -6885,177 +6769,21 @@ end %func
 
 
 %--------------------------------------------------------------------------
-
-function site_mode = safe_mode_viSite(viSite_spk, spike_indices)
-    % Remove invalid indices
-    valid_indices = spike_indices(spike_indices > 0 & spike_indices <= length(viSite_spk));
-    
-    if isempty(valid_indices)
-        site_mode = 1; % Default to site 1 if no valid indices
-        warning('No valid spike indices found for cluster, defaulting to site 1');
-    else
-        site_mode = mode(viSite_spk(valid_indices));
-    end
-end
-%--------------------------------------------------------------------------
 function S_clu = S_clu_map_index_(S_clu, viMap_clu)
-
-    if ~isfield(S_clu, 'cviSpk_clu') || isempty(S_clu.cviSpk_clu)
-        error('S_clu.cviSpk_clu is missing or empty');
-    end
-    
-    actual_nClu = length(S_clu.cviSpk_clu);
-    if ~isfield(S_clu, 'nClu') || S_clu.nClu ~= actual_nClu
-        fprintf('Fixing S_clu.nClu: was %d, should be %d\n', ...
-                get_field_default_(S_clu, 'nClu', 0), actual_nClu);
-        S_clu.nClu = actual_nClu;
-    end
-    
-    % Validate viMap_clu
-    if exist('viMap_clu', 'var') && ~isempty(viMap_clu)
-        if max(viMap_clu) > actual_nClu
-            error('viMap_clu contains indices (%d) exceeding actual cluster count (%d)', max(viMap_clu), actual_nClu);
-        end
-    end
 % update viClu
 vlPos = S_clu.viClu > 0;
 viMap_clu = int32(viMap_clu);
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
-% Update nClu to match actual unique clusters after remapping
-S_clu.nClu = numel(unique(viMap_clu));
+% S_clu = S_clu_refresh_(S_clu, 0); % computational efficiency
+% S_clu = S_clu_count_(S_clu);
+% S_clu.nClu = numel(unique(viMap_clu));
 S_clu.cviSpk_clu = vi2cell_(S_clu.viClu);
 S_clu.vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu);
-
-% Validate consistency
-if length(S_clu.cviSpk_clu) ~= S_clu.nClu
-    fprintf('WARNING: Adjusting cviSpk_clu length from %d to match nClu=%d\n', ...
-            length(S_clu.cviSpk_clu), S_clu.nClu);
-    % Trim or pad cviSpk_clu to match nClu
-    if length(S_clu.cviSpk_clu) > S_clu.nClu
-        S_clu.cviSpk_clu = S_clu.cviSpk_clu(1:S_clu.nClu);
-        S_clu.vnSpk_clu = S_clu.vnSpk_clu(1:S_clu.nClu);
-    end
-end
 viSite_spk = get0_('viSite_spk');
-% Pre-validation: Clean up S_clu.cviSpk_clu before processing
-fprintf('Validating spike indices before site calculation...\n');
-
-max_valid_idx = length(viSite_spk);
-% Double-check array bounds before loop
-if S_clu.nClu > length(S_clu.cviSpk_clu)
-    fprintf('ERROR: S_clu.nClu (%d) > length(S_clu.cviSpk_clu) (%d)\n', ...
-            S_clu.nClu, length(S_clu.cviSpk_clu));
-    S_clu.nClu = length(S_clu.cviSpk_clu);
-end
-
-for iClu = 1:S_clu.nClu
-    if iClu <= length(S_clu.cviSpk_clu) && ~isempty(S_clu.cviSpk_clu{iClu})
-        % Remove invalid indices
-        valid_mask = S_clu.cviSpk_clu{iClu} > 0 & S_clu.cviSpk_clu{iClu} <= max_valid_idx;
-        S_clu.cviSpk_clu{iClu} = S_clu.cviSpk_clu{iClu}(valid_mask);
-        
-        if isempty(S_clu.cviSpk_clu{iClu})
-            fprintf('Warning: Cluster %d has no valid spikes after filtering\n', iClu);
-        end
-    end
-end
-
-% Now the original line should work:
 S_clu.viSite_clu = double(arrayfun(@(iClu)mode(viSite_spk(S_clu.cviSpk_clu{iClu})), 1:S_clu.nClu));
-% Quick bounds-safe version
-%% temp fix %%%S_clu.viSite_clu = double(arrayfun(@(iClu) mode(viSite_spk(S_clu.cviSpk_clu{iClu}(S_clu.cviSpk_clu{iClu} <= length(viSite_spk) & S_clu.cviSpk_clu{iClu} > 0))), 1:S_clu.nClu));
-%% original S_clu.viSite_clu = double(arrayfun(@(iClu)mode(viSite_spk(S_clu.cviSpk_clu{iClu})), 1:S_clu.nClu));
-% Safe version with bounds checking
-%S_clu.viSite_clu = double(arrayfun(@(iClu) safe_mode_viSite(viSite_spk, S_clu.cviSpk_clu{iClu}), 1:S_clu.nClu));
-%S_clu.viSite_clu = double(arrayfun(@(iClu) safe_mode_inline(iClu), 1:S_clu.nClu));
-% CRITICAL FIX: Validate S_clu structure consistency
-fprintf('Validating S_clu structure...\n');
-fprintf('S_clu.nClu = %d\n', S_clu.nClu);
-fprintf('length(S_clu.cviSpk_clu) = %d\n', length(S_clu.cviSpk_clu));
-fprintf('length(viSite_spk) = %d\n', length(viSite_spk));
-
-% Fix inconsistent S_clu.nClu
-actual_nClu = length(S_clu.cviSpk_clu);
-if S_clu.nClu ~= actual_nClu
-    fprintf('WARNING: S_clu.nClu (%d) != length(S_clu.cviSpk_clu) (%d). Fixing...\n', S_clu.nClu, actual_nClu);
-    S_clu.nClu = actual_nClu;
-end
-
-% Initialize viSite_clu with proper size
-S_clu.viSite_clu = ones(S_clu.nClu, 1); % Default to site 1
-
-% Safely compute viSite_clu for each cluster
-for iClu = 1:S_clu.nClu
-    try
-        if iClu > length(S_clu.cviSpk_clu)
-            fprintf('ERROR: iClu (%d) exceeds S_clu.cviSpk_clu length (%d)\n', iClu, length(S_clu.cviSpk_clu));
-            S_clu.viSite_clu(iClu) = 1;
-            continue;
-        end
-        
-        if isempty(S_clu.cviSpk_clu{iClu})
-            S_clu.viSite_clu(iClu) = 1; % Default for empty clusters
-            continue;
-        end
-        
-        spike_indices = S_clu.cviSpk_clu{iClu};
-        
-        % Validate spike indices
-        if max(spike_indices) > length(viSite_spk) || min(spike_indices) < 1
-            % Filter to valid indices only
-            valid_mask = spike_indices > 0 & spike_indices <= length(viSite_spk);
-            valid_indices = spike_indices(valid_mask);
-            
-            if isempty(valid_indices)
-                S_clu.viSite_clu(iClu) = 1;
-                fprintf('Cluster %d: No valid spike indices, defaulting to site 1\n', iClu);
-            else
-                S_clu.viSite_clu(iClu) = mode(viSite_spk(valid_indices));
-                fprintf('Cluster %d: Used %d/%d valid indices, site = %d\n', ...
-                        iClu, length(valid_indices), length(spike_indices), S_clu.viSite_clu(iClu));
-            end
-        else
-            % All indices are valid
-            S_clu.viSite_clu(iClu) = mode(viSite_spk(spike_indices));
-        end
-        
-    catch ME
-        fprintf('Error processing cluster %d: %s\n', iClu, ME.message);
-        S_clu.viSite_clu(iClu) = 1; % Safe fallback
-    end
-end
-
-fprintf('viSite_clu computation completed successfully\n');
-
 % remao note
 end %func
-function site_val = safe_mode_inline(iClu)
-    try
-        spike_indices = S_clu.cviSpk_clu{iClu};
-        
-        % Remove invalid indices
-        if exist('viSite_spk', 'var') && ~isempty(viSite_spk)
-            valid_indices = spike_indices(spike_indices > 0 & spike_indices <= length(viSite_spk));
-        else
-            valid_indices = [];
-        end
-        
-        if isempty(valid_indices)
-            % Fallback strategies
-            if isfield(S_clu, 'viSite_clu') && length(S_clu.viSite_clu) >= iClu && S_clu.viSite_clu(iClu) > 0
-                site_val = S_clu.viSite_clu(iClu); % Use existing value
-            else
-                site_val = 1; % Default to site 1
-            end
-            fprintf('Warning: No valid spike indices for cluster %d, using fallback\n', iClu);
-        else
-            site_val = mode(viSite_spk(valid_indices));
-        end
-    catch ME
-        fprintf('Error processing cluster %d: %s\n', iClu, ME.message);
-        site_val = 1; % Safe default
-    end
-end
+
 
 %--------------------------------------------------------------------------
 function [S_clu, vlKeep_clu] = S_clu_remove_empty_(S_clu)
@@ -7546,9 +7274,7 @@ try
     tnWav = get_spkwav_(P, fWav_raw_show);
     tnWav1 = tnWav(:,:,viSpk1);
     nT_spk = size(tnWav, 1);
-   % %fprintf(2, 'DEBUG tnWav_spk_sites_: Loaded tnWav, size=%s, extracting %d spikes\n', mat2str(size(tnWav)), numel(viSpk1));
 catch % decompress from pc
-   % %fprintf(2, 'DEBUG tnWav_spk_sites_: Using PC decompression for %d spikes\n', numel(viSpk1));
     tnWav1 = pc2wav_(S0.mrPv_global, S0.trPc_spk(:,:,viSpk1));
     nT_spk = size(S0.mrPv_global,1);
 end
@@ -7556,37 +7282,13 @@ nSpk1 = numel(viSpk1);
 viSites_spk1 = viSite_spk(viSpk1);
 viSites_spk_unique = unique(viSites_spk1);
 tnWav_spk1 = zeros([nT_spk, numel(viSites1), nSpk1], 'like', tnWav1);
-%fprintf(2, 'DEBUG tnWav_spk_sites_: Initialized tnWav_spk1 size=%s, will fill for %d unique sites\n', ...
-%    mat2str(size(tnWav_spk1)), numel(viSites_spk_unique));
 for iSite1 = 1:numel(viSites_spk_unique) %only care about the first site
     iSite11 = viSites_spk_unique(iSite1); %center sites group
     viSpk11 = find(viSites_spk1 == iSite11); %dangerous error
-    viSites11 = P.miSites(:, iSite11);
+    viSites11 = P.miSites(:, iSite11);        
     [vlA11, viiB11] = ismember(viSites11, viSites1);
-    nFilled = sum(vlA11);
-%    fprintf(2, 'DEBUG tnWav_spk_sites_: Site %d: %d spikes, filling %d/%d channels (miSites=[%s], viSites1=[%s])\n', ...
-%        iSite11, numel(viSpk11), nFilled, numel(viSites1), mat2str(viSites11'), mat2str(viSites1));
-    if nFilled == 0 && any(viSites1 == iSite11)
-        % Fallback: if no neighboring sites match but the target site is requested, use it directly
-        iIdx = find(viSites1 == iSite11);
-        % Site iSite11 not in its own neighbor list - use the waveform data directly from that site
-        if iSite11 <= size(tnWav1, 2)
-           % %fprintf(2, 'DEBUG tnWav_spk_sites_: Using direct fallback for site %d (not in own neighbor list)\n', iSite11);
-            tnWav_spk1(:, iIdx, viSpk11) = tnWav1(:, iSite11, viSpk11);
-        else
-            fprintf(2, 'WARNING tnWav_spk_sites_: Site %d not available in waveform data (size=%s)\n', ...
-                iSite11, mat2str(size(tnWav1)));
-            % Auto-fix invalid site assignment
-            if iSite11 > size(tnWav1, 2)
-                fprintf(2, 'ERROR: Cluster site %d is beyond available sites (max=%d). Needs recomputation.\n', ...
-                    iSite11, size(tnWav1, 2));
-            end
-        end
-    else
-        tnWav_spk1(:,viiB11(vlA11),viSpk11) = tnWav1(:,vlA11,viSpk11);
-    end
-end
-%fprintf(2, 'DEBUG tnWav_spk_sites_: Final tnWav_spk1 range=[%g, %g]\n', min(tnWav_spk1(:)), max(tnWav_spk1(:)));    
+    tnWav_spk1(:,viiB11(vlA11),viSpk11) = tnWav1(:,vlA11,viSpk11);
+end    
 end %func
 
 
@@ -7645,17 +7347,9 @@ function [vrX, vrY, viPlot, tr_dim] = amp2proj_(mrMin, mrMax, maxAmp, maxPair, P
 if nargin<4, maxPair = []; end
 if nargin<5, P = get0_('P'); end
 
-% Validate maxAmp to prevent NaN/Inf issues
-if ~isfinite(maxAmp) || maxAmp <= 0
-    fprintf(2, 'WARNING amp2proj_: maxAmp is non-finite or zero (maxAmp=%g). Using default.\n', maxAmp);
-    maxAmp = 100; % Default fallback
-end
-
-% Validate input matrices
-if any(~isfinite(mrMin(:))) || any(~isfinite(mrMax(:)))
-    fprintf(2, 'WARNING amp2proj_: Input matrices contain non-finite values. Cleaning.\n');
-    mrMin(~isfinite(mrMin)) = 0;
-    mrMax(~isfinite(mrMax)) = 0;
+% Handle NaN or invalid maxAmp
+if isnan(maxAmp) || isempty(maxAmp) || maxAmp == 0
+    maxAmp = get_set_(P, 'maxAmp', 250);
 end
 
 % switch lower(P.vcFet_show)
@@ -7664,10 +7358,10 @@ end
 %         mrMin = linmap_(mrMin', [0, maxAmp], [0,1], 1);
 %     otherwise
 mrMax = linmap_(mrMax', [0, 1] * maxAmp, [0,1], 1);
-mrMin = linmap_(mrMin', [0, 1] * maxAmp, [0,1], 1);            
+mrMin = linmap_(mrMin', [0, 1] * maxAmp, [0,1], 1);
 % end
 [nEvt, nChans] = size(mrMin);
-if isempty(maxPair), maxPair = nChans; end
+if isempty(maxPair) || maxPair == 0, maxPair = nChans; end
 [trX, trY] = deal(nan([nEvt, nChans, nChans], 'single'));
 for chY = 1:nChans
     vrY1 = mrMin(:,chY);
@@ -7703,11 +7397,7 @@ nBins_hist = 50; % @TODO: put this in param file
 
 vrX = logspace(0, 4, nBins_hist);
 vrY1 = isi_hist_(S0.iCluCopy, vrX); 
-idx = vrX < 0.002;
-plot([0.002, 0.002], [0, 0.3], 'r-', 'LineWidth', 2);
-% Compute the percentage of values (counts) falling into these bins
-percentage = 100 * sum(vrY1(idx)) / sum(vrY1);
-vcTitle = sprintf('Cluster %d%0.1f', S0.iCluCopy,percentage);
+vcTitle = sprintf('Cluster %d', S0.iCluCopy);
 
 % draw
 if isempty(S_fig) %first time the iCluPaste is always empty
@@ -7727,12 +7417,9 @@ if ~isempty(S0.iCluPaste)
     update_plot_(S_fig.hPlot2, vrX, vrY2);
 else
     update_plot_(S_fig.hPlot2, nan, nan);
-    plot([0.002, 0.002], [0, 0.3], 'r-', 'LineWidth', 2);
 end
 title_(S_fig.hAx, vcTitle);
-ylimits=get(gca,'ylim');
 
-line( [2, 2],[ylimits(1),ylimits(2)],'color','r','LineWidth',2)
 set(hFig, 'UserData', S_fig);
 end %func
 
@@ -7770,16 +7457,10 @@ update_plot_(S_fig.hPlot1, vrX1, vrY1);
 if ~isempty(S0.iCluPaste)    
     [vrX2, vrY2] = get_returnMap_(S0.iCluPaste, P);
     update_plot_(S_fig.hPlot2, vrX2, vrY2);
-     line(get(S_fig.hAx,'XLim'), P.spkRefrac_ms*[1 1], 'Color', [1 0 0]);
-    line(P.spkRefrac_ms*[1 1], get(S_fig.hAx,'YLim'), 'Color', [1 0 0]);
 else
     update_plot_(S_fig.hPlot2, nan, nan);
-     line(get(S_fig.hAx,'XLim'), P.spkRefrac_ms*[1 1], 'Color', [1 0 0]);
-    line(P.spkRefrac_ms*[1 1], get(S_fig.hAx,'YLim'), 'Color', [1 0 0]);
 end
-ylimits=get(gca,'ylim');
 
-line( [2, 2],[ylimits(1),ylimits(2)],'color','r','LineWidth',2)
 set(hFig, 'UserData', S_fig);
 end %func
 
@@ -7831,7 +7512,7 @@ catch
     vcTitle = sprintf('Max: %0.1f uVpp', max(vrVpp));
 end
 title_(S_fig.hAx, vcTitle);
-%caxis(S_fig.hAx, [0, max(vrVpp)]);
+set(S_fig.hAx, 'CLim', [0, max(vrVpp)]);
 
 set(hFig, 'UserData', S_fig);
 end %func
@@ -7941,34 +7622,19 @@ plot_unit_(S_clu1, S_fig.hAx, [0 0 0], fPlot_spk);
 %vrPosXY1 = [S_clu.vrPosX_clu(S_clu1.iClu), S_clu.vrPosY_clu(S_clu1.iClu)] / P.um_per_pix;
 vrPosXY1 = [S_clu.vrPosX_clu(S_clu1.iClu), S_clu.vrPosY_clu(S_clu1.iClu)];
 nSpk1 = S_clu.vnSpk_clu(S_clu1.iClu);
-if isempty(S_clu2)
+if isempty(S_clu2)        
     vcTitle = sprintf('Unit %d: #spikes:%d; x:%0.1fum; y:%0.1fum', S_clu1.iClu, nSpk1, vrPosXY1);
     try
-        if S_clu1.iClu <= numel(S_clu.vrSnr_clu)
-            snr1 = get_(S_clu1, 'snr', S_clu.vrSnr_clu(S_clu1.iClu));
-        else
-            snr1 = get_(S_clu1, 'snr', nan);
-        end
         vcTitle = sprintf('%s\nSNR:%0.1f; %0.1fuVmin; %0.1fuVpp\nIsoD:%0.1f; ISIr:%0.2f; Lrat:%0.2f', ...
-            vcTitle, snr1, S_clu1.uVmin, S_clu1.uVpp, S_clu1.iso_dist, S_clu1.isi_ratio, S_clu1.l_ratio);
+            vcTitle, S_clu1.snr, S_clu1.uVmin, S_clu1.uVpp, S_clu1.iso_dist, S_clu1.isi_ratio, S_clu1.l_ratio);
     catch
     end
 else
     nSpk2 = S_clu.vnSpk_clu(S_clu2.iClu);
     vrPosXY2 = [S_clu.vrPosX_clu(S_clu2.iClu), S_clu.vrPosY_clu(S_clu2.iClu)];
     plot_unit_(S_clu2, S_fig.hAx, [1 0 0], fPlot_spk);
-    if S_clu1.iClu <= numel(S_clu.vrSnr_clu)
-        snr1 = get_(S_clu1, 'snr', S_clu.vrSnr_clu(S_clu1.iClu));
-    else
-        snr1 = get_(S_clu1, 'snr', nan);
-    end
-    if S_clu2.iClu <= numel(S_clu.vrSnr_clu)
-        snr2 = get_(S_clu2, 'snr', S_clu.vrSnr_clu(S_clu2.iClu));
-    else
-        snr2 = get_(S_clu2, 'snr', nan);
-    end
     vcTitle = sprintf('Units %d/%d (black/red); (%d/%d) spikes\nSNR=%0.1f/%0.1f; (X,Y)=(%0.1f/%0.1f, %0.1f/%0.1f)um', ...
-        S_clu1.iClu, S_clu2.iClu, nSpk1, nSpk2, snr1, snr2, ...
+        S_clu1.iClu, S_clu2.iClu, nSpk1, nSpk2, S_clu1.snr, S_clu2.snr, ...
         vrPosXY1(1), vrPosXY2(1), vrPosXY1(2), vrPosXY2(2));
 end
 title_(S_fig.hAx, vcTitle);
@@ -8071,12 +7737,8 @@ if isempty(P), P = S0.P; end
 S_clu = S0.S_clu;
 
 [S_fig, maxAmp_prev] = set_fig_maxAmp_('FigTime', event);
-maxAmp_safe = S_fig.maxAmp;
-if isnan(maxAmp_safe) || maxAmp_safe <= 0 || isinf(maxAmp_safe)
-    maxAmp_safe = 1; % fallback to safe default
-end
-ylim_(S_fig.hAx, [0, 1] * maxAmp_safe);
-imrect_set_(S_fig.hRect, [], [0, maxAmp_safe]);
+ylim_(S_fig.hAx, [0, 1] * S_fig.maxAmp);
+imrect_set_(S_fig.hRect, [], [0, S_fig.maxAmp]);
 iSite = S_clu.viSite_clu(S0.iCluCopy);
 end %func
 
@@ -8119,13 +7781,6 @@ S_fig = get(hFig, 'UserData');
 
 nSites = numel(P.viSite2Chan);
 switch lower(event.Key)
-    case '1'
-        % Annotate current cluster as 'single'
-        unit_annotate_([], [], 'single');
-
-    case '2'
-        % Annotate current cluster as 'multi'
-        unit_annotate_([], [], 'multi');
     case {'leftarrow', 'rightarrow'}
         if ~isVisible_(S_fig.hAx)
             msgbox_('Channel switching is disabled in the position view'); return; 
@@ -8373,7 +8028,11 @@ if isempty(hFig) || isempty(S_fig), [hFig, S_fig] = get_fig_cache_('FigProj'); e
 if isempty(S0), S0 = get(0, 'UserData'); end
 P = S0.P;
 
+% Handle NaN or invalid maxAmp - use default from P
 if isnumeric(event)
+    if isnan(event) || isempty(event)
+        event = get_set_(P, 'maxAmp', 250); % use default
+    end
     S_fig.maxAmp = event;
 else
     S_fig.maxAmp = change_amp_(event, S_fig.maxAmp);     
@@ -8402,8 +8061,10 @@ function rescaleProj_(vhPlot1, maxAmp, P)
 if nargin<3, P = get0_('P'); end
 for iPlot=1:numel(vhPlot1)
     hPlot1 = vhPlot1(iPlot);
+    if ~ishandle(hPlot1), continue; end
     S_plot1 = get(hPlot1, 'UserData');
-    if isempty(S_plot1) || ~isstruct(S_plot1) || ~isfield(S_plot1, 'mrMin')
+    % Skip if UserData is not a valid struct with required fields
+    if ~isstruct(S_plot1) || ~isfield(S_plot1, 'mrMin') || ~isfield(S_plot1, 'mrMax')
         continue;
     end
     update_plot2_proj_();
@@ -8442,7 +8103,6 @@ if nargin<3
 else
     [S_clu, P, viSite_spk] = deal(S0.S_clu, S0.P, S0.viSite_spk);
 end
-%fprintf(2, 'DEBUG getFet_clu_: iClu1=%s, iSite=%d, vcFet_show=%s\n', mat2str(iClu1), iSite, P.vcFet_show);
 % if nargin<2, viSite = P.miSites(:, S0.S_clu.viSite_clu(iClu1)); end
 if isempty(iClu1) % select spikes based on sites
 %     n_use = 1 + round(P.maxSite);
@@ -8455,53 +8115,12 @@ if isempty(iClu1) % select spikes based on sites
     viSpk1 = randomSelect_(viSpk1, MAX_SAMPLE);    
 else
     viSpk1 = S_clu.cviSpk_clu{iClu1};
-    if ~isempty(iClu1) && ~isempty(viSpk1)
-        % Check if spikes actually belong to this cluster
-        nMismatch = sum(S_clu.viClu(viSpk1) ~= iClu1);
-        if nMismatch > 0
-            fprintf(2, 'WARNING getFet_clu_: Cluster %d has %d/%d spikes with wrong cluster ID in cviSpk_clu\n', ...
-                iClu1, nMismatch, numel(viSpk1));
-        end
-    end
 end
 
 switch lower(P.vcFet_show)
     case {'vmin', 'vpp'}
-        if isempty(viSpk1)
-            mrFet1 = [];
-        else
-            mrWav_spk1 = squeeze_(tnWav2uV_(tnWav_spk_sites_(viSpk1, iSite, S0), P));
-            mrFet1 = max(mrWav_spk1)-min(mrWav_spk1);
-            if isempty(mrFet1) && ~isempty(viSpk1)
-%                fprintf(2, 'DEBUG getFet_clu_: mrWav_spk1 size=%s, mrFet1 empty, nSpikes=%d, iSite=%d\n', ...
-%                    mat2str(size(mrWav_spk1)), numel(viSpk1), iSite);
-            elseif ~isempty(iClu1) && all(mrFet1 == 0)
-                % All amplitudes are zero - viSite_clu is incorrect, need to recompute
-                fprintf(2, 'ERROR getFet_clu_: Cluster %d has incorrect viSite_clu=%d (zero amplitudes). Needs recomputation.\n', ...
-                    iClu1, iSite);
-                % Try to fix it by recomputing the correct site
-                iSite_corrected = recompute_cluster_site_(iClu1, S0);
-                if ~isempty(iSite_corrected) && iSite_corrected ~= iSite
-                    fprintf(2, 'INFO getFet_clu_: Recomputed correct site for cluster %d: %d -> %d\n', ...
-                        iClu1, iSite, iSite_corrected);
-                    % Try to get features with corrected site
-                    mrWav_spk1_corrected = squeeze_(tnWav2uV_(tnWav_spk_sites_(viSpk1, iSite_corrected, S0), P));
-                    mrFet1_corrected = max(mrWav_spk1_corrected)-min(mrWav_spk1_corrected);
-                    if ~all(mrFet1_corrected == 0)
-                        mrFet1 = mrFet1_corrected;
-                        % Update the cluster site assignment
-                        S_clu.viSite_clu(iClu1) = iSite_corrected;
-                        if nargin >= 3
-                            S0.S_clu.viSite_clu(iClu1) = iSite_corrected;
-                        else
-                            set0_('S_clu', S_clu);
-                        end
-                        fprintf(2, 'SUCCESS getFet_clu_: Fixed cluster %d site assignment to %d\n', ...
-                            iClu1, iSite_corrected);
-                    end
-                end
-            end
-        end
+        mrWav_spk1 = squeeze_(tnWav2uV_(tnWav_spk_sites_(viSpk1, iSite, S0), P));
+        mrFet1 = max(mrWav_spk1)-min(mrWav_spk1);
     case 'cov'
         mrFet1 = calc_cov_spk_(viSpk1, iSite);
     case {'pca', 'gpca'}
@@ -8512,73 +8131,7 @@ switch lower(P.vcFet_show)
     otherwise
         error('not implemented yet');
 end
-if ~isempty(mrFet1)
-    mrFet1 = squeeze_(abs(mrFet1));
-else
-    if ~isempty(iClu1)
-%        fprintf(2, 'DEBUG getFet_clu_: Final mrFet1 is empty for cluster (iSite=%d, vcFet_show=%s)\n', ...
-%            iSite, P.vcFet_show);
-    end
-end
-end %func
-
-
-%--------------------------------------------------------------------------
-function iSite_corrected = recompute_cluster_site_(iClu1, S0)
-% Recompute the correct site for a cluster by finding the site with maximum amplitude
-% This fixes cases where viSite_clu points to non-existent sites
-if nargin<2, S0 = get(0, 'UserData'); end
-[S_clu, P, viSite_spk] = deal(S0.S_clu, S0.P, S0.viSite_spk);
-iSite_corrected = [];
-
-try
-    % Get cluster spikes
-    viSpk_clu = S_clu.cviSpk_clu{iClu1};
-    if isempty(viSpk_clu), return; end
-
-    % Get available waveform sites
-    try
-        tnWav = get_spkwav_(P, 0);
-        nSites_available = size(tnWav, 2);
-       % %fprintf(2, 'DEBUG recompute_cluster_site_: Available sites: 1-%d\n', nSites_available);
-    catch
-        % Use global PV data
-        nSites_available = size(S0.mrPv_global, 2);
-       % %fprintf(2, 'DEBUG recompute_cluster_site_: Using PV data, available sites: 1-%d\n', nSites_available);
-    end
-
-    % Sample subset of spikes for efficiency
-    viSpk_sample = subsample_vr_(viSpk_clu, min(1000, numel(viSpk_clu)));
-
-    % Test each available site to find the one with maximum amplitude
-    vrMaxAmp_site = zeros(1, nSites_available);
-    for iSite_test = 1:nSites_available
-        try
-            mrWav_test = squeeze_(tnWav2uV_(tnWav_spk_sites_(viSpk_sample, iSite_test, S0), P));
-            if ~isempty(mrWav_test)
-                vrAmp_test = max(mrWav_test) - min(mrWav_test);
-                vrMaxAmp_site(iSite_test) = mean(vrAmp_test);
-            end
-        catch
-            % Skip this site if it fails
-            vrMaxAmp_site(iSite_test) = 0;
-        end
-    end
-
-    % Find site with maximum amplitude
-    [maxAmp, iSite_corrected] = max(vrMaxAmp_site);
-    if maxAmp == 0
-        iSite_corrected = [];
-        fprintf(2, 'WARNING recompute_cluster_site_: No valid sites found for cluster %d\n', iClu1);
-    else
-%        fprintf(2, 'DEBUG recompute_cluster_site_: Cluster %d best site: %d (amplitude=%.1f)\n', ...
-%            iClu1, iSite_corrected, maxAmp);
-    end
-
-catch ME
-    fprintf(2, 'ERROR recompute_cluster_site_: Failed for cluster %d: %s\n', iClu1, ME.message);
-    iSite_corrected = [];
-end
+mrFet1 = squeeze_(abs(mrFet1));
 end %func
 
 
@@ -8693,20 +8246,9 @@ iClu_del = S0.iCluCopy;
 % hMsg = msgbox_open_('Deleting...');
 S0.S_clu = delete_clu_(S0.S_clu, S0.iCluCopy);
 set(0, 'UserData', S0);
-
-% Deferred UI updates for performance (5-10x faster)
-fUpdateImmediate = get_set_(P, 'fUpdateImmediate', 0);  % Default to deferred (faster)
-if fUpdateImmediate
-    plot_FigWav_(S0); %redraw plot
-    % S0.S_clu.mrWavCor = wavCor_delete_(S0.iCluCopy);
-    FigWavCor_update_(S0);
-else
-    % Mark figures as needing update instead of updating immediately
-    S0.fFiguresNeedUpdate = true;
-    set(0, 'UserData', S0);
-    fprintf('[Performance Mode] Deferred figure updates. Press [U] to update plots.\n');
-end
-
+plot_FigWav_(S0); %redraw plot 
+% S0.S_clu.mrWavCor = wavCor_delete_(S0.iCluCopy); 
+FigWavCor_update_(S0);
 S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
 % set(0, 'UserData', S0);
 button_CluWav_simulate_(S0.iCluCopy);
@@ -8862,37 +8404,21 @@ if S0.iCluCopy == S0.iCluPaste
 end
 
 hFig_wait = figure_wait_(1);
-t_merge = tic;  % Track merge time
 S0.S_clu = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
 set(0, 'UserData', S0);
-
-% Deferred UI updates for performance (5-10x faster)
-fUpdateImmediate = get_set_(P, 'fUpdateImmediate', 0);  % Default to deferred (faster)
-if fUpdateImmediate
-    plot_FigWav_(S0);
-    S0 = update_FigCor_(S0);
-else
-    % Mark figures as needing update instead of updating immediately
-    S0.fFiguresNeedUpdate = true;
-    fprintf('[Performance Mode] Deferred figure updates. Press [U] to update plots.\n');
-end
-
+plot_FigWav_(S0); %redraw plot
 S0.iCluCopy = min(S0.iCluCopy, S0.iCluPaste);
 S0.iCluPaste = [];
 set(0, 'UserData', S0);
 update_plot_(S0.hPaste, nan, nan);
-
-% Always update the selected cluster view (fast)
+S0 = update_FigCor_(S0);        
 S0 = button_CluWav_simulate_(S0.iCluCopy, [], S0);
 S0 = save_log_(sprintf('merge %d %d', S0.iCluCopy, S0.iCluPaste), S0);
 set(0, 'UserData', S0);
 
-t_merge_elapsed = toc(t_merge);
-if t_merge_elapsed > 0.1  % Warn if merge takes >100ms
-    fprintf('[Timing] Merge took %.2f seconds\n', t_merge_elapsed);
-end
-
+% msgbox_close(hMsg);
 figure_wait_(0, hFig_wait);
+% S_clu = S0.S_clu;
 end %func
 
 
@@ -8934,13 +8460,454 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% Deferred merge/delete cache system
+%--------------------------------------------------------------------------
+
+%--------------------------------------------------------------------------
+function S0 = init_pending_cache_(S0)
+% Initialize pending operation cache fields if not present
+if ~isfield(S0, 'cviMerge_pending') || isempty(S0.cviMerge_pending)
+    S0.cviMerge_pending = {};
+end
+if ~isfield(S0, 'viDelete_pending') || isempty(S0.viDelete_pending)
+    S0.viDelete_pending = [];
+end
+if ~isfield(S0, 'hPendingMarkers') || isempty(S0.hPendingMarkers)
+    S0.hPendingMarkers = [];
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function fHas = has_pending_operations_(S0)
+% Check if there are any pending operations
+if nargin<1, S0 = get(0, 'UserData'); end
+S0 = init_pending_cache_(S0);
+fHas = ~isempty(S0.cviMerge_pending) || ~isempty(S0.viDelete_pending);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = add_pending_merge_(iClu1, iClu2, S0)
+% Add a merge pair to pending cache with transitive grouping
+% If iClu1 or iClu2 is already in a group, add to that group
+% If both are in different groups, union the groups
+if nargin<3, S0 = get(0, 'UserData'); end
+S0 = init_pending_cache_(S0);
+
+% SAFETY: ensure cluster IDs are valid integers
+iClu1 = round(iClu1);
+iClu2 = round(iClu2);
+if iClu1 == iClu2
+    return; % cannot merge with itself
+end
+
+% Find which groups contain iClu1 and iClu2
+iGroup1 = find_merge_group_(S0.cviMerge_pending, iClu1);
+iGroup2 = find_merge_group_(S0.cviMerge_pending, iClu2);
+
+if isempty(iGroup1) && isempty(iGroup2)
+    % Neither cluster is in a group - create new group
+    S0.cviMerge_pending{end+1} = [iClu1, iClu2];
+elseif isempty(iGroup2)
+    % Only iClu1 is in a group - add iClu2 to that group
+    S0.cviMerge_pending{iGroup1} = unique([S0.cviMerge_pending{iGroup1}, iClu2]);
+elseif isempty(iGroup1)
+    % Only iClu2 is in a group - add iClu1 to that group
+    S0.cviMerge_pending{iGroup2} = unique([S0.cviMerge_pending{iGroup2}, iClu1]);
+elseif iGroup1 == iGroup2
+    % Both already in same group - nothing to do
+else
+    % Both in different groups - union the groups
+    S0.cviMerge_pending{iGroup1} = unique([S0.cviMerge_pending{iGroup1}, S0.cviMerge_pending{iGroup2}]);
+    S0.cviMerge_pending(iGroup2) = []; % remove the second group
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function iGroup = find_merge_group_(cviMerge, iClu)
+% Find which group (if any) contains the cluster
+iGroup = [];
+for i = 1:numel(cviMerge)
+    if ismember(iClu, cviMerge{i})
+        iGroup = i;
+        return;
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = add_pending_delete_(iClu, S0)
+% Add cluster to pending delete cache
+% Also remove from any merge group
+if nargin<2, S0 = get(0, 'UserData'); end
+S0 = init_pending_cache_(S0);
+
+% Add to delete list if not already there
+if ~ismember(iClu, S0.viDelete_pending)
+    S0.viDelete_pending = [S0.viDelete_pending, iClu];
+end
+
+% Remove from any merge group
+iGroup = find_merge_group_(S0.cviMerge_pending, iClu);
+if ~isempty(iGroup)
+    S0.cviMerge_pending{iGroup} = setdiff(S0.cviMerge_pending{iGroup}, iClu);
+    % Remove empty or singleton groups
+    if numel(S0.cviMerge_pending{iGroup}) < 2
+        S0.cviMerge_pending(iGroup) = [];
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = ui_merge_pending_(S0)
+% Queue a merge operation instead of executing immediately
+if nargin<1, S0 = get(0, 'UserData'); end
+
+if isempty(S0.iCluPaste)
+    msgbox_('Right-click a cluster to merge.', 1);
+    return;
+end
+if S0.iCluCopy == S0.iCluPaste
+    msgbox_('Cannot merge to itself.', 1);
+    return;
+end
+
+iClu1 = S0.iCluCopy;
+iClu2 = S0.iCluPaste;
+
+S0 = add_pending_merge_(iClu1, iClu2, S0);
+S0 = update_pending_markers_(S0);
+set(0, 'UserData', S0);
+
+% Find which group they're now in for display
+iGroup = find_merge_group_(S0.cviMerge_pending, iClu1);
+viGroup = S0.cviMerge_pending{iGroup};
+vcGroupStr = sprintf('%d,', viGroup);
+vcGroupStr = vcGroupStr(1:end-1); % remove trailing comma
+
+msgbox_(sprintf('Merge queued: [%s]. Press U to execute.', vcGroupStr), 1);
+fprintf('%s [W] merge queued: Clu %d + %d -> group [%s]\n', datestr(now, 'HH:MM:SS'), iClu1, iClu2, vcGroupStr);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = ui_delete_pending_(S0)
+% Queue a delete operation instead of executing immediately
+if nargin<1, S0 = get(0, 'UserData'); end
+
+if ~isempty(S0.iCluPaste)
+    msgbox_('Must select one cluster', 1);
+    return;
+end
+
+iClu = S0.iCluCopy;
+S0 = add_pending_delete_(iClu, S0);
+S0 = update_pending_markers_(S0);
+set(0, 'UserData', S0);
+
+msgbox_(sprintf('Delete queued: Clu %d. Press U to execute.', iClu), 1);
+fprintf('%s [W] delete queued: Clu %d\n', datestr(now, 'HH:MM:SS'), iClu);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = cancel_pending_operations_(S0)
+% Cancel all pending operations
+if nargin<1, S0 = get(0, 'UserData'); end
+S0 = init_pending_cache_(S0);
+
+nMergeGroups = numel(S0.cviMerge_pending);
+nDeletes = numel(S0.viDelete_pending);
+
+S0.cviMerge_pending = {};
+S0.viDelete_pending = [];
+S0 = clear_pending_markers_(S0);
+set(0, 'UserData', S0);
+
+if nMergeGroups > 0 || nDeletes > 0
+    msgbox_(sprintf('Cancelled %d merge group(s) and %d delete(s).', nMergeGroups, nDeletes), 1);
+    fprintf('%s [W] cancelled %d merge groups, %d deletes\n', datestr(now, 'HH:MM:SS'), nMergeGroups, nDeletes);
+else
+    msgbox_('No pending operations to cancel.', 1);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = execute_pending_and_update_(S0)
+% Execute all pending operations and update plots
+if nargin<1, S0 = get(0, 'UserData'); end
+S0 = init_pending_cache_(S0);
+P = S0.P;
+
+% Check if there are any pending operations
+if ~has_pending_operations_(S0)
+    % No pending ops - just update the correlation plot as before
+    S0 = update_FigCor_(S0);
+    return;
+end
+
+hFig_wait = figure_wait_(1);
+fprintf('%s [W] executing pending operations...\n', datestr(now, 'HH:MM:SS'));
+
+% Track all affected clusters for batch update
+viClu_affected = [];
+csLog = {}; % collect log entries
+
+% Step 1: Process deletes first (in descending order to preserve indices)
+viDelete = sort(S0.viDelete_pending, 'descend');
+for iDel = 1:numel(viDelete)
+    iClu = viDelete(iDel);
+    fprintf('  Deleting Clu %d\n', iClu);
+    csLog{end+1} = sprintf('delete %d', iClu);
+
+    S0.S_clu = delete_clu_(S0.S_clu, iClu);
+
+    % Adjust cluster indices in pending merge groups
+    S0.cviMerge_pending = adjust_pending_indices_(S0.cviMerge_pending, iClu);
+end
+
+% Step 2: Process merge groups
+for iGroup = 1:numel(S0.cviMerge_pending)
+    viClu_group = unique(sort(S0.cviMerge_pending{iGroup})); % SAFETY: ensure unique IDs
+    if numel(viClu_group) < 2
+        continue; % skip invalid groups
+    end
+
+    % SAFETY: validate cluster IDs are within range
+    viClu_group = viClu_group(viClu_group >= 1 & viClu_group <= S0.S_clu.nClu);
+    if numel(viClu_group) < 2
+        continue; % skip if not enough valid clusters
+    end
+
+    iClu_target = viClu_group(1); % merge into smallest-numbered cluster
+    vcGroupStr = sprintf('%d,', viClu_group);
+    vcGroupStr = vcGroupStr(1:end-1);
+    fprintf('  Merging group [%s] -> Clu %d\n', vcGroupStr, iClu_target);
+
+    % Merge all clusters in group into target (from highest to lowest)
+    for j = numel(viClu_group):-1:2
+        iClu_source = viClu_group(j);
+        csLog{end+1} = sprintf('merge %d %d', iClu_target, iClu_source);
+
+        % Do the merge
+        S0.S_clu = merge_clu_pair_(S0.S_clu, iClu_target, iClu_source);
+        S0.S_clu = delete_clu_(S0.S_clu, iClu_source);
+
+        % Adjust remaining indices in this group and other groups
+        for k = 1:numel(viClu_group)
+            if viClu_group(k) > iClu_source
+                viClu_group(k) = viClu_group(k) - 1;
+            end
+        end
+        if iClu_target > iClu_source
+            iClu_target = iClu_target - 1;
+        end
+    end
+
+    viClu_affected = [viClu_affected, iClu_target];
+end
+
+% Step 3: Batch recomputation for all affected clusters
+if ~isempty(viClu_affected)
+    viClu_affected = unique(viClu_affected);
+    fprintf('  Recomputing for clusters: %s\n', sprintf('%d ', viClu_affected));
+    for iClu = viClu_affected
+        S0.S_clu = S_clu_refrac_(S0.S_clu, P, iClu);
+        S0.S_clu = S_clu_update_(S0.S_clu, iClu, P);
+    end
+end
+
+% Step 4: Clear pending caches
+S0.cviMerge_pending = {};
+S0.viDelete_pending = [];
+S0 = clear_pending_markers_(S0);
+
+% Step 5: Update display
+set(0, 'UserData', S0);
+plot_FigWav_(S0);
+S0 = update_FigCor_(S0);
+
+% Step 6: Update selection
+S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
+S0.iCluPaste = [];
+set(0, 'UserData', S0);
+button_CluWav_simulate_(S0.iCluCopy, []);
+
+% Step 7: Log all operations
+for i = 1:numel(csLog)
+    S0 = save_log_(csLog{i}, S0);
+end
+
+figure_wait_(0, hFig_wait);
+fprintf('%s [W] pending operations completed\n', datestr(now, 'HH:MM:SS'));
+end %func
+
+
+%--------------------------------------------------------------------------
+function cviMerge = adjust_pending_indices_(cviMerge, iClu_deleted)
+% Adjust cluster indices in pending merge groups after a deletion
+% All indices > iClu_deleted are decremented by 1
+for iGroup = 1:numel(cviMerge)
+    viGroup = cviMerge{iGroup};
+    % Remove the deleted cluster if present
+    viGroup = viGroup(viGroup ~= iClu_deleted);
+    % Decrement indices greater than deleted
+    viGroup(viGroup > iClu_deleted) = viGroup(viGroup > iClu_deleted) - 1;
+    cviMerge{iGroup} = viGroup;
+end
+% Remove empty or singleton groups
+vlKeep = cellfun(@(x) numel(x) >= 2, cviMerge);
+cviMerge = cviMerge(vlKeep);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = update_pending_markers_(S0)
+% Draw visual markers on FigWav for pending operations
+if nargin<1, S0 = get(0, 'UserData'); end
+S0 = init_pending_cache_(S0);
+
+% Clear existing markers first
+S0 = clear_pending_markers_(S0);
+
+[hFig, S_fig] = get_fig_cache_('FigWav');
+if isempty(hFig), return; end
+
+hAx = S_fig.hAx;
+S_clu = S0.S_clu;
+
+% Color palette for merge groups
+cmColors = [1 0 0; 0 0.7 0; 0 0 1; 0 0.7 0.7; 0.7 0 0.7; 0.7 0.7 0; ...
+            1 0.5 0; 0.5 0 1]; % red, green, blue, cyan, magenta, yellow, orange, purple
+nColors = size(cmColors, 1);
+
+hMarkers = [];
+
+% Draw merge group markers
+for iGroup = 1:numel(S0.cviMerge_pending)
+    viClu = S0.cviMerge_pending{iGroup};
+    vrColor = cmColors(mod(iGroup-1, nColors) + 1, :);
+
+    for iClu = viClu
+        if iClu > S_clu.nClu, continue; end
+        iSite = S_clu.viSite_clu(iClu);
+        % Draw a colored square marker at cluster position
+        hMarker = plot(hAx, iClu, iSite, 's', ...
+            'MarkerSize', 12, 'MarkerEdgeColor', vrColor, ...
+            'MarkerFaceColor', vrColor, 'LineWidth', 2);
+        hMarkers = [hMarkers, hMarker];
+    end
+end
+
+% Draw delete markers (red X)
+for iClu = S0.viDelete_pending
+    if iClu > S_clu.nClu, continue; end
+    iSite = S_clu.viSite_clu(iClu);
+    hMarker = plot(hAx, iClu, iSite, 'x', ...
+        'MarkerSize', 14, 'MarkerEdgeColor', [0.8 0 0], ...
+        'LineWidth', 3);
+    hMarkers = [hMarkers, hMarker];
+end
+
+S0.hPendingMarkers = hMarkers;
+set(0, 'UserData', S0);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = clear_pending_markers_(S0)
+% Remove visual markers from FigWav
+if nargin<1, S0 = get(0, 'UserData'); end
+
+if isfield(S0, 'hPendingMarkers') && ~isempty(S0.hPendingMarkers)
+    delete(S0.hPendingMarkers(ishandle(S0.hPendingMarkers)));
+    S0.hPendingMarkers = [];
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function auto_annotate_single_units_()
+% Automatically label clusters as 'single' if their autocorrelation
+% shows zero counts in the -2ms to +2ms refractory window
+S0 = get(0, 'UserData');
+S_clu = S0.S_clu;
+P = S0.P;
+
+hWait = figure_wait_(1);
+fprintf('%s [W] Auto-annotating single units by refractory period...\n', datestr(now, 'HH:MM:SS'));
+
+% Parameters for autocorrelation
+jitter_ms = 0.5; % bin size
+refrac_ms = 2.0; % refractory window (+/- this value)
+jitter = round(P.sRateHz / 1000 * jitter_ms);
+nLags_refrac = round(refrac_ms / jitter_ms);
+
+if ~isfield(S_clu, 'csNote_clu') || isempty(S_clu.csNote_clu)
+    S_clu.csNote_clu = cell(S_clu.nClu, 1);
+end
+
+nSingle = 0;
+viSingle = [];
+
+for iClu = 1:S_clu.nClu
+    % Get spike times for this cluster
+    viSpk = S_clu.cviSpk_clu{iClu};
+    if isempty(viSpk), continue; end
+
+    viTime = S0.viTime_spk(viSpk);
+    vi = int32(double(viTime) / jitter);
+
+    % Compute autocorrelation in refractory window
+    viLag = -nLags_refrac:nLags_refrac;
+    vnCnt = zeros(size(viLag));
+    for iLag = 1:numel(viLag)
+        if viLag(iLag) == 0, continue; end % skip zero lag
+        vnCnt(iLag) = numel(intersect(vi, vi + viLag(iLag)));
+    end
+
+    % Check if all counts in refractory window are zero (excluding lag 0)
+    vlRefrac = viLag ~= 0;
+    if all(vnCnt(vlRefrac) == 0)
+        % Clean refractory period - label as single
+        S_clu.csNote_clu{iClu} = 'single';
+        nSingle = nSingle + 1;
+        viSingle = [viSingle, iClu];
+        fprintf('  Clu %d: clean refractory -> single\n', iClu);
+    end
+end
+
+S0.S_clu = S_clu;
+set(0, 'UserData', S0);
+
+figure_wait_(0, hWait);
+
+if nSingle > 0
+    vcMsg = sprintf('Labeled %d cluster(s) as single:\n%s', nSingle, sprintf('%d ', viSingle));
+else
+    vcMsg = 'No clusters with clean refractory period found.';
+end
+msgbox_(vcMsg, 1);
+fprintf('%s [W] %s\n', datestr(now, 'HH:MM:SS'), vcMsg);
+
+% Update display
+clu_info_(S0);
+end %func
+
+
+%--------------------------------------------------------------------------
 function vlSuccess = download_files_(csLink, csDest)
 % download file from the web
 if nargin<2, csDest = link2file_(csLink); end
 vlSuccess = false(size(csLink));
-for iFile=1:numel(csLink)    
+for iFile=1:numel(csLink)
     try
-        % download from list of files    
+        % download from list of files
         fprintf('\tDownloading %s: ', csLink{iFile});
         vcFile_out1 = websave(csDest{iFile}, csLink{iFile});
         fprintf('saved to %s\n', vcFile_out1);
@@ -9405,49 +9372,6 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S0 = reorder_clu_by_coords_(S0)
-% Reorder clusters by their max-site spatial coordinates (x, then y)
-% Cluster IDs are not maintained - clusters are renumbered based on spatial order
-% Usage: Press 'O' key in GUI to reorder
-
-if nargin<1, S0 = get(0, 'UserData'); end
-P = S0.P;
-S_clu = S0.S_clu;
-
-hFig_wait = figure_wait_(1);
-fprintf('[Reorder] Sorting clusters by spatial coordinates (x, then y)...\n');
-
-% Get max-site coordinates for each cluster
-viSite_clu = S_clu.viSite_clu; % Max site for each cluster
-mrCoords_clu = P.mrSiteXY(viSite_clu, :); % [nClu x 2]: [x, y] coordinates
-
-% Sort by x-coordinate first, then y-coordinate
-% sortrows sorts by column 1, then column 2
-[~, viSortOrder] = sortrows(mrCoords_clu, [1, 2]);
-
-% Reorder all cluster fields
-S_clu = S_clu_select_(S_clu, viSortOrder);
-
-% Commit changes
-[S_clu, S0] = S_clu_commit_(S_clu, 'reorder_clu_by_coords_');
-
-% Update figures
-plot_FigWav_(S0);
-S0 = update_FigCor_(S0);
-
-% Reset selection to first cluster
-S0.iCluCopy = 1;
-S0.iCluPaste = [];
-button_CluWav_simulate_(S0.iCluCopy, [], S0);
-
-figure_wait_(0, hFig_wait);
-fprintf('[Reorder] Clusters reordered by coordinates. %d clusters sorted.\n', S_clu.nClu);
-save_log_('reorder by coordinates', S0);
-set(0, 'UserData', S0);
-end %func
-
-
-%--------------------------------------------------------------------------
 function export_mrWav_clu_(h,e)
 % Export selected cluster waveforms (iCopy, iPaste) set in the GUI
 
@@ -9632,12 +9556,8 @@ else
 end
 % switch lower(P.vcFet_show)
 %     case 'vpp'
-maxAmp_safe = S_fig.maxAmp;
-if isnan(maxAmp_safe) || maxAmp_safe <= 0 || isinf(maxAmp_safe)
-    maxAmp_safe = 1; % fallback to safe default
-end
-ylim_(S_fig.hAx, [0, 1] * maxAmp_safe);
-imrect_set_(S_fig.hRect, [], [0, 1] * maxAmp_safe);    
+ylim_(S_fig.hAx, [0, 1] * S_fig.maxAmp);
+imrect_set_(S_fig.hRect, [], [0, 1] * S_fig.maxAmp);    
 %     otherwise
 %         ylim_(S_fig.hAx, [0, 1] * P.maxAmp);
 %         imrect_set_(S_fig.hRect, [], [0, 1] * P.maxAmp);    
@@ -9656,31 +9576,70 @@ function S_clu = split_clu_(iClu1, vlIn)
 % S_clu = split_clu_(iClu1, vlIn)
 % S_clu = split_clu_(iClu1, viiSpk_clu)
 
-hFig_wait = figure_wait_(1); 
+hFig_wait = figure_wait_(1);
 [P, S_clu, viSite_spk] = get0_('P', 'S_clu', 'viSite_spk');
 hMsg = msgbox_open_('Splitting...');
 figure(get_fig_cache_('FigWav'));
 
+% Get spikes belonging to this cluster - use cviSpk_clu to match auto_split_
+% Note: auto_split_ uses S_clu.cviSpk_clu{iClu1} to build waveforms for splitting,
+% so we must use the same source here to ensure vlIn indices match
+if iClu1 <= numel(S_clu.cviSpk_clu) && ~isempty(S_clu.cviSpk_clu{iClu1})
+    viSpk1 = S_clu.cviSpk_clu{iClu1};
+else
+    viSpk1 = find(S_clu.viClu==iClu1);
+end
+viSpk1 = viSpk1(:); % ensure column vector
+nSpk1 = numel(viSpk1);
+
+% Ensure vlIn is a column vector
+vlIn = vlIn(:);
+
 % create a new cluster (add at the end)
 if ~islogical(vlIn)
     viIn_ = vlIn;
-    vlIn = false(S_clu.vnSpk_clu(iClu1), 1);
+    % Ensure indices are within bounds
+    viIn_ = viIn_(viIn_ >= 1 & viIn_ <= nSpk1);
+    vlIn = false(nSpk1, 1);
     vlIn(viIn_) = true;
+else
+    % Ensure vlIn matches the actual spike count
+    nVlIn = numel(vlIn);
+    if nVlIn ~= nSpk1
+        fprintf(2, 'split_clu_: vlIn length (%d) != nSpk1 (%d), adjusting...\n', nVlIn, nSpk1);
+        if nVlIn > nSpk1
+            vlIn = vlIn(1:nSpk1);
+        else
+            vlIn_new = false(nSpk1, 1);
+            vlIn_new(1:nVlIn) = vlIn;
+            vlIn = vlIn_new;
+        end
+    end
 end
+
+% Final safety check
+if numel(vlIn) ~= nSpk1
+    msgbox_(sprintf('Split error: size mismatch (vlIn=%d, spikes=%d)', numel(vlIn), nSpk1), 1);
+    close_(hMsg);
+    figure_wait_(0, hFig_wait);
+    return;
+end
+
 n2 = sum(vlIn); %number of clusters to split off
+if n2 == 0 || n2 == nSpk1
+    msgbox_('Cannot split: selection is empty or contains all spikes', 1);
+    close_(hMsg);
+    figure_wait_(0, hFig_wait);
+    return;
+end
 iClu2 = max(S_clu.viClu) + 1;
 
-% update cluster count and index - optimized to use cviSpk_clu
+% update cluster count and index
 S_clu.nClu = double(iClu2);
-S_clu.vnSpk_clu(iClu1) = S_clu.vnSpk_clu(iClu1) - n2;
-S_clu.vnSpk_clu(iClu2) = sum(vlIn);
-viSpk_all = S_clu.cviSpk_clu{iClu1};
-if isempty(viSpk_all)
-    viSpk_all = find(S_clu.viClu == iClu1);
-    S_clu.cviSpk_clu{iClu1} = viSpk_all;
-end
-viSpk2 = viSpk_all(vlIn);
-viSpk1 = viSpk_all(~vlIn);
+S_clu.vnSpk_clu(iClu1) = nSpk1 - n2;
+S_clu.vnSpk_clu(iClu2) = n2;
+viSpk2 = viSpk1(vlIn);
+viSpk1 = viSpk1(~vlIn);
 [iSite1, iSite2] = deal(mode(viSite_spk(viSpk1)), mode(viSite_spk(viSpk2)));
 if iSite1 > iSite2 % order by the cluster site location
     [iSite2, iSite1] = deal(iSite1, iSite2);
@@ -9703,12 +9662,8 @@ S_clu = S_clu_update_(S_clu, [iClu1, iClu2], P);
 
 % update all the other views
 [S_clu, S0] = S_clu_commit_(S_clu, 'split_clu_');
-
-% Splits always update immediately (need to verify split quality)
-% Unlike merges, splits are interactive and require visual confirmation
 plot_FigWav_(S0); %redraw plot
 plot_FigWavCor_(S0);
-
 save_log_(sprintf('split %d', iClu1), S0); %@TODO: specify which cut to use
 
 % select two clusters being split
@@ -9948,11 +9903,10 @@ vrY = [0 1 1 0] * vrSiteHW(1);
 mrPatchX = bsxfun(@plus, mrSiteXY(:,1)', vrX(:));
 mrPatchY = bsxfun(@plus, mrSiteXY(:,2)', vrY(:));
 nSites = size(mrSiteXY,1);    
-
 if ~isempty(vrVpp)
     hPatch = patch(mrPatchX, mrPatchY, repmat(vrVpp(:)', [4, 1]), ...
-        'EdgeColor', 'k', 'FaceColor', 'flat', 'FaceAlpha', .5); %[0 0 0], 'EdgeColor', 'none', 'FaceColor', 'flat', 'FaceVertexCData', [0 0 0], 'FaceAlpha', 0); 
-%    caxis([0, max(vrVpp)]);
+        'EdgeColor', 'k', 'FaceColor', 'flat', 'FaceAlpha', .5); %[0 0 0], 'EdgeColor', 'none', 'FaceColor', 'flat', 'FaceVertexCData', [0 0 0], 'FaceAlpha', 0);
+    set(hFig.hAx, 'CLim', [0, max(vrVpp)]);
     colormap jet;
 else
     hPatch = patch(mrPatchX, mrPatchY, 'w', 'EdgeColor', 'k'); %[0 0 0], 'EdgeColor', 'none', 'FaceColor', 'flat', 'FaceVertexCData', [0 0 0], 'FaceAlpha', 0); 
@@ -10489,20 +10443,10 @@ if isempty(viClu_update)
 else
     vlClu_update = false(nClu, 1);
     vlClu_update(viClu_update) = 1;
-    nClu_pre = size(S_clu.tmrWav_spk_clu, 3);
+    nClu_pre = S_clu.nClu;
     vlClu_update((1:nClu) > nClu_pre) = 1;
     [tmrWav_spk_clu, trWav_spk_clu, mrPos_clu] = struct_get_(S_clu, 'tmrWav_spk_clu', 'trWav_spk_clu', 'mrPos_clu');
     [tmrWav_raw_clu, trWav_raw_clu] = struct_get_(S_clu, 'tmrWav_raw_clu', 'trWav_raw_clu');
-    % Expand arrays if new clusters added
-    if nClu > nClu_pre
-        tmrWav_spk_clu(:,:,nClu) = 0;
-        trWav_spk_clu(:,:,nClu) = 0;
-        mrPos_clu(:,nClu) = 0;
-        if ~isempty(tmrWav_raw_clu)
-            tmrWav_raw_clu(:,:,nClu) = 0;
-            trWav_raw_clu(:,:,nClu) = 0;
-        end
-    end
 end
 
 % Compute spkwav
@@ -10851,15 +10795,11 @@ function S_clu = S_clu_update_(S_clu, viClu1, P)
 % mrWav not needed
 S0 = get(0, 'UserData');
 
-% find clu center - optimized to use existing cviSpk_clu when available
+% find clu center
 for iClu = 1:numel(viClu1)
     iClu1 = viClu1(iClu);
-    if isempty(S_clu.cviSpk_clu{iClu1})
-        viSpk_clu1 = find(S_clu.viClu == iClu1);
-        S_clu.cviSpk_clu{iClu1} = viSpk_clu1;
-    else
-        viSpk_clu1 = S_clu.cviSpk_clu{iClu1};
-    end
+    viSpk_clu1 = find(S_clu.viClu == iClu1);
+    S_clu.cviSpk_clu{iClu1} = viSpk_clu1;
     S_clu.viSite_clu(iClu1) = mode(S0.viSite_spk(viSpk_clu1));
     S_clu.vnSpk_clu(iClu1) = numel(viSpk_clu1);
 end
@@ -11450,8 +11390,6 @@ end %func
 
 %--------------------------------------------------------------------------
 function [viTime_spk, vrAmp_spk, viSite_spk] = detect_spikes_(mnWav3, vnThresh_site, vlKeep_ref, P)
-global all_vnthresh;  % Declare the same global variable in the nested function
-global iteration
 % fMerge_spk = 1;
 fMerge_spk = get_set_(P, 'fMerge_spk', 1);
 
@@ -11461,64 +11399,22 @@ if isempty(vnThresh_site)
 %     vnThresh_site = int16(mr2rms_(gather_(mnWav3), 1e5) * P.qqFactor);
     vnThresh_site = mr2thresh_(mnWav3, P);
 end
-all_vnthresh{iteration} = vnThresh_site;
-iteration=iteration+1;
-disp('gathering thresholds')
 fprintf('\tDetecting spikes from each channel...'); t1=tic;
-
-% DIAGNOSTIC: Track signal amplitudes and detection statistics
-vrSignalAmplitudes = zeros(nSites, 1);
-vrNoiseEstimates = zeros(nSites, 1);
-viDetectionCounts = zeros(nSites, 1);
-
-% parfor iSite = 1:nSites
-for iSite = 1:nSites
-    % Calculate signal statistics for diagnostics
-    vrWav_site = mnWav3(:,iSite);
-    vrSignalAmplitudes(iSite) = max(abs(vrWav_site));
-    vrNoiseEstimates(iSite) = median(abs(vrWav_site)) / 0.6745;
-
+% parfor iSite = 1:nSites   
+for iSite = 1:nSites   
     % Find spikes
-    [viSpk11, vrSpk11] = spikeDetectSingle_fast_(vrWav_site, P, vnThresh_site(iSite));
-    viDetectionCounts(iSite) = numel(viSpk11);
+    [viSpk11, vrSpk11] = spikeDetectSingle_fast_(mnWav3(:,iSite), P, vnThresh_site(iSite));
 %     fprintf('.');
-
+    
     % Reject global mean
     if isempty(vlKeep_ref)
         cviSpk_site{iSite} = viSpk11;
-        cvrSpk_site{iSite} = vrSpk11;
+        cvrSpk_site{iSite} = vrSpk11;        
     else
         [cviSpk_site{iSite}, cvrSpk_site{iSite}] = select_vr_(viSpk11, vrSpk11, find(vlKeep_ref(viSpk11)));
     end
 end
-
-% DIAGNOSTIC: Print detection statistics
-
-if sum(viDetectionCounts > 0) == 0
-    fprintf('\n\tDETECTION DIAGNOSTICS:\n');
-    fprintf('\t  qqFactor: %.2f\n', P.qqFactor);
-    fprintf('\t  Signal amplitude range: [%.2f, %.2f] ADC units\n', min(vrSignalAmplitudes), max(vrSignalAmplitudes));
-    fprintf('\t  Noise estimate range: [%.2f, %.2f] ADC units\n', min(vrNoiseEstimates), max(vrNoiseEstimates));
-    fprintf('\t  Threshold range: [%.2f, %.2f] ADC units\n', min(vnThresh_site), max(vnThresh_site));
-    fprintf('\t  SNR estimate: %.2f to %.2f\n', min(vnThresh_site./vrNoiseEstimates), max(vnThresh_site./vrNoiseEstimates));
-    fprintf('\t  Channels with detections: %d/%d\n', sum(viDetectionCounts > 0), nSites);
-    fprintf(2, '\t  WARNING: No spikes detected on any channel!\n');
-    fprintf(2, '\t  Possible causes:\n');
-    fprintf(2, '\t    1. Thresholds too high relative to signal\n');
-    fprintf(2, '\t    2. Signal amplitude too low after filtering\n');
-    fprintf(2, '\t    3. Check qqFactor parameter (currently %.2f)\n', P.qqFactor);
-
-    % Save diagnostic data
-    if ~isempty(P.vcFile_prm)
-        vcDiagFile = [P.vcFile_prm, '.detection_diagnostics.mat'];
-        save(vcDiagFile, 'vrSignalAmplitudes', 'vrNoiseEstimates', 'vnThresh_site', 'viDetectionCounts', 'P');
-        fprintf('\t  Diagnostic data saved to: %s\n', vcDiagFile);
-    end
-end
 vnThresh_site = gather_(vnThresh_site);
-disp("detect_spikes_")
-show_thresholds(vnThresh_site.* P.uV_per_bit,25)
-save_thresholds(vnThresh_site,P.vcFile_prm)
 nSpks1 = sum(cellfun(@numel, cviSpk_site));
 fprintf('\n\tDetected %d spikes from %d sites; took %0.1fs.\n', nSpks1, nSites, toc(t1));
 
@@ -11644,8 +11540,7 @@ global tnWav_raw tnWav_spk trFet_spk
 
 % Create a prm file to start with. set the filter parameter correctly. features? 
 if isempty(P), return; end
-% S_ksort = load(strrep(P.vcFile_prm, '.prm', '_ksort.mat')); %get site # and 
-S_ksort=load('rez.mat');
+S_ksort = load(strrep(P.vcFile_prm, '.prm', '_ksort.mat')); %get site # and 
 viTime_spk = S_ksort.rez.st3(:,1) - 6; %spike time (apply shift factor)
 viClu = S_ksort.rez.st3(:,2); % cluster
 
@@ -11898,7 +11793,6 @@ try
 %         fprintf(2, 'Failed to save the rho-delta plot: %s.\n', lasterr());
 %     end    
 catch
-
     disperr_();
 end
 end %func
@@ -11932,9 +11826,6 @@ nsubs = 300000;
 offset = median(subsample_vr_(vr, nsubs));
 vr = vr - offset; %center the mean
 factor = median(abs(subsample_vr_(vr, nsubs)));
-%disp('factor');disp(factor)
-% ;disp('thresh_mad');disp(thresh_mad)
-
 if isempty(thresh_mad) || thresh_mad==0
     vl = true(size(vr));
 else
@@ -12588,10 +12479,10 @@ end
 if numel(lim1) == 1, lim1 = [-abs(lim1), abs(lim1)]; end
 if numel(lim2) == 1, lim2 = [-abs(lim2), abs(lim2)]; end
 
-% Check for non-finite values
-if any(~isfinite(vr(:)))
-    fprintf(2, 'WARNING linmap_: Input contains non-finite values (NaN/Inf). Setting to zero.\n');
-    vr(~isfinite(vr)) = 0;
+% Handle NaN or invalid limits - return zeros if limits are not finite
+if any(~isfinite(lim1)) || any(~isfinite(lim2))
+    vr = zeros(size(vr));
+    return;
 end
 
 if fSat
@@ -12600,18 +12491,12 @@ if fSat
 end
 if lim1(1)==lim1(2)
     if lim1(1) == 0
-        vr = zeros(size(vr));
+        vr = zeros(size(vr)); % avoid division by zero
     else
         vr = vr / lim1(1);
     end
 else
-    % Additional safety check for lim1 values
-    if any(~isfinite(lim1)) || any(~isfinite(lim2))
-        fprintf(2, 'WARNING linmap_: Limits contain non-finite values. Using default mapping.\n');
-        vr = zeros(size(vr));
-    else
-        vr = interp1(lim1, lim2, vr, 'linear', 'extrap');
-    end
+    vr = interp1(lim1, lim2, vr, 'linear', 'extrap');
 end
 end %func
 
@@ -12738,20 +12623,9 @@ n1 = S_clu.vnSpk_clu(iClu1);
 n2 = S_clu.vnSpk_clu(iClu2);
 S_clu.vnSpk_clu(iClu1) = n1 + n2;
 S_clu.vnSpk_clu(iClu2) = 0;
-
-% Optimized: use pre-computed spike indices instead of find()
-if ~isempty(S_clu.cviSpk_clu{iClu2})
-    S_clu.viClu(S_clu.cviSpk_clu{iClu2}) = iClu1;
-    % Merge spike indices efficiently
-    viSpk1 = S_clu.cviSpk_clu{iClu1};
-    viSpk2 = S_clu.cviSpk_clu{iClu2};
-    viSpk_combined = zeros(numel(viSpk1) + numel(viSpk2), 1);
-    viSpk_combined(1:numel(viSpk1)) = viSpk1;
-    viSpk_combined(numel(viSpk1)+1:end) = viSpk2;
-    S_clu.cviSpk_clu{iClu1} = sort(viSpk_combined);
-    S_clu.cviSpk_clu{iClu2} = [];
-end
-
+S_clu.viClu(S_clu.viClu == iClu2) = iClu1;
+S_clu.cviSpk_clu{iClu1} = find(S_clu.viClu == iClu1);
+S_clu.cviSpk_clu{iClu2} = [];
 try
     S_clu.csNote_clu{iClu1} = '';
     S_clu.csNote_clu{iClu2} = '';
@@ -13895,7 +13769,6 @@ if version_matlab_() >= 2017
             save(vcFile, '-struct', 'S', '-v7.3', '-nocompression'); %faster    
             break;
         catch
-            save(vcFile, '-struct', 'S', '-v7.3'); %faster    
             pause(.5);
         end
         fprintf(2, 'Saving failed: %s\n', vcFile);
@@ -16226,7 +16099,7 @@ end %func
 
 %--------------------------------------------------------------------------
 function [tnWav_spk_raw, tnWav_spk, trFet_spk, miSite_spk, viTime_spk, vnAmp_spk, vnThresh_site, fGpu] = ...
-    wav2spk_(mnWav1, P, viTime_spk, viSite_spk, mnWav1_pre, mnWav1_post, vnThresh_site_global, iFile, iChunk)
+    wav2spk_(mnWav1, P, viTime_spk, viSite_spk, mnWav1_pre, mnWav1_post)
 % tnWav_spk: spike waveform. nSamples x nSites x nSpikes
 % trFet_spk: nSites x nSpk x nFet
 % miSite_spk: nSpk x nFet
@@ -16237,15 +16110,11 @@ function [tnWav_spk_raw, tnWav_spk, trFet_spk, miSite_spk, viTime_spk, vnAmp_spk
 % wav2spk_(mnWav1, vrWav_mean1, P, viTime_spk, viSite_spk)
 % 6/27/17 JJJ: accurate spike detection at the overlap region
 % 6/29/17 JJJ: matched filter supported
-% 12/2024 JJJ: added global threshold support to eliminate chunk artifacts
 
 if nargin<4, viTime_spk = []; end
 if nargin<5, viSite_spk = []; end
 if nargin<6, mnWav1_pre = []; end
 if nargin<7, mnWav1_post = []; end
-if nargin<8, vnThresh_site_global = []; end
-if nargin<9, iFile = []; end
-if nargin<10, iChunk = []; end
 [tnWav_spk_raw, tnWav_spk, trFet_spk, miSite_spk] = deal([]);
 nFet_use = get_set_(P, 'nFet_use', 2);
 fMerge_spk = 1; %debug purpose
@@ -16253,16 +16122,7 @@ fShift_pos = 0; % shift center position based on center of mass
 % fRecenter_spk = 0;
 nSites_spk = size(P.miSites,1);
 if nSites_spk==1, nFet_use=1; end
-% Get threshold from global storage if not passed as parameter (backward compatibility)
-if isempty(vnThresh_site_global)
-    vnThresh_site = get0_('vnThresh_site');
-else
-    vnThresh_site = vnThresh_site_global;
-end
-disp("wav2spk_")
-
-%show_thresholds(vnThresh_site,50)
-
+vnThresh_site = get0_('vnThresh_site');
 nPad_pre = size(mnWav1_pre,1);
 fGpu = P.fGpu;
 
@@ -16313,33 +16173,9 @@ end
 
 %-----
 % detect spikes or use the one passed from the input (importing)
-% Threshold priority: 1) global passed parameter, 2) stored in get0_, 3) compute per chunk
 if isempty(vnThresh_site)
-    if ~isempty(vnThresh_site_global)
-        % Global thresholds are fixed - NOT multiplied by qqFactor
-        vnThresh_site = vnThresh_site_global;
-        fprintf('\tUsing fixed global thresholds (not affected by qqFactor)\n');
-    else
-        % Per-chunk thresholds ARE multiplied by qqFactor
-        [vnThresh_site, P.fGpu] = mr2thresh_(mnWav3, P, true);  % true = apply qqFactor
-        fprintf('\tComputing per-chunk thresholds (with qqFactor=%g)\n', P.qqFactor);
-    end
+    [vnThresh_site, P.fGpu] = mr2thresh_(mnWav3, P);
 end
-
-% Final validation before detection - critical safety check
-vnThresh_site = validate_thresholds_(vnThresh_site, sprintf('wav2spk_ final (file %d, chunk %d)', iFile, iChunk));
-
-% Debug: Report threshold values periodically
-if ~isempty(iChunk) && (mod(iChunk, 100) == 1 || iChunk == 1)
-    fprintf('Chunk %d thresholds - Min: %.2f, Max: %.2f, Mean: %.2f ADC units\n', ...
-        iChunk, min(vnThresh_site), max(vnThresh_site), mean(vnThresh_site));
-end
-
-% Save chunk thresholds to file
-if ~isempty(iFile) && ~isempty(iChunk)
-    save_chunk_thresholds_(vnThresh_site, iFile, iChunk, P);
-end
-
 if isempty(viTime_spk) || isempty(viSite_spk)
     P_ = setfield(P, 'nPad_pre', nPad_pre);
     switch lower(vcFilter_detect)
@@ -16440,813 +16276,24 @@ end %func
 
 
 %--------------------------------------------------------------------------
-% 12/2024 JJJ: Compute global thresholds across all chunks to eliminate artifacts
-function [vnThresh_site_global, vnThresh_chunks] = compute_global_thresh_(P)
-% First pass through all chunks to compute thresholds
-% Returns median threshold per channel and all chunk thresholds for diagnostics
-
-fprintf('Computing global thresholds across all chunks...\n');
-t_global = tic;
-
-csFile_merge = get_raw_files_(P);
-vnThresh_all = {};  % Store thresholds from all chunks
-chunk_info = {};    % Store chunk information for diagnostics
-
-for iFile = 1:numel(csFile_merge)
-    fprintf('Scanning file %d/%d for thresholds: %s\n', iFile, numel(csFile_merge), csFile_merge{iFile});
-    [fid1, nBytes_file1] = fopen_(csFile_merge{iFile}, 'r');
-    nBytes_file1 = file_trim_(fid1, nBytes_file1, P);
-    [nLoad1, nSamples_load1, nSamples_last1] = plan_load_(nBytes_file1, P);
-
-    mnWav11_pre = [];
-    for iLoad1 = 1:nLoad1
-        fprintf('\tChunk %d/%d...', iLoad1, nLoad1);
-        nSamples11 = ifeq_(iLoad1 == nLoad1, nSamples_last1, nSamples_load1);
-        mnWav11 = load_file_(fid1, nSamples11, P);
-
-        % Apply same filtering as in detection
-        vcDataType_filter = get_set_(P, 'vcDataType_filter', 'single');
-        try
-            mnWav1_ = cast_(mnWav11, vcDataType_filter);
-            [mnWav1_, fGpu] = gpuArray_(mnWav1_, P.fGpu);
-            [mnWav2, ~] = filt_car_(mnWav1_, P);
-        catch % GPU failure
-            fGpu = 0;
-            mnWav1_ = cast_(mnWav11, vcDataType_filter);
-            [mnWav2, ~] = filt_car_(mnWav1_, P);
-        end
-        clear mnWav1_
-
-        % Compute threshold for this chunk (WITH qqFactor included for proper detection)
-        % These are FINAL thresholds, not to be modified again
-        [vnThresh_chunk, ~] = mr2thresh_(mnWav2, P, true);  % true = apply qqFactor
-        vnThresh_all{end+1} = gather_(vnThresh_chunk(:)');
-        chunk_info{end+1} = struct('file', iFile, 'chunk', iLoad1);
-
-        clc;
-        clear mnWav11 mnWav2
-    end
-    fclose(fid1);
-end
-
-% Convert to matrix: nChunks x nChannels
-vnThresh_chunks = cat(1, vnThresh_all{:});
-
-% Note: Smoothing is NOT applied here in compute_global_thresh_
-% It's handled separately in the threshold hierarchy
-% This function only computes the median for fUseGlobalThresh option
-
-% Compute global threshold as median across chunks
-vnThresh_site_global = median(vnThresh_chunks, 1)';
-
-% Validate thresholds before converting
-vnThresh_site_global = validate_thresholds_(vnThresh_site_global, 'compute_global_thresh_');
-
-% Note: Site exclusions are handled in load_prb_(), so P.viSite2Chan already
-% contains only the non-excluded sites. No need to process exclusions here.
-
-% Convert to appropriate data type
-vcDataType_filter = get_set_(P, 'vcDataType_filter', 'int16');
-if strcmpi(vcDataType_filter, 'int16')
-    vnThresh_site_global = int16(vnThresh_site_global);
-end
-
-% Display statistics
-fprintf('Global threshold computation completed in %0.1f seconds\n', toc(t_global));
-fprintf('Processed %d chunks total\n', size(vnThresh_chunks, 1));
-fprintf('Threshold range: [%0.1f, %0.1f]\n', min(vnThresh_site_global), max(vnThresh_site_global));
-
-% Create diagnostic plot
-plot_thresh_variability_(vnThresh_chunks, vnThresh_site_global, P);
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Smooth thresholds across chunks (backwards compatible)
-function vnThresh_smoothed = smooth_thresholds_(vnThresh_chunks, P)
-% Smooth thresholds across chunks for each channel
-% vnThresh_chunks: nChunks x nChannels matrix
-% Returns: smoothed matrix of same size
-% Backwards compatible: returns original if smoothing fails
-
-try
-    vcSmoothMethod = get_set_(P, 'vcSmoothMethod', 'sgolay');
-    nSmoothWindow = get_set_(P, 'nSmoothWindow', 5);
-    [nChunks, nChannels] = size(vnThresh_chunks);
-
-    % Ensure window size is odd and valid
-    nSmoothWindow = max(1, nSmoothWindow);
-    if mod(nSmoothWindow, 2) == 0
-        nSmoothWindow = nSmoothWindow + 1;
-    end
-
-    % Don't smooth if too few chunks
-    if nChunks < nSmoothWindow || nSmoothWindow < 2
-        vnThresh_smoothed = vnThresh_chunks;
-        return;
-    end
-
-    vnThresh_smoothed = zeros(size(vnThresh_chunks));
-
-    % Apply smoothing per channel
-    for iChannel = 1:nChannels
-        vrThresh_channel = vnThresh_chunks(:, iChannel);
-
-        switch lower(vcSmoothMethod)
-            case 'gaussian'
-                % Gaussian smoothing with backwards compatibility
-                try
-                    smoothSigma = get_set_(P, 'smoothSigma', 1.5);
-                    % Check if gausswin exists (Signal Processing Toolbox)
-                    if exist('gausswin', 'file') == 2
-                        kernel = gausswin(nSmoothWindow, smoothSigma);
-                    else
-                        % Fallback: create simple Gaussian kernel
-                        x = linspace(-2, 2, nSmoothWindow)';
-                        kernel = exp(-(x.^2)/(2*smoothSigma^2));
-                    end
-                    kernel = kernel / sum(kernel);
-                    vrThresh_smoothed = conv(vrThresh_channel, kernel, 'same');
-                catch
-                    % Fallback to moving average
-                    vrThresh_smoothed = movmean_compat_(vrThresh_channel, nSmoothWindow);
-                end
-
-            case 'movmean', 'movingmean', 'mean'
-                % Moving average with compatibility check
-                vrThresh_smoothed = movmean_compat_(vrThresh_channel, nSmoothWindow);
-
-            case 'median', 'movmedian'
-                % Median filter with compatibility check
-                if exist('medfilt1', 'file') == 2
-                    vrThresh_smoothed = medfilt1(vrThresh_channel, nSmoothWindow);
-                else
-                    % Fallback implementation
-                    vrThresh_smoothed = movmedian_compat_(vrThresh_channel, nSmoothWindow);
-                end
-
-            case 'sgolay', 'savitzky-golay'
-                % Savitzky-Golay filter with compatibility check
-                if exist('sgolayfilt', 'file') == 2
-                    polyOrder = min(3, nSmoothWindow-1);
-                    vrThresh_smoothed = sgolayfilt(vrThresh_channel, polyOrder, nSmoothWindow);
-                else
-                    % Fallback to moving average
-                    vrThresh_smoothed = movmean_compat_(vrThresh_channel, nSmoothWindow);
-                end
-
-            case 'none', 'off', 'disable'
-                % No smoothing
-                vrThresh_smoothed = vrThresh_channel;
-
-            otherwise
-                % Unknown method - use moving average as safe default
-                fprintf('Warning: Unknown smoothing method "%s", using moving average\n', vcSmoothMethod);
-                vrThresh_smoothed = movmean_compat_(vrThresh_channel, nSmoothWindow);
-        end
-
-        vnThresh_smoothed(:, iChannel) = vrThresh_smoothed;
-    end
-
-    % Handle edge effects - keep original values at boundaries
-    nPad = floor(nSmoothWindow/2);
-    if nPad > 0 && nChunks > nSmoothWindow
-        vnThresh_smoothed(1:nPad, :) = vnThresh_chunks(1:nPad, :);
-        vnThresh_smoothed(end-nPad+1:end, :) = vnThresh_chunks(end-nPad+1:end, :);
-    end
-
-catch ME
-    % If anything fails, return original data
-    fprintf(2, 'Error in smooth_thresholds_: %s\n', ME.message);
-    vnThresh_smoothed = vnThresh_chunks;
-end
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Compute smoothed thresholds (option 3 in hierarchy)
-function [vnThresh_site_smoothed, vnThresh_chunks] = compute_smoothed_thresh_(P)
-% Compute thresholds with sliding window smoothing
-% Returns smoothed thresholds for all chunks and final threshold per channel
-
-fprintf('Computing smoothed thresholds with sliding window approach...\n');
-t_smooth = tic;
-
-% First, collect all chunk thresholds (similar to compute_global_thresh_)
-csFile_merge = get_raw_files_(P);
-vnThresh_all = {};  % Store thresholds from all chunks
-
-for iFile = 1:numel(csFile_merge)
-    fprintf('Scanning file %d/%d for thresholds: %s\n', iFile, numel(csFile_merge), csFile_merge{iFile});
-    [fid1, nBytes_file1] = fopen_(csFile_merge{iFile}, 'r');
-    nBytes_file1 = file_trim_(fid1, nBytes_file1, P);
-    [nLoad1, nSamples_load1, nSamples_last1] = plan_load_(nBytes_file1, P);
-
-    for iLoad1 = 1:nLoad1
-        fprintf('\tChunk %d/%d...', iLoad1, nLoad1);
-        nSamples11 = ifeq_(iLoad1 == nLoad1, nSamples_last1, nSamples_load1);
-        mnWav11 = load_file_(fid1, nSamples11, P);
-
-        % Apply same filtering as in detection
-        vcDataType_filter = get_set_(P, 'vcDataType_filter', 'single');
-        try
-            mnWav1_ = cast_(mnWav11, vcDataType_filter);
-            [mnWav1_, fGpu] = gpuArray_(mnWav1_, P.fGpu);
-            [mnWav2, ~] = filt_car_(mnWav1_, P);
-        catch % GPU failure
-            fGpu = 0;
-            mnWav1_ = cast_(mnWav11, vcDataType_filter);
-            [mnWav2, ~] = filt_car_(mnWav1_, P);
-        end
-        clear mnWav1_
-
-        % Compute threshold for this chunk (WITH qqFactor included for proper detection)
-        % These are FINAL thresholds, not to be modified again
-        [vnThresh_chunk, ~] = mr2thresh_(mnWav2, P, true);  % true = apply qqFactor
-        vnThresh_all{end+1} = gather_(vnThresh_chunk(:)');
-
-        fprintf(' done\n');
-        clear mnWav11 mnWav2
-    end
-    fclose(fid1);
-end
-
-% Convert to matrix: nChunks x nChannels
-vnThresh_chunks = cat(1, vnThresh_all{:});
-
-% Apply sliding window smoothing
-vnThresh_chunks_smoothed = sliding_window_smooth_(vnThresh_chunks, P);
-
-% Return the smoothed thresholds
-% For now, we'll return the median of smoothed values as the final threshold
-vnThresh_site_smoothed = median(vnThresh_chunks_smoothed, 1)';
-
-% Validate thresholds before converting
-vnThresh_site_smoothed = validate_thresholds_(vnThresh_site_smoothed, 'compute_smoothed_thresh_');
-
-% Note: Site exclusions are handled in load_prb_(), so P.viSite2Chan already
-% contains only the non-excluded sites. No need to process exclusions here.
-
-% Convert to appropriate data type
-vcDataType_filter = get_set_(P, 'vcDataType_filter', 'int16');
-if strcmpi(vcDataType_filter, 'int16')
-    vnThresh_site_smoothed = int16(vnThresh_site_smoothed);
-end
-
-fprintf('Smoothed threshold computation completed in %0.1f seconds\n', toc(t_smooth));
-fprintf('Processed %d chunks total\n', size(vnThresh_chunks, 1));
-fprintf('Threshold range after smoothing: [%0.1f, %0.1f]\n', ...
-    min(vnThresh_site_smoothed), max(vnThresh_site_smoothed));
-
-% Create diagnostic plot showing smoothing effect
-plot_smoothed_thresh_comparison_(vnThresh_chunks, vnThresh_chunks_smoothed, vnThresh_site_smoothed, P);
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Sliding window threshold smoothing
-function vnThresh_smoothed = sliding_window_smooth_(vnThresh_chunks, P)
-% Apply smoothing with sliding window approach
-% Uses 100-chunk windows with 50-chunk overlap for smooth transitions
-% vnThresh_chunks: nChunks x nChannels matrix
-% Returns: smoothed matrix of same size
-
-try
-    nSmoothWindow = get_set_(P, 'nSmoothWindow', 100);
-    nSmoothOverlap = get_set_(P, 'nSmoothOverlap', 50);
-    vcSmoothMethod = get_set_(P, 'vcSmoothMethod', 'sgolay');
-
-    [nChunks, nChannels] = size(vnThresh_chunks);
-
-    % If too few chunks, return original
-    if nChunks < nSmoothWindow
-        fprintf('Warning: Too few chunks (%d) for window size (%d), using original thresholds\n', ...
-            nChunks, nSmoothWindow);
-        vnThresh_smoothed = vnThresh_chunks;
-        return;
-    end
-
-    % Calculate window positions
-    nStep = nSmoothWindow - nSmoothOverlap;
-    window_starts = 1:nStep:nChunks;
-    if window_starts(end) + nSmoothWindow - 1 > nChunks
-        % Adjust last window to end at the last chunk
-        window_starts(end) = nChunks - nSmoothWindow + 1;
-    end
-
-    vnThresh_smoothed = zeros(size(vnThresh_chunks));
-    window_weights = zeros(nChunks, 1);
-
-    % Process each window
-    for iWindow = 1:length(window_starts)
-        idx_start = window_starts(iWindow);
-        idx_end = min(idx_start + nSmoothWindow - 1, nChunks);
-        chunk_indices = idx_start:idx_end;
-
-        % Extract window data
-        vnThresh_window = vnThresh_chunks(chunk_indices, :);
-
-        % Apply smoothing to this window
-        vnThresh_window_smooth = smooth_thresholds_(vnThresh_window, P);
-
-        % Accumulate results with weighting for overlapping regions
-        vnThresh_smoothed(chunk_indices, :) = vnThresh_smoothed(chunk_indices, :) + vnThresh_window_smooth;
-        window_weights(chunk_indices) = window_weights(chunk_indices) + 1;
-    end
-
-    % Normalize by weights (handle overlapping regions)
-    for iChunk = 1:nChunks
-        if window_weights(iChunk) > 0
-            vnThresh_smoothed(iChunk, :) = vnThresh_smoothed(iChunk, :) / window_weights(iChunk);
-        else
-            % Should not happen, but fallback to original
-            vnThresh_smoothed(iChunk, :) = vnThresh_chunks(iChunk, :);
-        end
-    end
-
-    fprintf('Applied sliding window smoothing: %d windows of %d chunks with %d overlap\n', ...
-        length(window_starts), nSmoothWindow, nSmoothOverlap);
-
-catch ME
-    fprintf(2, 'Error in sliding_window_smooth_: %s\n', ME.message);
-    vnThresh_smoothed = vnThresh_chunks;
-end
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% Backwards compatible moving mean implementation
-function y = movmean_compat_(x, k)
-% Simple moving average implementation for compatibility
-% Works if movmean (introduced in R2016a) is not available
-
-try
-    % Try to use built-in movmean if available
-    if exist('movmean', 'builtin') == 5 || exist('movmean', 'file') == 2
-        y = movmean(x, k);
-    else
-        error('movmean not available, using custom implementation');
-    end
-catch
-    % Fallback implementation
-    n = length(x);
-    y = zeros(size(x));
-    halfwin = floor(k/2);
-
-    for i = 1:n
-        idx_start = max(1, i - halfwin);
-        idx_end = min(n, i + halfwin);
-        y(i) = mean(x(idx_start:idx_end));
-    end
-end
-end %func
-
-
-%--------------------------------------------------------------------------
-% Backwards compatible moving median implementation
-function y = movmedian_compat_(x, k)
-% Simple moving median implementation for compatibility
-
-try
-    % Try to use built-in movmedian if available
-    if exist('movmedian', 'builtin') == 5 || exist('movmedian', 'file') == 2
-        y = movmedian(x, k);
-    else
-        error('movmedian not available, using custom implementation');
-    end
-catch
-    % Fallback implementation
-    n = length(x);
-    y = zeros(size(x));
-    halfwin = floor(k/2);
-
-    for i = 1:n
-        idx_start = max(1, i - halfwin);
-        idx_end = min(n, i + halfwin);
-        y(i) = median(x(idx_start:idx_end));
-    end
-end
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Validate and fix threshold values
-function vnThresh_validated = validate_thresholds_(vnThresh, vcSource)
-% Ensure no NaN or exactly zero values in thresholds
-% Replace invalid values with previous valid value or median if no previous
-% vcSource: string describing where thresholds came from for error messages
-
-if nargin < 2, vcSource = 'unknown'; end
-
-vnThresh_validated = double(vnThresh(:));  % Convert to double for comparison
-nChannels = numel(vnThresh_validated);
-
-% Find invalid values (NaN, exactly 0, Inf, or negative)
-% Positive values close to zero are allowed
-vlInvalid = isnan(vnThresh_validated) | vnThresh_validated == 0 | isinf(vnThresh_validated) | vnThresh_validated < 0;
-
-if any(vlInvalid)
-    nInvalid = sum(vlInvalid);
-    fprintf(2, 'WARNING: Found %d invalid threshold values in %s\n', nInvalid, vcSource);
-    show_thresholds(vnThresh_validated,50)
-    % First try: use median of valid values
-    if sum(~vlInvalid) > 0
-        medianValidThresh = median(vnThresh_validated(~vlInvalid));
-    else
-        % If all invalid, use a default threshold
-        medianValidThresh = 10; % Safe default in ADC units
-        fprintf(2, 'CRITICAL: All thresholds invalid! Using default value: %g\n', medianValidThresh);
-    end
-
-    % Replace invalid values
-    for iChan = 1:nChannels
-        if vlInvalid(iChan)
-            % Try to use previous valid value
-            if iChan > 1 && ~vlInvalid(iChan-1)
-                vnThresh_validated(iChan) = vnThresh_validated(iChan-1);
-                % Only print for first few to avoid spam
-                if iChan <= 5
-                    fprintf('  Channel %d: replaced invalid threshold with previous channel value (%g)\n', ...
-                        iChan, vnThresh_validated(iChan));
-                end
-            % Try to use next valid value
-            elseif iChan < nChannels && ~vlInvalid(iChan+1)
-                vnThresh_validated(iChan) = vnThresh_validated(iChan+1);
-                if iChan <= 5
-                    fprintf('  Channel %d: replaced invalid threshold with next channel value (%g)\n', ...
-                        iChan, vnThresh_validated(iChan));
-                end
-            else
-                % Use median of all valid values
-                vnThresh_validated(iChan) = medianValidThresh;
-                if iChan <= 5
-                    fprintf('  Channel %d: replaced invalid threshold with median valid value (%g)\n', ...
-                        iChan, vnThresh_validated(iChan));
-                end
-            end
-        end
-    end
-
-    % Final check
-    vlStillInvalid = isnan(vnThresh_validated) | isinf(vnThresh_validated) | vnThresh_validated == 0 | vnThresh_validated < 0;
-    if any(vlStillInvalid)
-        error('Failed to fix all invalid thresholds!');
-    end
-
-    if nInvalid > 5
-        fprintf('  ... and %d more channels\n', nInvalid - 5);
-    end
-    fprintf('Successfully fixed %d invalid threshold values\n', nInvalid);
-end
-
-% Convert back to original data type
-vnThresh_validated = cast(vnThresh_validated, 'like', vnThresh);
-
-% Additional safety check - only warn for extremely low values
-vlTooLow = vnThresh_validated < 0.1 & vnThresh_validated > 0;  % Less than 0.1 ADC unit is suspiciously low
-if any(vlTooLow)
-    fprintf(2, 'WARNING: %d thresholds below 0.1 ADC unit detected (but keeping them)\n', sum(vlTooLow));
-    % Don't change them - just warn
-end
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Save chunk thresholds to appending file
-function save_chunk_thresholds_(vnThresh_chunk, iFile, iChunk, P)
-% Append chunk thresholds to a .mat file for tracking
-% vnThresh_chunk: threshold values for this chunk (nChannels x 1)
-% iFile: file index
-% iChunk: chunk index within the file
-
-if isempty(P.vcFile_prm), return; end
-
-vcFile_chunk_thresh = [P.vcFile_prm, '.thresholds.mat'];
-
-try
-    % Try to load existing data and metadata
-    if exist(vcFile_chunk_thresh, 'file')
-        S = load(vcFile_chunk_thresh);
-        chunk_thresholds = S.chunk_thresholds;
-        if isfield(S, 'chunk_metadata')
-            chunk_metadata = S.chunk_metadata;
-        else
-            % Create default metadata if missing
-            chunk_metadata = struct('qqFactor', P.qqFactor);
-        end
-    else
-        % Initialize if file doesn't exist
-        chunk_thresholds = struct('chunks', {}, 'thresholds', {}, 'file_idx', {}, 'chunk_idx', {});
-        chunk_metadata = struct('qqFactor', P.qqFactor);
-    end
-
-    % Append new chunk data
-    idx = length(chunk_thresholds) + 1;
-    chunk_thresholds(idx).thresholds = gather_(vnThresh_chunk(:));
-    chunk_thresholds(idx).file_idx = iFile;
-    chunk_thresholds(idx).chunk_idx = iChunk;
-
-    % Save back to file with metadata
-    save(vcFile_chunk_thresh, 'chunk_thresholds', 'chunk_metadata', '-append', '-v7.3');
-
-catch ME
-    fprintf(2, 'Warning: Could not save chunk thresholds: %s\n', ME.message);
-end
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Plot comparison of smoothed vs raw thresholds
-function plot_smoothed_thresh_comparison_(vnThresh_raw, vnThresh_smooth, vnThresh_final, P)
-% Create diagnostic plot showing smoothing effect with sliding windows
-
-fprintf('Creating smoothed threshold comparison plot...\n');
-
-nChannels = size(vnThresh_raw, 2);
-nChunks = size(vnThresh_raw, 1);
-
-% Create figure
-hFig = figure('Name', 'Sliding Window Threshold Smoothing', 'Position', [100, 100, 1400, 800]);
-
-% Subplot 1: Example channels showing raw vs smoothed
-subplot(2,3,1);
-nExampleChans = min(5, nChannels);
-channel_indices = round(linspace(1, nChannels, nExampleChans));
-colors = lines(nExampleChans);
-
-for i = 1:nExampleChans
-    iChan = channel_indices(i);
-    plot(vnThresh_raw(:, iChan), '-', 'Color', [colors(i,:) 0.3], 'LineWidth', 0.5);
-    hold on;
-    plot(vnThresh_smooth(:, iChan), '-', 'Color', colors(i,:), 'LineWidth', 2);
-end
-xlabel('Chunk Number');
-ylabel('Threshold (ADC units)');
-title('Raw vs Smoothed Thresholds (Example Channels)');
-legend({'Raw', 'Smoothed'}, 'Location', 'best');
-grid on;
-
-% Subplot 2: Standard deviation comparison
-subplot(2,3,2);
-vnStd_raw = std(single(vnThresh_raw), 0, 1);
-vnStd_smooth = std(single(vnThresh_smooth), 0, 1);
-bar([1, 2], [mean(vnStd_raw), mean(vnStd_smooth)]);
-set(gca, 'XTickLabel', {'Raw', 'Smoothed'});
-ylabel('Mean Std Dev (ADC)');
-title(sprintf('Variability Reduction: %.1f%%', ...
-    (1 - mean(vnStd_smooth)/mean(vnStd_raw))*100));
-grid on;
-
-% Subplot 3: Final thresholds per channel
-subplot(2,3,3);
-plot(vnThresh_final, 'b-', 'LineWidth', 1.5);
-xlabel('Channel');
-ylabel('Threshold (ADC units)');
-title('Final Smoothed Thresholds');
-grid on;
-
-% Subplot 4: Heatmap of raw thresholds
-subplot(2,3,4);
-imagesc(vnThresh_raw');
-colorbar;
-xlabel('Chunk');
-ylabel('Channel');
-title('Raw Thresholds Heatmap');
-
-% Subplot 5: Heatmap of smoothed thresholds
-subplot(2,3,5);
-imagesc(vnThresh_smooth');
-colorbar;
-xlabel('Chunk');
-ylabel('Channel');
-title('Smoothed Thresholds Heatmap');
-
-% Subplot 6: Statistics
-subplot(2,3,6);
-axis off;
-text_y = 0.9;
-text_spacing = 0.08;
-
-text(0.1, text_y, 'Sliding Window Parameters:', 'FontWeight', 'bold');
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Window size: %d chunks', get_set_(P, 'nSmoothWindow', 100)));
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Overlap: %d chunks', get_set_(P, 'nSmoothOverlap', 50)));
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Method: %s', get_set_(P, 'vcSmoothMethod', 'sgolay')));
-text_y = text_y - text_spacing*1.5;
-
-text(0.1, text_y, 'Statistics:', 'FontWeight', 'bold');
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Total chunks: %d', nChunks));
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Total channels: %d', nChannels));
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Raw mean std: %.2f', mean(vnStd_raw)));
-text_y = text_y - text_spacing;
-text(0.1, text_y, sprintf('Smoothed mean std: %.2f', mean(vnStd_smooth)));
-
-% Save figure
-if ~isempty(P.vcFile_prm)
-    vcDir_out = fileparts(P.vcFile_prm);
-else
-    vcDir_out = pwd;
-end
-vcFile_fig = fullfile(vcDir_out, 'threshold_smoothing_analysis.png');
-
-try
-    saveas(hFig, vcFile_fig);
-    fprintf('Saved threshold smoothing analysis to: %s\n', vcFile_fig);
-catch
-    fprintf('Could not save figure to: %s\n', vcFile_fig);
-end
-
-end %func
-
-
-%--------------------------------------------------------------------------
-% 12/2024 JJJ: Plot threshold variability across chunks
-function plot_thresh_variability_(vnThresh_chunks, vnThresh_global, P)
-% Create diagnostic plot showing threshold standard deviation per channel
-
-fprintf('Creating threshold variability diagnostic plot...\n');
-
-nChannels = size(vnThresh_chunks, 2);
-nChunks = size(vnThresh_chunks, 1);
-
-% Calculate statistics per channel
-vnStd_per_channel = std(single(vnThresh_chunks), 0, 1);
-vnMean_per_channel = mean(single(vnThresh_chunks), 1);
-vnCV_per_channel = vnStd_per_channel ./ vnMean_per_channel * 100; % Coefficient of variation
-
-% Create figure
-hFig = figure('Name', 'Threshold Variability Analysis', 'Position', [100, 100, 1200, 800]);
-
-% Subplot 1: Threshold values across chunks for all channels (inverted axes)
-subplot(2,3,1);
-plot(vnThresh_chunks, 1:nChannels, 'Color', [0.5 0.5 0.5 0.3]);
-hold on;
-plot(vnThresh_global, 1:nChannels, 'r-', 'LineWidth', 2);
-xlabel('Threshold (ADC units)');
-ylabel('Channel');
-title(sprintf('Thresholds across %d chunks', nChunks));
-legend({'Per-chunk', 'Global (median)'}, 'Location', 'best');
-grid on;
-
-% Subplot 2: Standard deviation per channel
-subplot(2,3,2);
-bar(vnStd_per_channel);
-xlabel('Channel');
-ylabel('Std. Dev. (ADC units)');
-title('Threshold Standard Deviation per Channel');
-grid on;
-
-% Subplot 3: Coefficient of variation per channel
-subplot(2,3,3);
-bar(vnCV_per_channel);
-xlabel('Channel');
-ylabel('CV (%)');
-title('Coefficient of Variation per Channel');
-grid on;
-
-% Subplot 4: Heatmap of thresholds (chunks x channels)
-subplot(2,3,4);
-imagesc(vnThresh_chunks');
-colorbar;
-xlabel('Chunk');
-ylabel('Channel');
-title('Threshold Heatmap');
-
-% Subplot 5: Box plot per channel (sample channels for clarity)
-subplot(2,3,5);
-nChannels_plot = min(32, nChannels);  % Plot max 32 channels
-channel_step = ceil(nChannels / nChannels_plot);
-channels_to_plot = 1:channel_step:nChannels;
-boxplot(single(vnThresh_chunks(:, channels_to_plot)));
-xlabel('Channel (subsampled)');
-ylabel('Threshold (ADC units)');
-title(sprintf('Threshold Distribution (showing %d of %d channels)', length(channels_to_plot), nChannels));
-grid on;
-
-% Subplot 6: Summary statistics or smoothing comparison
-fSmoothThresh = get_set_(P, 'fSmoothThresh', 0);
-if fSmoothThresh
-    % Show smoothing effect when enabled
-    subplot(2,3,6);
-
-    % Apply smoothing to show comparison
-    try
-        vnThresh_smoothed = smooth_thresholds_(vnThresh_chunks, P);
-        vnStd_smoothed = std(single(vnThresh_smoothed), 0, 1);
-
-        % Plot comparison
-        bar([1, 2], [mean(vnStd_per_channel), mean(vnStd_smoothed)]);
-        set(gca, 'XTickLabel', {'Raw', 'Smoothed'});
-        ylabel('Mean Std Dev (ADC)');
-        title(sprintf('Smoothing Effect (%s, window=%d)', ...
-            get_set_(P, 'vcSmoothMethod', 'sgolay'), ...
-            get_set_(P, 'nSmoothWindow', 5)));
-        grid on;
-
-        % Add text annotation
-        text(0.5, mean(vnStd_per_channel)*0.5, ...
-            sprintf('%.1f%% reduction', ...
-            (1 - mean(vnStd_smoothed)/mean(vnStd_per_channel))*100), ...
-            'HorizontalAlignment', 'center');
-    catch
-        % If smoothing fails, show regular statistics
-        axis off;
-        text(0.1, 0.5, 'Smoothing visualization failed', 'Color', 'red');
-    end
-else
-    % Regular statistics display
-    subplot(2,3,6);
-    axis off;
-    text_y = 0.9;
-    text_spacing = 0.1;
-    text(0.1, text_y, sprintf('Total Chunks: %d', nChunks), 'FontWeight', 'bold');
-    text_y = text_y - text_spacing;
-    text(0.1, text_y, sprintf('Total Channels: %d', nChannels));
-    text_y = text_y - text_spacing;
-    text(0.1, text_y, sprintf('Mean Std Dev: %.2f ADC units', mean(vnStd_per_channel)));
-    text_y = text_y - text_spacing;
-    text(0.1, text_y, sprintf('Max Std Dev: %.2f (Ch %d)', max(vnStd_per_channel), find(vnStd_per_channel == max(vnStd_per_channel), 1)));
-    text_y = text_y - text_spacing;
-    text(0.1, text_y, sprintf('Mean CV: %.2f%%', mean(vnCV_per_channel)));
-    text_y = text_y - text_spacing;
-    text(0.1, text_y, sprintf('Max CV: %.2f%% (Ch %d)', max(vnCV_per_channel), find(vnCV_per_channel == max(vnCV_per_channel), 1)));
-end
-
-% Save figure
-if ~isempty(P.vcFile_prm)
-    vcDir_out = fileparts(P.vcFile_prm);
-else
-    vcDir_out = pwd;  % Use current directory if prm file not set
-end
-vcFile_fig = fullfile(vcDir_out, [P.vcFile_prm,'thresholds_STDs.png']);
-saveas(hFig, vcFile_fig);
-vcFile_fig = fullfile(vcDir_out, [P.vcFile_prm,'thresholds_STDs.fig']);
-saveas(hFig, vcFile_fig);
-fprintf('Threshold variability plot saved to: %s\n', vcFile_fig);
-close all;
-
-
-
-
-end %func
-
-%--------------------------------------------------------------------------
-function [vnThresh_site, fGpu] = mr2thresh_(mnWav3, P, fApplyQqFactor)
-% Compute threshold from waveform
-% fApplyQqFactor: if true (default), multiply by P.qqFactor
-%                 if false, return raw MAD estimate without qqFactor
-if nargin < 3, fApplyQqFactor = true; end
-
+function [vnThresh_site, fGpu] = mr2thresh_(mnWav3, P)
 fGpu = P.fGpu;
 vcDataType_filter = get_set_(P, 'vcDataType_filter', 'int16');
-
-% Compute base threshold (MAD estimate)
 if strcmpi(vcDataType_filter, 'int16')
     try
-        vnThresh_base = gather_(mr2rms_(mnWav3, 1e5));
+        
+        vnThresh_site = gather_(int16(mr2rms_(mnWav3, 1e5) * P.qqFactor));
     catch
-        vnThresh_base = mr2rms_(gather_(mnWav3), 1e5);
+        vnThresh_site = int16(mr2rms_(gather_(mnWav3), 1e5) * P.qqFactor);
         fGpu = 0;
-    end
-
-    % Apply qqFactor only if requested
-    if fApplyQqFactor
-        vnThresh_site = int16(vnThresh_base * P.qqFactor);
-    else
-        vnThresh_site = int16(vnThresh_base);
     end
 else
     try
-        vnThresh_base = gather_(mr2rms_(mnWav3, 1e5));
+        vnThresh_site = gather_(mr2rms_(mnWav3, 1e5) * P.qqFactor);
     catch
-        vnThresh_base = mr2rms_(gather_(mnWav3), 1e5);
-        fGpu = 0;
-    end
-
-    % Apply qqFactor only if requested
-    if fApplyQqFactor
-        vnThresh_site = vnThresh_base * P.qqFactor;
-    else
-        vnThresh_site = vnThresh_base;
+        vnThresh_site = mr2rms_(gather_(mnWav3), 1e5) * P.qqFactor;
     end
 end
-
-% Validate thresholds - ensure no NaN or zero values
-vnThresh_site = validate_thresholds_(vnThresh_site, 'mr2thresh_');
-
-disp("mr2thresh_")
-%show_thresholds(vnThresh_site,50)
 end %func
 
 
@@ -17269,30 +16316,21 @@ nSites = numel(P.viSite2Chan);
 fprintf('Cleaning feature using non-local averaging\n\t'); t1=tic;
 P1 = setfield(P, 'knn', 8); % find four nearest neighbors to average
 dimm0 = [size(trFet_spk,1), 1];
-
-% Pre-compute spike indices per site - major speedup
-cviSpk_site1 = vi2cell_(viSite_spk, nSites);
-cviSpk_site2 = vi2cell_(viSite2_spk, nSites);
-
 for iSite = 1:nSites
-    viSpk1_ = cviSpk_site1{iSite};
-    viSpk2_ = cviSpk_site2{iSite};
-    [n1_, n2_] = deal(numel(viSpk1_), numel(viSpk2_));
+    viSpk1_ = find(viSite_spk==iSite);
+    viSpk2_ = find(viSite2_spk==iSite);
+    [n1_, n2_] = deal(numel(viSpk1_), numel(viSpk2_));  
     n12_ = n1_ + n2_;
     mrFet1_ = squeeze_(trFet_spk(:,1,viSpk1_));
     mrFet2_ = squeeze_(trFet_spk(:,2,viSpk2_));
-    if n1_ > 0
-        viSpk12_ = zeros(n12_, 1, 'like', viSpk1_);
-        viSpk12_(1:n1_) = viSpk1_(:);
-        viSpk12_(n1_+1:end) = viSpk2_(:);
+    if n1_ > 0    
+        viSpk12_ = [viSpk1_(:); viSpk2_(:)];
         mrFet12_ = [mrFet1_, mrFet2_];
         [~, ~, miKnn12_] = cuda_knn_(mrFet12_, 1:n12_, 1:n1_, P1);
         trFet_spk(:,1,viSpk1_) = reshape(average_fet_(mrFet12_, miKnn12_), [dimm0, n1_]);
     end
     if n2_ > 0
-        viSpk21_ = zeros(n12_, 1, 'like', viSpk2_);
-        viSpk21_(1:n2_) = viSpk2_(:);
-        viSpk21_(n2_+1:end) = viSpk1_(:);
+        viSpk21_ = [viSpk2_(:); viSpk1_(:)];
         mrFet21_ = [mrFet2_, mrFet1_];
         [~, ~, miKnn21_] = cuda_knn_(mrFet21_, 1:n12_, 1:n2_, P1);    
         trFet_spk(:,2,viSpk2_) = reshape(average_fet_(mrFet21_, miKnn21_), [dimm0, n2_]);
@@ -17412,11 +16450,9 @@ for iSite = 1:nSites
     viSpk1 = cviSpk_site{iSite};    
     if isempty(viSpk1), continue; end
     viSite2 = find(mrDist_site(:,iSite) <= maxDist_site_um & mrDist_site(:,iSite) > 0);
-    viSpk2 = cell2mat_(cviSpk_site(viSite2));
+    viSpk2 = cell2mat_(cviSpk_site(viSite2));    
     [n1, n2] = deal(numel(viSpk1), numel(viSpk2));
-    viSpk12 = zeros(n1 + n2, 1, 'like', viSpk1);
-    viSpk12(1:n1) = viSpk1(:);
-    viSpk12(n1+1:end) = viSpk2(:);
+    viSpk12 = [viSpk1(:); viSpk2(:)];
     [viTime1, viTime12] = deal(viTime_spk(viSpk1), viTime_spk(viSpk12));
         
     % find overlapping spikes that has smaller amplitudes and within site limit
@@ -17454,19 +16490,11 @@ if nargin < 2, P = struct('spkThresh', [], 'qqFactor', 5); end
 if ~isempty(get_(P, 'spkThresh')), thresh1 = P.spkThresh; end
 
 if thresh1==0, [viSpk1, vrSpk1] = deal([]); return; end % bad site
-if isempty(thresh1)
+if isempty(thresh1)    
     thresh1 = median(abs(subsample_vr_(vrWav1, MAX_SAMPLE_QQ)));
     thresh1 = single(thresh1)* P.qqFactor / 0.6745;
 end
 thresh1 = cast(thresh1, 'like', vrWav1); % JJJ 11/5/17
-
-% DIAGNOSTIC: Log threshold vs signal for debugging
-if get_set_(P, 'fDiagnosticMode', 0)
-    vrWav1_abs = abs(vrWav1);
-    nCrossings = sum(vrWav1_abs > thresh1);
-    fprintf('Channel detection: thresh=%.2f, max_signal=%.2f, crossings=%d\n', ...
-        thresh1, max(vrWav1_abs), nCrossings);
-end
 
 % detect valley turning point. cannot detect bipolar
 % pick spikes crossing at least three samples
@@ -17688,181 +16716,18 @@ viSite_spk0 = viSite_spk0(:);
 clear_filters_();
 
 csFile_merge = get_raw_files_(P);
-
-% THRESHOLD HIERARCHY IMPLEMENTATION
-% Priority order:
-% 1. vcFile_thresh (load from file)
-% 2. fUseGlobalThresh (median across chunks)
-% 3. fSmoothThresh (sliding window smoothing)
-% 4. Original per-chunk thresholds
-
-vnThresh_site_global = [];
-vcFile_thresh = get_set_(P, 'vcFile_thresh', '');
-fUseGlobalThresh = get_set_(P, 'fUseGlobalThresh', 0);
-fSmoothThresh = get_set_(P, 'fSmoothThresh', 0);
-
-% DIAGNOSTIC: Log threshold configuration
-fprintf('\n========== THRESHOLD CONFIGURATION ==========\n');
-fprintf('qqFactor: %.2f\n', P.qqFactor);
-fprintf('vcFile_thresh: %s\n', ifeq_(isempty(vcFile_thresh), 'not set', vcFile_thresh));
-fprintf('fUseGlobalThresh: %d\n', fUseGlobalThresh);
-fprintf('fSmoothThresh: %d\n', fSmoothThresh);
-fprintf('=============================================\n');
-
-% Priority 1: Load thresholds from file
-if ~isempty(vcFile_thresh)
+if ~isempty(get_(P, 'vcFile_thresh'))
     try
-        if exist(vcFile_thresh, 'file')
-            S_thresh = load(vcFile_thresh);
-            if isfield(S_thresh, 'vnThresh_site')
-                vnThresh_orig = S_thresh.vnThresh_site(:);
-
-                % Map thresholds from original probe to reduced probe (after exclusions)
-                viSiteExcl = get_set_(P, 'viSiteExcl', []);
-                if ~isempty(viSiteExcl)
-                    % Load original probe file to get unreduced channel list
-                    S_prb_orig = file2struct_(P.probe_file);
-                    viChan_orig = S_prb_orig.channels(:);
-
-                    % P.viSite2Chan contains the reduced channel list (after exclusions)
-                    viChan_reduced = P.viSite2Chan(:);
-                    nSites_reduced = numel(viChan_reduced);
-
-                    % Map each reduced site to its original position and get threshold
-                    vnThresh_site_global = zeros(nSites_reduced, 1);
-                    for iSite = 1:nSites_reduced
-                        iChan = viChan_reduced(iSite);
-                        iOrig = find(viChan_orig == iChan, 1);
-                        if ~isempty(iOrig) && iOrig <= numel(vnThresh_orig)
-                            vnThresh_site_global(iSite) = vnThresh_orig(iOrig);
-                        else
-                            % Shouldn't happen, but use default if needed
-                            vnThresh_site_global(iSite) = median(vnThresh_orig);
-                            fprintf('Warning: Could not find threshold for channel %d, using median\n', iChan);
-                        end
-                    end
-                    fprintf('Mapped thresholds: %d original -> %d reduced sites (excluded %d)\n', ...
-                        numel(vnThresh_orig), nSites_reduced, numel(viSiteExcl));
-                else
-                    % No exclusions, use thresholds as-is
-                    vnThresh_site_global = vnThresh_orig;
-                end
-
-                % Validate loaded thresholds
-                vnThresh_site_global = validate_thresholds_(vnThresh_site_global, sprintf('file: %s', vcFile_thresh));
-                % Store in S0 directly (can't use set0_ with string literal)
-                S0 = get(0, 'UserData');
-                S0.vnThresh_site_global = vnThresh_site_global;
-                set(0, 'UserData', S0);
-                fprintf('THRESHOLD METHOD: Loaded fixed thresholds from %s\n', vcFile_thresh);
-            else
-                error('File %s must contain variable "vnThresh_site"', vcFile_thresh);
-            end
-        else
-            fprintf(2, 'Warning: vcFile_thresh specified but file not found: %s\n', vcFile_thresh);
-            fprintf(2, 'Falling back to next threshold method\n');
-        end
-    catch ME
-        fprintf(2, 'Error loading threshold file: %s\n', ME.message);
-        fprintf(2, 'Falling back to next threshold method\n');
+        S_thresh = load(P.vcFile_thresh);
+        vnThresh_site = S_thresh.vnThresh_site;
+        set0_(vnThresh_site);
+        fprintf('Loaded %s\n', P.vcFile_thresh);
+    catch
+        disperr_('vcFile_thresh load error');
     end
 end
-
-% Priority 2: Global thresholds (median across chunks)
-if isempty(vnThresh_site_global) && fUseGlobalThresh
-    fprintf('THRESHOLD METHOD: Computing global thresholds (median across chunks)\n');
-    [vnThresh_site_global, vnThresh_chunks_diag] = compute_global_thresh_(P);
-    % Store in S0 directly (can't use set0_ with string literal)
-    S0 = get(0, 'UserData');
-    S0.vnThresh_site_global = vnThresh_site_global;
-    S0.vnThresh_chunks_diag = vnThresh_chunks_diag;
-    set(0, 'UserData', S0);
-
-% Priority 3: Smoothed thresholds with sliding window
-elseif isempty(vnThresh_site_global) && fSmoothThresh
-    fprintf('THRESHOLD METHOD: Using sliding window smoothing (100-chunk windows, 50-chunk overlap)\n');
-    [vnThresh_site_global, vnThresh_chunks_diag] = compute_smoothed_thresh_(P);
-    % Store in S0 directly (can't use set0_ with string literal)
-    S0 = get(0, 'UserData');
-    S0.vnThresh_site_global = vnThresh_site_global;
-    S0.vnThresh_chunks_diag = vnThresh_chunks_diag;
-    set(0, 'UserData', S0);
-
-% Priority 4: Original per-chunk thresholds
-elseif isempty(vnThresh_site_global)
-    fprintf('THRESHOLD METHOD: Using original per-chunk thresholds (may cause boundary artifacts)\n');
-end
-
-% Save precomputed thresholds for options 1, 2, or 3
-if ~isempty(vnThresh_site_global) && ~isempty(P.vcFile_prm)
-    vcFile_precomputed = [P.vcFile_prm, '.precomputed_thresholds.mat'];
-    try
-        % Determine which method was used
-        if ~isempty(vcFile_thresh) && exist(vcFile_thresh, 'file')
-            threshold_method = 'vcFile_thresh';
-            source_file = vcFile_thresh;
-        elseif fUseGlobalThresh
-            threshold_method = 'fUseGlobalThresh';
-            source_file = '';
-        elseif fSmoothThresh
-            threshold_method = 'fSmoothThresh';
-            source_file = '';
-        else
-            threshold_method = 'unknown';
-            source_file = '';
-        end
-
-        % Save with metadata
-        threshold_metadata = struct(...
-            'method', threshold_method, ...
-            'source_file', source_file, ...
-            'qqFactor', P.qqFactor, ...
-            'qqFactor_applied', false, ...  % These are fixed thresholds
-            'nChannels', numel(vnThresh_site_global), ...
-            'date_created', datestr(now), ...
-            'prm_file', P.vcFile_prm);
-
-        save(vcFile_precomputed, 'vnThresh_site_global', 'threshold_metadata', '-v7.3');
-        fprintf('Saved precomputed thresholds to: %s\n', vcFile_precomputed);
-        fprintf('  Method: %s\n', threshold_method);
-        fprintf('  Channels: %d\n', numel(vnThresh_site_global));
-    catch ME
-        fprintf(2, 'Warning: Could not save precomputed thresholds: %s\n', ME.message);
-    end
-end
-
-% Initialize chunk threshold saving
-if ~isempty(P.vcFile_prm)
-    vcFile_chunk_thresh = [P.vcFile_prm, '.thresholds.mat'];
-    % Initialize or clear the file with metadata
-    chunk_thresholds = struct('chunks', {}, 'thresholds', {}, 'file_idx', {}, 'chunk_idx', {});
-
-    % Create metadata for chunk thresholds
-    if ~isempty(vnThresh_site_global)
-        threshold_method_str = 'fixed';
-    else
-        threshold_method_str = 'per_chunk';
-    end
-
-    chunk_metadata = struct(...
-        'qqFactor', P.qqFactor, ...
-        'qqFactor_applied', isempty(vnThresh_site_global), ...  % true only for per-chunk method
-        'threshold_method', threshold_method_str, ...
-        'nChannels', P.nChans, ...
-        'date_created', datestr(now), ...
-        'prm_file', P.vcFile_prm, ...
-        'file_list', {csFile_merge});
-
-    try
-        save(vcFile_chunk_thresh, 'chunk_thresholds', 'chunk_metadata', '-v7.3');
-        fprintf('Initialized chunk threshold file: %s\n', vcFile_chunk_thresh);
-    catch ME
-        fprintf(2, 'Warning: Could not initialize chunk threshold file: %s\n', ME.message);
-    end
-end
-
 if isempty(csFile_merge), error('No binary files found.'); end
-% [tnWav_raw, tnWav_spk, trFet_spk, miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site] = deal({});
+% [tnWav_raw, tnWav_spk, trFet_spk, miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site] = deal({});    
 [miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site] = deal({});    
 [viT_offset_file, vnSamples_file] = deal(zeros(size(csFile_merge)));
 nFiles = numel(csFile_merge);    
@@ -17894,7 +16759,7 @@ for iFile=1:nFiles
         end
         [viTime_spk11, viSite_spk11] = filter_spikes_(viTime_spk0, viSite_spk0, nSamples_total + [1, nSamples11]);
         [tnWav_raw_, tnWav_spk_, trFet_spk_, miSite_spk{end+1}, viTime_spk{end+1}, vrAmp_spk{end+1}, vnThresh_site{end+1}, P.fGpu] ...
-                = wav2spk_(mnWav11, P, viTime_spk11, viSite_spk11, mnWav11_pre, mnWav11_post, vnThresh_site_global, iFile, iLoad1);
+                = wav2spk_(mnWav11, P, viTime_spk11, viSite_spk11, mnWav11_pre, mnWav11_post);
         write_spk_(tnWav_raw_, tnWav_spk_, trFet_spk_);
         viTime_spk{end} = viTime_spk{end} + nSamples_total;
         nSamples_total = nSamples_total + nSamples11;
@@ -17915,31 +16780,12 @@ write_spk_();
 
 [miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site] = ...
     multifun_(@(x)cat(1, x{:}), miSite_spk, viTime_spk, vrAmp_spk, vnThresh_site);
-% Use vnThresh_site_global if it exists (from vcFile_thresh, fUseGlobalThresh, or fSmoothThresh)
-if ~isempty(vnThresh_site_global)
-    vrThresh_site = vnThresh_site_global(:)';
-    fprintf('Using precomputed global thresholds (from vcFile_thresh/fUseGlobalThresh/fSmoothThresh)\n');
+vrThresh_site = mean(single(vnThresh_site),1);
+viSite_spk = miSite_spk(:,1);
+if size(miSite_spk,2) >= 2
+    viSite2_spk = miSite_spk(:,2);
 else
-    vrThresh_site = mean(single(vnThresh_site),1);
-    fprintf('Using averaged per-chunk thresholds (legacy mode)\n');
-end
-% Handle case when no spikes detected
-if isempty(miSite_spk)
-    viSite_spk = [];
     viSite2_spk = [];
-    fprintf(2, 'WARNING: No spikes detected in any chunk!\n');
-    fprintf(2, 'Possible causes:\n');
-    fprintf(2, '  1. Thresholds too high (check threshold values)\n');
-    fprintf(2, '  2. Data scaling issue (check uV_per_bit parameter)\n');
-    fprintf(2, '  3. Filtered data has very low amplitude\n');
-    fprintf(2, 'Threshold range: [%.2f, %.2f] ADC units\n', min(vrThresh_site), max(vrThresh_site));
-else
-    viSite_spk = miSite_spk(:,1);
-    if size(miSite_spk,2) >= 2
-        viSite2_spk = miSite_spk(:,2);
-    else
-        viSite2_spk = [];
-    end
 end
 
 % set S0
@@ -17947,13 +16793,7 @@ end
 [type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
 [dimm_raw(3), dimm_spk(3), dimm_fet(3)] = deal(numel(viTime_spk));
 nSites = numel(P.viSite2Chan);
-
-% Handle empty spike case for site assignment
-if isempty(miSite_spk)
-    cviSpk_site = arrayfun(@(iSite)[], 1:nSites, 'UniformOutput', 0);
-else
-    cviSpk_site = arrayfun(@(iSite)find(miSite_spk(:,1) == iSite), 1:nSites, 'UniformOutput', 0);
-end
+cviSpk_site = arrayfun(@(iSite)find(miSite_spk(:,1) == iSite), 1:nSites, 'UniformOutput', 0);
 if size(miSite_spk,2) >= 2
     cviSpk2_site = arrayfun(@(iSite)find(miSite_spk(:,2) == iSite), 1:nSites, 'UniformOutput', 0);
 else
@@ -18655,107 +17495,22 @@ end %func
 
 %--------------------------------------------------------------------------
 function S_clu = S_clu_quality_(S_clu, P, viClu_update)
-% 7/5/17 JJJ: Added isolation distance, L-ratio,
+% 7/5/17 JJJ: Added isolation distance, L-ratio, 
 % TODO: update when deleting, splitting, or merging
 if nargin<3, viClu_update = []; end
 t1 = tic;
 fprintf('Calculating cluster quality...\n');
 
-% Check if doing incremental update
-fIncremental = ~isempty(viClu_update) && isfield(S_clu, 'vrSnr_clu') && numel(S_clu.vrSnr_clu) >= S_clu.nClu;
-
-if fIncremental
-    % Get existing arrays and update only specified clusters
-    [vrVpp_clu, vrVmin_clu, vrVpp_uv_clu, vrVmin_uv_clu] = struct_get_(S_clu, 'vrVpp_clu', 'vrVmin_clu', 'vrVpp_uv_clu', 'vrVmin_uv_clu');
-    [vrSnr_clu, vnSite_clu] = struct_get_(S_clu, 'vrSnr_clu', 'vnSite_clu');
-    [vrIsoDist_clu, vrLRatio_clu, vrIsiRatio_clu] = struct_get_(S_clu, 'vrIsoDist_clu', 'vrLRatio_clu', 'vrIsiRatio_clu');
-    % Verify sizes match nClu
-    if numel(vrVpp_clu) < S_clu.nClu || numel(vrSnr_clu) < S_clu.nClu
-        % Arrays are smaller than nClu (split/add cluster), expand them
-        nExpand = S_clu.nClu - numel(vrVpp_clu);
-        if nExpand > 0
-            if size(vrVpp_clu,1) == 1
-                vrVpp_clu = [vrVpp_clu, zeros(1, nExpand)];
-                vrVmin_clu = [vrVmin_clu, zeros(1, nExpand)];
-                vrVpp_uv_clu = [vrVpp_uv_clu, zeros(1, nExpand)];
-                vrVmin_uv_clu = [vrVmin_uv_clu, zeros(1, nExpand)];
-            else
-                vrVpp_clu = [vrVpp_clu; zeros(nExpand, size(vrVpp_clu,2))];
-                vrVmin_clu = [vrVmin_clu; zeros(nExpand, size(vrVmin_clu,2))];
-                vrVpp_uv_clu = [vrVpp_uv_clu; zeros(nExpand, size(vrVpp_uv_clu,2))];
-                vrVmin_uv_clu = [vrVmin_uv_clu; zeros(nExpand, size(vrVmin_uv_clu,2))];
-            end
-        end
-        nExpand = S_clu.nClu - numel(vrSnr_clu);
-        if nExpand > 0
-            if size(vrSnr_clu,1) == 1
-                vrSnr_clu = [vrSnr_clu, zeros(1, nExpand)];
-                vnSite_clu = [vnSite_clu, zeros(1, nExpand)];
-            else
-                vrSnr_clu = [vrSnr_clu; zeros(nExpand, size(vrSnr_clu,2))];
-                vnSite_clu = [vnSite_clu; zeros(nExpand, size(vnSite_clu,2))];
-            end
-        end
-        nExpand = S_clu.nClu - numel(vrIsoDist_clu);
-        if nExpand > 0
-            if size(vrIsoDist_clu,1) == 1
-                vrIsoDist_clu = [vrIsoDist_clu, nan(1, nExpand)];
-                vrLRatio_clu = [vrLRatio_clu, nan(1, nExpand)];
-                vrIsiRatio_clu = [vrIsiRatio_clu, nan(1, nExpand)];
-            else
-                vrIsoDist_clu = [vrIsoDist_clu; nan(nExpand, size(vrIsoDist_clu,2))];
-                vrLRatio_clu = [vrLRatio_clu; nan(nExpand, size(vrLRatio_clu,2))];
-                vrIsiRatio_clu = [vrIsiRatio_clu; nan(nExpand, size(vrIsiRatio_clu,2))];
-            end
-        end
-    elseif numel(vrVpp_clu) > S_clu.nClu || numel(vrSnr_clu) > S_clu.nClu
-        % Arrays are larger than nClu (merge/delete pending), trim to current size while preserving shape
-        if size(vrVpp_clu,1) == 1
-            vrVpp_clu = vrVpp_clu(1:S_clu.nClu);
-            vrVmin_clu = vrVmin_clu(1:S_clu.nClu);
-            vrVpp_uv_clu = vrVpp_uv_clu(1:S_clu.nClu);
-            vrVmin_uv_clu = vrVmin_uv_clu(1:S_clu.nClu);
-        else
-            vrVpp_clu = vrVpp_clu(1:S_clu.nClu,:);
-            vrVmin_clu = vrVmin_clu(1:S_clu.nClu,:);
-            vrVpp_uv_clu = vrVpp_uv_clu(1:S_clu.nClu,:);
-            vrVmin_uv_clu = vrVmin_uv_clu(1:S_clu.nClu,:);
-        end
-        if size(vrSnr_clu,1) == 1
-            vrSnr_clu = vrSnr_clu(1:S_clu.nClu);
-            vnSite_clu = vnSite_clu(1:S_clu.nClu);
-        else
-            vrSnr_clu = vrSnr_clu(1:S_clu.nClu,:);
-            vnSite_clu = vnSite_clu(1:S_clu.nClu,:);
-        end
-        if size(vrIsoDist_clu,1) == 1
-            vrIsoDist_clu = vrIsoDist_clu(1:S_clu.nClu);
-            vrLRatio_clu = vrLRatio_clu(1:S_clu.nClu);
-            vrIsiRatio_clu = vrIsiRatio_clu(1:S_clu.nClu);
-        else
-            vrIsoDist_clu = vrIsoDist_clu(1:S_clu.nClu,:);
-            vrLRatio_clu = vrLRatio_clu(1:S_clu.nClu,:);
-            vrIsiRatio_clu = vrIsiRatio_clu(1:S_clu.nClu,:);
-        end
-    end
-end
-
-if ~fIncremental
-    [vrVpp_clu, vrVmin_clu, vrVpp_uv_clu, vrVmin_uv_clu] = deal(zeros(1, S_clu.nClu));
-    [vrSnr_clu, vnSite_clu] = deal(zeros(S_clu.nClu, 1));
-    [vrIsoDist_clu, vrLRatio_clu, vrIsiRatio_clu] = deal(nan(S_clu.nClu, 1));
-    viClu_update = 1:S_clu.nClu;
-end
-
+[vrVpp_clu, vrVmin_clu, vrVpp_uv_clu, vrVmin_uv_clu] = deal([]);
 try
     mrVmin_clu = squeeze_(min(S_clu.tmrWav_clu,[],1),1);
     mrVmax_clu = squeeze_(max(S_clu.tmrWav_clu,[],1),1);
     mrVmin_uv_clu = squeeze_(min(S_clu.tmrWav_raw_clu,[],1),1);
     mrVmax_uv_clu = squeeze_(max(S_clu.tmrWav_raw_clu,[],1),1);
-    vrVpp_clu(viClu_update) = mr2vr_sub2ind_(mrVmax_clu-mrVmin_clu, S_clu.viSite_clu, viClu_update);
-    vrVmin_clu(viClu_update) = mr2vr_sub2ind_(mrVmin_clu, S_clu.viSite_clu, viClu_update);
-    vrVpp_uv_clu(viClu_update) = mr2vr_sub2ind_(mrVmax_uv_clu-mrVmin_uv_clu, S_clu.viSite_clu, viClu_update);
-    vrVmin_uv_clu(viClu_update) = mr2vr_sub2ind_(mrVmin_uv_clu, S_clu.viSite_clu, viClu_update);
+    vrVpp_clu = mr2vr_sub2ind_(mrVmax_clu-mrVmin_clu, S_clu.viSite_clu, 1:S_clu.nClu);
+    vrVmin_clu = mr2vr_sub2ind_(mrVmin_clu, S_clu.viSite_clu, 1:S_clu.nClu);
+    vrVpp_uv_clu = mr2vr_sub2ind_(mrVmax_uv_clu-mrVmin_uv_clu, S_clu.viSite_clu, 1:S_clu.nClu);
+    vrVmin_uv_clu = mr2vr_sub2ind_(mrVmin_uv_clu, S_clu.viSite_clu, 1:S_clu.nClu);
 catch
     disp('S_clu_quality_: error');
 end
@@ -18763,44 +17518,17 @@ try
     S0 = get(0, 'UserData');
     if isempty(S0), S0 = load0_(subsFileExt_(P.vcFile_prm, '_jrc.mat')); end
     vrVrms_site = bit2uV_(single(S0.vrThresh_site(:)) / S0.P.qqFactor, P);
-    vrSnr_clu(viClu_update) = abs(vrVmin_clu(viClu_update)) ./ vrVrms_site(S_clu.viSite_clu(viClu_update));
-    vnSite_clu_tmp = sum(bsxfun(@lt, mrVmin_clu, -vrVrms_site * S0.P.qqFactor),1)';
-    vnSite_clu(viClu_update) = vnSite_clu_tmp(viClu_update);
+%     vrSnr_clu = vrVpp_clu ./ vrVrms_site(viSite_clu);
+    vrSnr_clu = abs(vrVmin_clu) ./ vrVrms_site(S_clu.viSite_clu);
+    vnSite_clu = sum(bsxfun(@lt, mrVmin_clu, -vrVrms_site * S0.P.qqFactor),1)';
 catch
-    if ~fIncremental
-        % Keep zero-initialized arrays instead of clearing them to maintain correct size
-        vrVrms_site = [];
-        % Don't clear vrSnr_clu and vnSite_clu - they're already correctly sized from line 18368
-    else
-        % In incremental mode, ensure arrays are correctly sized even if calculation fails
-        if numel(vrSnr_clu) ~= S_clu.nClu
-            if numel(vrSnr_clu) > S_clu.nClu
-                if size(vrSnr_clu,1) == 1
-                    vrSnr_clu = vrSnr_clu(1:S_clu.nClu);
-                    vnSite_clu = vnSite_clu(1:S_clu.nClu);
-                else
-                    vrSnr_clu = vrSnr_clu(1:S_clu.nClu,:);
-                    vnSite_clu = vnSite_clu(1:S_clu.nClu,:);
-                end
-            else
-                vrSnr_clu = [vrSnr_clu; zeros(S_clu.nClu - numel(vrSnr_clu), 1)];
-                vnSite_clu = [vnSite_clu; zeros(S_clu.nClu - numel(vnSite_clu), 1)];
-            end
-        end
-    end
+    [vrVrms_site, vrSnr_clu, vnSite_clu] = deal([]);
     disp('no Sevt in memory.');
 end
 try
-    [vrIsoDist_tmp, vrLRatio_tmp, vrIsiRatio_tmp] = S_clu_quality2_(S_clu, P, viClu_update);
-    if ~isempty(vrIsoDist_tmp)
-        vrIsoDist_clu(viClu_update) = vrIsoDist_tmp(viClu_update);
-        vrLRatio_clu(viClu_update) = vrLRatio_tmp(viClu_update);
-        vrIsiRatio_clu(viClu_update) = vrIsiRatio_tmp(viClu_update);
-    end
+    [vrIsoDist_clu, vrLRatio_clu, vrIsiRatio_clu] = S_clu_quality2_(S_clu, P, viClu_update);
 catch
-    if ~fIncremental
-        [vrIsoDist_clu, vrLRatio_clu, vrIsiRatio_clu] = deal(nan(size(vrVpp_clu)));
-    end
+    [vrIsoDist_clu, vrLRatio_clu, vrIsiRatio_clu] = deal(nan(size(vrVpp_clu)));
 end
 
 S_clu = struct_add_(S_clu, vrVpp_clu, vrSnr_clu, vrVrms_site, vnSite_clu, ...
@@ -18875,13 +17603,24 @@ if nargin<2, fPlot = 0; end
 
 autoscale_pct = get_set_(S0.P, 'autoscale_pct', 99.5);
 [hFig_proj, S_fig_proj] = get_fig_cache_('FigProj');
+
+% Check if S_fig_proj has required fields
+if ~isstruct(S_fig_proj) || ~isfield(S_fig_proj, 'viSites_show')
+    return; % FigProj not properly initialized
+end
+
 [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, S_fig_proj.viSites_show);
 if isempty(mrMin2) || isempty(mrMax2)
     cmrAmp = {mrMin1, mrMax1};
 else
     cmrAmp = {mrMin1, mrMax1, mrMin2, mrMax2};
 end
-S_fig_proj.maxAmp = max(cellfun(@(x)quantile(x(:), autoscale_pct/100), cmrAmp));
+maxAmp_proj = max(cellfun(@(x)quantile(x(:), autoscale_pct/100), cmrAmp));
+% Handle NaN - use default from P
+if isnan(maxAmp_proj) || isempty(maxAmp_proj)
+    maxAmp_proj = get_set_(S0.P, 'maxAmp', 250);
+end
+S_fig_proj.maxAmp = maxAmp_proj;
 set(hFig_proj, 'UserData', S_fig_proj);
 
 
@@ -19611,8 +18350,7 @@ if nClu_merge>0
     S_clu.csNote_clu = cell(S_clu.nClu, 1);  %reset note
     S_clu = S_clu_quality_(S_clu, P);
     set0_(S_clu);
-    S0 = gui_update_();
-    save0_();
+    S0 = gui_update_();    
 
     assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after deleting');
     nClu_merge1 = nClu_prev - S_clu.nClu;
@@ -19770,14 +18508,8 @@ function [S_clu, S0] = S_clu_commit_(S_clu, vcMsg)
 if nargin<2, vcMsg = ''; end
 if ~S_clu_valid_(S_clu)
     fprintf(2, '%s: Cluster number is inconsistent.', vcMsg);
-    % For split operations, commit anyway and let save0_ persist the changes
-    if contains(vcMsg, 'split')
-        S0 = set0_(S_clu);
-        save0_();
-    else
-        S0 = get(0, 'UserData');
-        S_clu = get_(S0, 'S_clu');
-    end
+    S0 = get(0, 'UserData');
+    S_clu = get_(S0, 'S_clu');
 else
     S0 = set0_(S_clu);
 end
@@ -20628,19 +19360,12 @@ try
         case 4
             [out1, out2, out3, out4] = feval(vcFunc, cell_Input{:});
             S_out = makeStruct_(out1, out2, out3, out4);
-        case 5
-            [out1, out2, out3, out4, out5] = feval(vcFunc, cell_Input{:});
-            S_out = makeStruct_(out1, out2, out3, out4, out5);
-        otherwise
-            error('test_: nOutput=%d not supported (max is 5)', nOutput);
-            S_out = [];
     end %switch
     if fVerbose
         if nOutput>=1, fprintf('[%s: out1]\n', vcFunc); disp(S_out.out1); end
         if nOutput>=2, fprintf('[%s: out2]\n', vcFunc); disp(S_out.out2); end
         if nOutput>=3, fprintf('[%s: out3]\n', vcFunc); disp(S_out.out3); end
         if nOutput>=4, fprintf('[%s: out4]\n', vcFunc); disp(S_out.out4); end
-        if nOutput>=5, fprintf('[%s: out5]\n', vcFunc); disp(S_out.out5); end
     end
 catch
     disperr_();
@@ -20668,7 +19393,6 @@ else
         case 2, [varargout{1}, varargout{2}] = deal(S_out.out1, S_out.out2);
         case 3, [varargout{1}, varargout{2}, varargout{3}] = deal(S_out.out1, S_out.out2, S_out.out3);
         case 4, [varargout{1}, varargout{2}, varargout{3}, varargout{4}] = deal(S_out.out1, S_out.out2, S_out.out3, S_out.out4);
-        case 5, [varargout{1}, varargout{2}, varargout{3}, varargout{4}, varargout{5}] = deal(S_out.out1, S_out.out2, S_out.out3, S_out.out4, S_out.out5);
     end %switch
 end
 end %func
@@ -21408,9 +20132,6 @@ function vcStr = field2str_(val, fDoubleQuote)
 % convert a value to a strong
 if nargin<2, fDoubleQuote = false; end
 
-if isgpuarray(val)
-    val=gather(val);
-end
 switch class(val)
     case {'int', 'int16', 'int32', 'uint16', 'uint32'}
         vcFormat = '%d';
@@ -22074,8 +20795,6 @@ vnThresh_site(S_fig.vlSite_bad) = nan; % shows up as 0 for int16
 S_fig.mlWav_thresh = bsxfun(@lt, mnWav_filt, -abs(vnThresh_site)); %negative threshold crossing
 S_fig.mlWav_thresh(:, S_fig.vlSite_bad) = 0;
 S_fig.vnThresh_site = vnThresh_site;
-disp("fig_preview")
-show_thresholds(vnThresh_site.*P.uV_per_bit,50)
 
 % Spike detection
 % P_.fMerge_spk = 0;
@@ -22090,15 +20809,9 @@ S_fig.viSite_spk = viSite_spk;
 
 % Exit
 set(hFig, 'UserData', S_fig);
-
 [hFig, S_fig] = Fig_preview_plot_(P, fKeepView);
 end %func
 
-function show_thresholds(vnThresh_site,inter_vals)
-%fprintf("%s%s%s%s%s\n","threshold is now: ",(string(vnThresh_site(1:100:end))))
-fprintf("%s%d%s\n","thresholds at ",inter_vals, "site intervals:")
-disp(vnThresh_site(1:inter_vals:end))
-end
 
 %--------------------------------------------------------------------------
 function [mrPower, vrFreq] = psd_(mr, Fs, nSkip)
@@ -22692,11 +21405,9 @@ S_fig = get(hFig, 'UserData');
 vnThresh_site = S_fig.vnThresh_site;
 vcFile_thresh = strrep(P.vcFile_prm, '.prm', '_thresh.mat');
 save(vcFile_thresh, 'vnThresh_site'); % also need to store filter values?
-if ~isfield(P, 'vcFile_thresh') || isempty(P.vcFile_thresh)
-    P.vcFile_thresh = vcFile_thresh;
-    set0_(P);
-    edit_prm_file_(P, P.vcFile_prm);
-end
+P.vcFile_thresh = vcFile_thresh;
+set0_(P);
+edit_prm_file_(P, P.vcFile_prm);
 
 msgbox_(sprintf('Saved to %s and updated %s (vcFile_thresh)', ...
     vcFile_thresh, P.vcFile_prm));
@@ -25139,13 +23850,11 @@ if ~isfield(S0, 'S_clu'), fprintf(2, 'File must be sorted first.\n'); return; en
 S = S0.S_clu;
 [unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note] = ...
     deal((1:S.nClu)', S.vrSnr_clu(:), S.viSite_clu(:), S.vnSpk_clu(:), ...
-    S.vrPosX_clu(:), S.vrPosY_clu(:), S.vrVmin_uv_clu, S.vrVpp_uv_clu, ...
+    S.vrPosX_clu(:), S.vrPosX_clu(:), S.vrVmin_uv_clu, S.vrVpp_uv_clu, ...
     S.vrIsoDist_clu(:), S.vrLRatio_clu(:), S.vrIsiRatio_clu(:), S.csNote_clu(:));
 %note(cellfun(@isempty, note)) = '';
 table_ = table(unit_id, SNR, center_site, nSpikes, uV_pp);
 disp(table_);
-disp(S0);
-
 
 vcFile_csv = subsFileExt_(P.vcFile_prm, '_quality.csv');
 writetable(table_, vcFile_csv);
@@ -25175,76 +23884,14 @@ else
 end
 
 [S0, P] = load_cached_(P); 
-
 if ~isfield(S0, 'S_clu'), fprintf(2, 'File must be sorted first.\n'); return; end
 S = S0.S_clu;
-% Extract data arrays and ensure consistent sizing
-unit_id = (1:S.nClu)';
-SNR = S.vrSnr_clu(:);
-center_site = S.viSite_clu(:);
-nSpikes = S.vnSpk_clu(:);
-xpos = S.vrPosX_clu(:);
-ypos = S.vrPosY_clu(:);
-uV_min = S.vrVmin_uv_clu(:);
-uV_pp = S.vrVpp_uv_clu(:);
-IsoDist = S.vrIsoDist_clu(:);
-LRatio = S.vrLRatio_clu(:);
-IsiRat = S.vrIsiRatio_clu(:);
-note = S.csNote_clu(:);
-
-% Debug: Check array sizes
-%fprintf('DEBUG export_quality__: Array sizes - nClu=%d\n', S.nClu);
-% fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
-% fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
-% fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d\n', length(IsoDist), length(LRatio), length(IsiRat), length(note));
-
-% Ensure all arrays are the same length as nClu
-arrays_to_fix = {SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note};
-array_names = {'SNR', 'center_site', 'nSpikes', 'xpos', 'ypos', 'uV_min', 'uV_pp', 'IsoDist', 'LRatio', 'IsiRat', 'note'};
-
-for i = 1:length(arrays_to_fix)
-    if length(arrays_to_fix{i}) ~= S.nClu
-        fprintf('WARNING export_quality__: %s has %d elements, expected %d. Resizing.\n', ...
-            array_names{i}, length(arrays_to_fix{i}), S.nClu);
-        if length(arrays_to_fix{i}) > S.nClu
-            % Truncate if too long
-            arrays_to_fix{i} = arrays_to_fix{i}(1:S.nClu);
-        else
-            % Pad if too short
-            if isnumeric(arrays_to_fix{i})
-                arrays_to_fix{i}(end+1:S.nClu) = NaN;
-            else
-                arrays_to_fix{i}(end+1:S.nClu) = {''};
-            end
-        end
-    end
-end
-
-% Reassign fixed arrays
-[SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note] = ...
-    deal(arrays_to_fix{:});
-
-% Handle viSite2Chan
-viSite2Chan = S0.P.viSite2Chan;
-viSite2Chan = viSite2Chan(center_site)';
-if length(viSite2Chan) ~= S.nClu
-    fprintf('WARNING export_quality__: viSite2Chan has %d elements, expected %d. Resizing.\n', ...
-        length(viSite2Chan), S.nClu);
-    if length(viSite2Chan) > S.nClu
-        viSite2Chan = viSite2Chan(1:S.nClu);
-    else
-        viSite2Chan(end+1:S.nClu) = NaN;
-    end
-end
-
-% Final size check before creating table
-%fprintf('DEBUG export_quality__: Final array sizes before table creation:\n');
-%fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
-%fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
-%fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d, viSite2Chan=%d\n', ...
-%    length(IsoDist), length(LRatio), length(IsiRat), length(note), length(viSite2Chan));
-
-table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note, viSite2Chan);
+[unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note] = ...
+    deal((1:S.nClu)', S.vrSnr_clu(:), S.viSite_clu(:), S.vnSpk_clu(:), ...
+    S.vrPosX_clu(:), S.vrPosX_clu(:), S.vrVmin_uv_clu, S.vrVpp_uv_clu, ...
+    S.vrIsoDist_clu(:), S.vrLRatio_clu(:), S.vrIsiRatio_clu(:), S.csNote_clu(:));
+%note(cellfun(@isempty, note)) = '';
+table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note);
 disp(table_);
 
 vcFile_csv = subsFileExt_(P.vcFile_prm, '_quality.csv');
@@ -25262,9 +23909,7 @@ csMsg = { ...
     sprintf('\tColumn 9: IsoDist: Isolation distance quality metric'), ...
     sprintf('\tColumn 10: LRatio: L-ratio quality metric'), ...
     sprintf('\tColumn 11: IsiRat: ISI-ratio quality metric'), ...
-    sprintf('\tColumn 12: note: user comments'),...
-    sprintf('\tColumn 13: viSite2Chan: channel in imro file')};
-
+    sprintf('\tColumn 12: note: user comments')};
 
 cellfun(@(x)fprintf('%s\n',x), csMsg);
 if fGui, msgbox_(csMsg); end
@@ -28229,7 +26874,7 @@ switch 3
         mrWav_ = reshape((single(tnWav_spk)),[],nSpk);
         [a, mr_, c] = pca(mrWav_', 'NumComponents', nPcPerChan*nChans);
         mrFet_pca = mr_';
-    case 3%1
+    case 1
         tnWav_spk1 = permute(tnWav_spk, [1,3,2]);
         for iChan = 1:nChans
             [a, mr_, c] = pca(tnWav_spk1(:,:,iChan)', 'NumComponents', nPcPerChan);
@@ -28918,36 +27563,11 @@ end %func
 %--------------------------------------------------------------------------
 % subtract spike mean (different from channel mean)
 function tnWav_spk = meanSubt_spk_(tnWav_spk)
-% Handle case with very few spikes
-if isempty(tnWav_spk), return; end
-
 dimm = size(tnWav_spk);
-% Ensure we have at least 3 dimensions
-if numel(dimm) < 3
-    if numel(dimm) == 2
-        % Add third dimension if missing
-        dimm(3) = 1;
-        tnWav_spk = reshape(tnWav_spk, dimm(1), dimm(2), 1);
-    else
-        % Cannot process 1D array
-        return;
-    end
-end
-
-% Handle single spike case
-if dimm(3) == 1
-    % For single spike, subtract the mean across time points
-    vnMean_spk = mean(tnWav_spk(:,:,1), 1);
-    % Ensure same data type to avoid bsxfun error
-    vnMean_spk = cast(vnMean_spk, 'like', tnWav_spk);
-    tnWav_spk = bsxfun(@minus, tnWav_spk, vnMean_spk);
-else
-    % Original implementation for multiple spikes
-    tnWav_spk = reshape(tnWav_spk,[],dimm(3));
-    vnMean_spk = cast(mean(tnWav_spk), 'like', tnWav_spk);
-    tnWav_spk = bsxfun(@minus, tnWav_spk, vnMean_spk);
-    tnWav_spk = reshape(tnWav_spk, dimm);
-end
+tnWav_spk = reshape(tnWav_spk,[],dimm(3));
+vnMean_spk = cast(mean(tnWav_spk), 'like', tnWav_spk);
+tnWav_spk = bsxfun(@minus, tnWav_spk, vnMean_spk);
+tnWav_spk = reshape(tnWav_spk, dimm);
 end %func
 
 
@@ -32607,28 +31227,19 @@ end %func
 function ui_show_drift_view_(fNewFig, hMenu)
 persistent hFig
 if nargin<2, hMenu = []; end
+% hFig = get_fig_('FigClust');
 if nargin<1, fNewFig=0; end
-
+if ~fNewFig && ~isvalid_(hFig), return; end
 S0 = get0_();
 P = S0.P;
-
-% Use the main FigDrift window if it exists
-hFig_main = get_fig_('FigDrift');
-if isvalid_(hFig_main)
-    hFig = hFig_main;
-elseif ~fNewFig && ~isvalid_(hFig)
-    return;
-end
-
 if fNewFig
-    if isvalid_(hFig) && hFig ~= hFig_main % close toggle (only for separate window)
+    if isvalid_(hFig) % close toggle
         close(hFig); hFig = []; set(hMenu, 'Checked', 'off'); return;
     end
-    if ~isvalid_(hFig_main)
-        hFig = create_figure_('FigDrift', [.15 0 .7 .25], ['Drift view: ', P.vcFile_prm], 0, 0);
-        set(hMenu, 'Checked', 'on');
-        set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
-    end
+    % Use same position as FigProj [.5 .25 .35 .5] to replace it
+    hFig = create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm], 0, 0);
+    set(hMenu, 'Checked', 'on');
+    set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
 end
 try
     show_drift_view(S0, hFig);
@@ -32794,210 +31405,22 @@ end %func
 %--------------------------------------------------------------------------
 function export_phy_()
 P = get0_('P');
-vcDir_out = fullfile(get_dir_(P.vcFile_prm), 'phy');
+vcDir_out = fullfile(get_dir_(P.vcFile_prm), 'phy'); 
 
 csAns = inputdlg_('Export to location', 'Export to location', 1, {vcDir_out});
 if isempty(csAns), return; end
 vcDir_out = csAns{1};
 
 hFig_wait = figure_wait_(1);
-hMsg = msgbox_open_('Exporting to Phy');
+hMsg = msgbox_open_('Exporting to Klusters');
 try
-    irc_export_phy_(P.vcFile_prm, vcDir_out);
+    irc2phy(P.vcFile_prm, vcDir_out);
 catch
     errordlg(lasterr());
 end
 close_(hMsg);
 figure_wait_(0, hFig_wait);
 msgbox_(sprintf('Exported to %s', vcDir_out), 1);
-end %func
-
-
-%--------------------------------------------------------------------------
-% Export IronClust results to Phy format (no irc2 dependency)
-function vcFile_params = irc_export_phy_(vcFile_prm, vcDir_out)
-% irc_export_phy_(vcFile_prm, vcDir_out)
-% Export spike sorting results to Phy format using only irc.m data structures
-%
-% Inputs:
-%   vcFile_prm: path to .prm file
-%   vcDir_out: output directory for Phy files (default: [prm_dir]/phy)
-
-if nargin<2, vcDir_out=''; end
-assert(exist_file_(vcFile_prm), ['File does not exist: ', vcFile_prm]);
-
-if isempty(vcDir_out)
-    vcDir_out = fullfile(fileparts(vcFile_prm), 'phy');
-end
-mkdir_(vcDir_out);
-delete(fullfile(vcDir_out, '*.npy'));
-
-% Load S0 structure from _jrc.mat file
-vcFile_jrc = strrep(vcFile_prm, '.prm', '_jrc.mat');
-fprintf('Loading %s...\n', vcFile_jrc);
-S_jrc = load(vcFile_jrc);
-S0 = S_jrc.S0;
-P = S0.P;
-
-% Check if sorting is complete
-assert(isfield(S0, 'S_clu') && ~isempty(S0.S_clu), 'Clustering not found. Run spike sorting first.');
-S_clu = S0.S_clu;
-
-nSites = numel(P.viSite2Chan);
-
-% Export spike data
-fprintf('Writing spike data...\n');
-writeNPY_(uint64(abs(S0.vrAmp_spk)), fullfile(vcDir_out, 'amplitudes.npy'));
-writeNPY_(uint64(S0.viTime_spk), fullfile(vcDir_out, 'spike_times.npy'));
-writeNPY_(int32(S0.viSite_spk) - 1, fullfile(vcDir_out, 'spike_sites.npy'));
-writeNPY_(uint32(S_clu.viClu) - 1, fullfile(vcDir_out, 'spike_templates.npy'));
-
-% Export probe geometry
-fprintf('Writing probe geometry...\n');
-writeNPY_(int32(P.viSite2Chan) - 1, fullfile(vcDir_out, 'channel_map.npy'));
-writeNPY_(double(P.mrSiteXY), fullfile(vcDir_out, 'channel_positions.npy'));
-
-% Export PCA features
-fprintf('Writing PCA features...\n');
-trFet_spk = load_spkfet_(S0, P);
-if ~isempty(trFet_spk)
-    [nPc, nSites_fet, nSpk] = size(trFet_spk);
-    % Phy expects [nSpikes, nPC, nFeatChannels]
-    writeNPY_(permute(trFet_spk(1:min(3,nPc),:,:), [3,1,2]), fullfile(vcDir_out, 'pc_features.npy'));
-
-    % PC feature channel indices per cluster
-    viSite_clu = S_clu.viSite_clu;
-    writeNPY_(uint32(P.miSites(1:nSites_fet, viSite_clu)') - 1, ...
-        fullfile(vcDir_out, 'pc_feature_ind.npy'));
-else
-    fprintf(2, 'Warning: Could not load spike features. Skipping pc_features.npy\n');
-    nSites_fet = get_set_(P, 'nSites_fet', 5);
-    viSite_clu = S_clu.viSite_clu;
-end
-
-% Export templates (cluster waveforms)
-fprintf('Writing templates...\n');
-if isfield(S_clu, 'tmrWav_clu') && ~isempty(S_clu.tmrWav_clu)
-    % Use pre-computed cluster waveforms
-    tmrWav_clu = S_clu.tmrWav_clu;
-    viSite_clu = S_clu.viSite_clu;
-else
-    % Compute cluster waveforms
-    fprintf('Computing cluster waveforms...\n');
-    [tmrWav_clu, viSite_clu] = compute_cluster_waveforms_(S0, S_clu, P);
-end
-
-% Phy expects [nTemplates, nTimePoints, nChannels]
-writeNPY_(permute(tmrWav_clu, [3,1,2]), fullfile(vcDir_out, 'templates.npy'));
-writeNPY_(uint32(P.miSites(1:nSites_fet, viSite_clu)') - 1, fullfile(vcDir_out, 'template_ind.npy'));
-
-% Export template similarity
-if isfield(S_clu, 'mrWavCor') && ~isempty(S_clu.mrWavCor)
-    writeNPY_(single(S_clu.mrWavCor), fullfile(vcDir_out, 'similar_templates.npy'));
-else
-    % Compute correlation between cluster waveforms
-    nClu = size(tmrWav_clu, 3);
-    mrWavCor = eye(nClu, 'single');
-    writeNPY_(mrWavCor, fullfile(vcDir_out, 'similar_templates.npy'));
-end
-
-% Export whitening matrices (identity - IronClust doesn't use whitening)
-writeNPY_(eye(nSites), fullfile(vcDir_out, 'whitening_mat.npy'));
-writeNPY_(eye(nSites), fullfile(vcDir_out, 'whitening_mat_inv.npy'));
-
-% Export params.py
-vcFile_params = write_phy_params_(vcDir_out, P);
-
-fprintf('Export complete: %s\n', vcDir_out);
-end %func
-
-
-%--------------------------------------------------------------------------
-% Compute cluster waveforms for Phy export
-function [tmrWav_clu, viSite_clu] = compute_cluster_waveforms_(S0, S_clu, P)
-nClu = S_clu.nClu;
-viSite_clu = S_clu.viSite_clu;
-nSites_fet = get_set_(P, 'nSites_fet', 5);
-[nSamples, ~] = size(P.miSites);
-
-% Try to load spike waveforms
-tnWav_spk = load_spkwav_(S0, P);
-if isempty(tnWav_spk)
-    fprintf(2, 'Warning: Could not load spike waveforms. Templates will be empty.\n');
-    tmrWav_clu = zeros(nSamples, nSites_fet, nClu, 'single');
-    return;
-end
-
-% Compute mean waveform for each cluster
-tmrWav_clu = zeros(nSamples, nSites_fet, nClu, 'single');
-for iClu = 1:nClu
-    viSpk_clu = find(S_clu.viClu == iClu);
-    if isempty(viSpk_clu), continue; end
-
-    % Get waveforms for this cluster and average
-    iSite = viSite_clu(iClu);
-    viSite_fet = P.miSites(1:nSites_fet, iSite);
-
-    % Average waveforms across spikes
-    tmrWav_clu(:,:,iClu) = single(mean(tnWav_spk(:,viSite_fet,viSpk_clu), 3));
-end
-end %func
-
-
-%--------------------------------------------------------------------------
-% Write params.py for Phy
-function vcFile_params = write_phy_params_(vcDir_out, P)
-fOverwrite = 1;
-
-vcFile_params = fullfile(vcDir_out, 'params.py');
-if ~exist_file_(vcFile_params) || fOverwrite
-    fid = fopen(vcFile_params, 'w');
-    [vcDir, vcFile, vcExt] = fileparts(P.vcFile);
-    if isempty(vcDir), vcDir = pwd(); end
-
-    % Get raw data path
-    switch lower(vcExt)
-        case '.bin'
-            rawRecordings = fullfile(vcDir, [vcFile, vcExt]);
-        otherwise
-            rawRecordings = fullfile(vcDir, [vcFile, '.bin']);
-    end
-
-    if ispc()
-        rawRecordings = strrep(rawRecordings, filesep(), [filesep(),filesep()]);
-    end
-
-    fprintf(fid, 'dat_path = ''%s''\n', rawRecordings);
-    fprintf(fid, 'n_channels_dat = %i\n', P.nChans);
-    fprintf(fid, 'dtype = ''%s''\n', dtype2phy_(P.vcDataType));
-    fprintf(fid, 'offset = %d\n', get_set_(P, 'header_offset', 0));
-
-    if P.sRateHz == floor(P.sRateHz)
-        fprintf(fid,'sample_rate = %i\n', P.sRateHz);
-    else
-        fprintf(fid,'sample_rate = %0.1f\n', P.sRateHz);
-    end
-
-    fprintf(fid,'hp_filtered = False');
-    fclose(fid);
-    fprintf('Wrote to %s\n', vcFile_params);
-end
-end %func
-
-
-%--------------------------------------------------------------------------
-% Convert MATLAB data type to NumPy dtype
-function dtype = dtype2phy_(dtype)
-switch dtype
-    case 'single'
-        dtype = 'float32';
-    case 'double'
-        dtype = 'float64';
-    case 'int16'
-        dtype = 'int16';
-    case 'uint16'
-        dtype = 'uint16';
-end
 end %func
 
 
@@ -33339,9 +31762,3 @@ end %switch
 end %func
 
 
-function save_thresholds(vnThresh_site,vcFile_prm)
-% Save thresholds to MAT file
-filename = [vcFile_prm, '.thresholds.mat'];
-thresholds = vnThresh_site(:)';
-save(filename, 'thresholds', '-v7.3');
-end
