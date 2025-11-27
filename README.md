@@ -140,23 +140,65 @@
 
   Time saved: 41.4 minutes per run (from 104 min → 63 min)
 
-## GUI improvements:
-- merging in the GUI is now deffered, until the user presses a button (U).
-- automerge now works!
- 
+## GUI Improvements (irc manual)
+
+### Deferred Merge/Delete Cache System
+Merge and delete operations are now **queued** and only executed when the user presses **'U'**. This eliminates expensive recomputations during interactive cluster exploration, making curation much faster.
+
+#### How It Works
+1. Press **M** to queue a merge (select two clusters first with click + shift-click)
+2. Press **D** to queue a delete
+3. Queue as many operations as you want - visual markers show pending operations
+4. Press **U** to execute all pending operations at once
+5. Press **Escape** to cancel all pending operations
+
+#### Transitive Merge Groups
+- If you merge clusters 1+4, then 4+5, they automatically combine into group `[1,4,5]`
+- All clusters in the same group get the same colored marker
+- When executed, all clusters in a group merge into the smallest-numbered cluster
+
+#### Visual Feedback
+- **Pending merges**: Colored square markers (same color = same merge group)
+- **Pending deletes**: Red 'X' markers
+
+### Quick Annotation Shortcuts
+Annotate clusters directly with number keys:
+| Key | Annotation |
+|-----|------------|
+| **1** | Mark as "single" unit |
+| **2** | Mark as "multi" unit |
+| **3** | Mark as "noise" |
+| **4** | Mark as "axonal" |
+
+### Auto-label Single Units
+Access via **Edit menu → Auto-label single units (refractory)**
+- Automatically scans all clusters
+- Computes autocorrelation in ±2ms refractory window
+- Labels clusters with clean refractory periods as "single"
+
+### Default Display Settings
+- Spike counts hidden by default (cleaner display)
+- Individual spike waveforms hidden by default (shows only median waveform)
+- Toggle with existing keyboard shortcuts as needed
+
 ## GUI (irc manual) Keyboard Shortcuts Reference
 
 | Key | Action | Speed | Updates |
 |-----|--------|-------|---------|
-| **M** | Merge two selected clusters | Instant (0.2s) | Deferred |
+| **M** | Queue merge (deferred) | Instant | Deferred |
+| **D/Backspace/Delete** | Queue delete (deferred) | Instant | Deferred |
+| **U** | Execute all pending operations | Normal (1-3s) | Immediate ✓ |
+| **Escape** | Cancel all pending operations | Instant | - |
 | **S** | Split current cluster | Normal (2-3s) | Immediate ✓ |
-| **D** | Delete current cluster | Instant (0.2s) | Deferred |
-| **O** | Reorder clusters by spatial coordinates (x, then y) | Normal (1-3s) | Immediate ✓ |
-| **U** | Update all deferred figures | Normal (1-3s) | - |
+| **O** | Reorder clusters by spatial coordinates | Normal (1-3s) | Immediate ✓ |
+| **1** | Annotate as "single" | Instant | - |
+| **2** | Annotate as "multi" | Instant | - |
+| **3** | Annotate as "noise" | Instant | - |
+| **4** | Annotate as "axonal" | Instant | - |
 | **Left/Right** | Navigate clusters | Instant | - |
 | **Shift+Left/Right** | Select second cluster | Instant | - |
 
-**Note:** Only merges and deletes are deferred. Splits and reorder always update figures immediately.
+**Note:** Merges and deletes are deferred until 'U' is pressed. Splits and reorder execute immediately.
 
 ![IronClust logo](img/ironclust_logo.png)
 
