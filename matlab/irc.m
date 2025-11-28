@@ -18477,11 +18477,14 @@ for iField = 1:numel(csNames_m)
         elseif nCols == nClu_old
             % [X x nClu] matrix - select columns
             S_clu.(vcField) = mField(:, viKeep_clu);
+        else
+            % Neither dimension matches nClu_old - this field may cause validation error
+            fprintf(2, 'S_clu_select_: Warning - field %s has size [%d x %d], expected at least one dimension = %d\n', ...
+                vcField, nRows, nCols, nClu_old);
         end
-        % else: neither dimension matches nClu, skip
-    catch
+    catch ME
         % If there's an error processing this field, continue with others
-        fprintf(2, 'S_clu_select_: Warning - could not resize field %s\n', vcField);
+        fprintf(2, 'S_clu_select_: Error resizing field %s: %s\n', vcField, ME.message);
     end
 end
 
