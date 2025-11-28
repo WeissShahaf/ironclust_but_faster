@@ -5464,7 +5464,17 @@ if iCluCopy == iCluPaste, iCluPaste = []; end
 hFig_wait = figure_wait_(1);
 
 S0 = update_cursor_(S0, iCluCopy, 0);
-S0 = update_cursor_(S0, iCluPaste, 1);
+
+% If iCluPaste is explicitly empty, clear it and hide the visual marker
+if isempty(iCluPaste)
+    if isfield(S0, 'hPaste') && ~isempty(S0.hPaste)
+        update_plot_(S0.hPaste, nan, nan); % hide paste marker
+    end
+    S0.iCluPaste = [];
+else
+    S0 = update_cursor_(S0, iCluPaste, 1);
+end
+
 S0 = keyPressFcn_cell_(get_fig_cache_('FigWav'), {'j','t','c','i','v','e','f'}, S0); %'z' to recenter
 set(0, 'UserData', S0);
 
@@ -5497,13 +5507,15 @@ if ~isfield(S0, 'hCopy'), S0.hCopy = []; end
 if ~isfield(S0, 'hPaste'), S0.hPaste = []; end
 
 if ~fPaste
-    iCluCopy = iClu;    
+    iCluCopy = iClu;
     if iCluCopy <1 || iCluCopy > S_clu.nClu, return; end
-    update_plot_(S0.hPaste, nan, nan); %hide paste
-    S0.iCluPaste = []; 
+    % Don't automatically clear iCluPaste - preserve for sequential merge operations
+    % Only hide the visual if iCluPaste is being explicitly cleared by caller
+    % update_plot_(S0.hPaste, nan, nan); %hide paste
+    % S0.iCluPaste = [];
     [S0.iCluCopy, S0.hCopy] = plot_tmrWav_clu_(S0, iCluCopy, S0.hCopy, [0 0 0]);
 else
-    iCluPaste = iClu;    
+    iCluPaste = iClu;
     if iCluPaste < 1 || iCluPaste > S_clu.nClu || S0.iCluCopy == iCluPaste, return; end
     [S0.iCluPaste, S0.hPaste] = plot_tmrWav_clu_(S0, iCluPaste, S0.hPaste, [1 0 0]);
 end
@@ -18428,15 +18440,50 @@ S_clu = struct_select_(S_clu, csNames(viMatch_t), viKeep_clu, 3);
 viMatch_c = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^c\w*_clu$'), csNames, 'UniformOutput', false));
 S_clu = struct_select_(S_clu, csNames(viMatch_c), viKeep_clu);
 
-% remap mrWavCor
+% Handle matrix fields (m*_clu)
+% mrWavCor: special remapping for [nClu x nClu] correlation matrix
 if isfield(S_clu, 'mrWavCor')
     S_clu.mrWavCor = S_clu_wavcor_remap_(S_clu, viKeep_clu);
 end
-if isfield(S_clu, 'mrPos_clu')
-    S_clu.mrPos_clu = S_clu.mrPos_clu(:,viKeep_clu);
+
+% Find all m*_clu fields
+viMatch_m = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^m\w*_clu$'), csNames, 'UniformOutput', false));
+csNames_m = csNames(viMatch_m);
+
+% Get old nClu for dimension checking
+nClu_old = S_clu.nClu;
+nClu_new = numel(viKeep_clu);
+
+% Process each m*_clu field (except those already handled)
+for iField = 1:numel(csNames_m)
+    vcField = csNames_m{iField};
+
+    % Skip fields already handled specially
+    if strcmp(vcField, 'mrWavCor'), continue; end
+
+    try
+        mField = S_clu.(vcField);
+        if isempty(mField), continue; end
+
+        [nRows, nCols] = size(mField);
+
+        % Determine how to resize based on dimensions
+        if nRows == nClu_old && nCols == nClu_old
+            % [nClu x nClu] matrix - select both dimensions
+            S_clu.(vcField) = mField(viKeep_clu, viKeep_clu);
+        elseif nRows == nClu_old
+            % [nClu x X] matrix - select rows
+            S_clu.(vcField) = mField(viKeep_clu, :);
+        elseif nCols == nClu_old
+            % [X x nClu] matrix - select columns
+            S_clu.(vcField) = mField(:, viKeep_clu);
+        end
+        % else: neither dimension matches nClu, skip
+    catch
+        % If there's an error processing this field, continue with others
+        fprintf(2, 'S_clu_select_: Warning - could not resize field %s\n', vcField);
+    end
 end
-% viMatch_m = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^m\w*_clu$'), csNames, 'UniformOutput', false));
-% S_clu = struct_select_(S_clu, csNames(viMatch_m), viKeep_clu);
 
 end %func
 
