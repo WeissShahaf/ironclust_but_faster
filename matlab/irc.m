@@ -17525,6 +17525,19 @@ try
     vrVmin_uv_clu = mr2vr_sub2ind_(mrVmin_uv_clu, S_clu.viSite_clu, 1:S_clu.nClu);
 catch
     disp('S_clu_quality_: error');
+    % Preserve old values or initialize with zeros to match nClu
+    vrVpp_clu = get_(S_clu, 'vrVpp_clu');
+    vrVmin_clu = get_(S_clu, 'vrVmin_clu');
+    vrVpp_uv_clu = get_(S_clu, 'vrVpp_uv_clu');
+    vrVmin_uv_clu = get_(S_clu, 'vrVmin_uv_clu');
+    if isempty(vrVpp_clu), vrVpp_clu = zeros(S_clu.nClu, 1); end
+    if numel(vrVpp_clu) < S_clu.nClu, vrVpp_clu(end+1:S_clu.nClu) = 0; end
+    if isempty(vrVmin_clu), vrVmin_clu = zeros(S_clu.nClu, 1); end
+    if numel(vrVmin_clu) < S_clu.nClu, vrVmin_clu(end+1:S_clu.nClu) = 0; end
+    if isempty(vrVpp_uv_clu), vrVpp_uv_clu = zeros(S_clu.nClu, 1); end
+    if numel(vrVpp_uv_clu) < S_clu.nClu, vrVpp_uv_clu(end+1:S_clu.nClu) = 0; end
+    if isempty(vrVmin_uv_clu), vrVmin_uv_clu = zeros(S_clu.nClu, 1); end
+    if numel(vrVmin_uv_clu) < S_clu.nClu, vrVmin_uv_clu(end+1:S_clu.nClu) = 0; end
 end
 try
     S0 = get(0, 'UserData');
@@ -17535,6 +17548,7 @@ try
     vnSite_clu = sum(bsxfun(@lt, mrVmin_clu, -vrVrms_site * S0.P.qqFactor),1)';
 catch
     % Preserve existing values if they exist, otherwise use empty
+    % IMPORTANT: Expand arrays to match S_clu.nClu if necessary
     if isfield(S_clu, 'vrVrms_site')
         vrVrms_site = S_clu.vrVrms_site;
     else
@@ -17542,11 +17556,19 @@ catch
     end
     if isfield(S_clu, 'vrSnr_clu')
         vrSnr_clu = S_clu.vrSnr_clu;
+        % Expand to match nClu if too small
+        if numel(vrSnr_clu) < S_clu.nClu
+            vrSnr_clu(end+1:S_clu.nClu) = 0;
+        end
     else
         vrSnr_clu = [];
     end
     if isfield(S_clu, 'vnSite_clu')
         vnSite_clu = S_clu.vnSite_clu;
+        % Expand to match nClu if too small
+        if numel(vnSite_clu) < S_clu.nClu
+            vnSite_clu(end+1:S_clu.nClu) = 0;
+        end
     else
         vnSite_clu = [];
     end
