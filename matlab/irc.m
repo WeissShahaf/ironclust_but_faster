@@ -8292,28 +8292,10 @@ function S_clu = delete_clu_(S_clu, viClu_delete)
 % sets the cluster to zero
 nClu_prev = S_clu.nClu;
 viClu_keep = setdiff(1:nClu_prev, viClu_delete);
-
-% DEBUG: Check sizes before S_clu_select_
-if isfield(S_clu, 'vrSnr_clu')
-    fprintf(2, 'DELETE DEBUG: Before S_clu_select_, vrSnr_clu size=%d, nClu=%d\n', numel(S_clu.vrSnr_clu), S_clu.nClu);
-end
-if isfield(S_clu, 'vnSite_clu')
-    fprintf(2, 'DELETE DEBUG: Before S_clu_select_, vnSite_clu size=%d, nClu=%d\n', numel(S_clu.vnSite_clu), S_clu.nClu);
-end
-
 try
     S_clu = S_clu_select_(S_clu, viClu_keep); % remap all
-catch ME
-    fprintf(2, 'delete_clu_: error selecting: %s\n', ME.message);
-    rethrow(ME);
-end
-
-% DEBUG: Check sizes after S_clu_select_
-if isfield(S_clu, 'vrSnr_clu')
-    fprintf(2, 'DELETE DEBUG: After S_clu_select_, vrSnr_clu size=%d, expected=%d\n', numel(S_clu.vrSnr_clu), numel(viClu_keep));
-end
-if isfield(S_clu, 'vnSite_clu')
-    fprintf(2, 'DELETE DEBUG: After S_clu_select_, vnSite_clu size=%d, expected=%d\n', numel(S_clu.vnSite_clu), numel(viClu_keep));
+catch
+    fprintf(2, 'delete_clu_: error selecting');
 end
 
 iClu_del = min(S_clu.viClu) - 1;
@@ -8327,15 +8309,6 @@ viMap = zeros(1, nClu_prev);
 viMap(viClu_keep) = 1:nClu_new;
 S_clu.viClu(vlMap) = viMap(S_clu.viClu(vlMap));
 S_clu.nClu = nClu_new;
-
-% DEBUG: Check sizes before validation
-if isfield(S_clu, 'vrSnr_clu')
-    fprintf(2, 'DELETE DEBUG: Before validation, vrSnr_clu size=%d, nClu=%d\n', numel(S_clu.vrSnr_clu), S_clu.nClu);
-end
-if isfield(S_clu, 'vnSite_clu')
-    fprintf(2, 'DELETE DEBUG: Before validation, vnSite_clu size=%d, nClu=%d\n', numel(S_clu.vnSite_clu), S_clu.nClu);
-end
-
 assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after deleting');
 end %func
 
@@ -17561,7 +17534,22 @@ try
     vrSnr_clu = abs(vrVmin_clu) ./ vrVrms_site(S_clu.viSite_clu);
     vnSite_clu = sum(bsxfun(@lt, mrVmin_clu, -vrVrms_site * S0.P.qqFactor),1)';
 catch
-    [vrVrms_site, vrSnr_clu, vnSite_clu] = deal([]);
+    % Preserve existing values if they exist, otherwise use empty
+    if isfield(S_clu, 'vrVrms_site')
+        vrVrms_site = S_clu.vrVrms_site;
+    else
+        vrVrms_site = [];
+    end
+    if isfield(S_clu, 'vrSnr_clu')
+        vrSnr_clu = S_clu.vrSnr_clu;
+    else
+        vrSnr_clu = [];
+    end
+    if isfield(S_clu, 'vnSite_clu')
+        vnSite_clu = S_clu.vnSite_clu;
+    else
+        vnSite_clu = [];
+    end
     disp('no Sevt in memory.');
 end
 try
