@@ -18414,9 +18414,12 @@ for i=1:numel(csNames)
             otherwise, disperr_('struct_select_: invalid # of dimensions (1-3 supported)');
         end %switch
         S.(vcName_) = val;
-    catch
-%         S = rmfield(S, vcName_);
-        disperr_(sprintf('struct_select_: %s field error', vcName_));
+    catch ME
+        % Better error reporting - show field name, size, and actual error
+        fprintf(2, 'struct_select_: Error resizing field "%s" (size=%s, viKeep=%d elements): %s\n', ...
+            vcName_, mat2str(size(S.(vcName_))), numel(viKeep), ME.message);
+        % Don't silently continue - re-throw to make error visible
+        rethrow(ME);
     end
 end %for
 end %func
