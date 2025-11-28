@@ -5804,7 +5804,7 @@ end
 % S0 = set0_(mh_info);
 fText = get_set_(S_fig, 'fText', get_set_(P, 'fText', 0)); % default: no spike counts
 S_fig = figWav_clu_count_(S_fig, S_clu, fText);
-S_fig.csHelp = { ...            
+S_fig.csHelp = { ...
     '[Left-click] Cluter select/unselect (point at blank)', ...
     '[Right-click] Second cluster select (point at blank)', ...
     '[Pan] hold wheel and drag', ...
@@ -5817,11 +5817,12 @@ S_fig.csHelp = { ...
     '[HOME] Select the first unit', ...
     '[END] Select the last unit', ...
     '------------------', ...
-    '[H] Help', ...       
+    '[H] Help', ...
     '[S] Split auto', ...
-    '[W] Spike waveforms (toggle)', ...                                  
+    '[W] Spike waveforms (toggle)', ...
     '[M] merge cluster', ...
     '[D] delete cluster', ...
+    '[0] clear second cluster (back to single selection)', ...
     '[A] Resample spikes', ...
     '[Z] zoom selected cluster', ...
     '[R] reset view', ...
@@ -6390,6 +6391,13 @@ switch lower(event.Key)
     case 'u', S0 = execute_pending_and_update_(S0); % execute pending ops + update
     case 'p', plot_psth_trial_(S0, 1);
     case 'escape', S0 = cancel_pending_operations_(S0); % cancel pending ops
+    case '0' % clear second cluster selection (return to single-cluster mode)
+        if ~isempty(S0.iCluPaste)
+            S0.iCluPaste = [];
+            set(0, 'UserData', S0);
+            button_CluWav_simulate_(S0.iCluCopy, []); % refresh with single selection
+            msgbox_('Cleared second cluster selection', 1);
+        end
     case '1', unit_annotate_([], [], 'single'); % annotate as single
     case '2', unit_annotate_([], [], 'multi'); % annotate as multi
     case '3', unit_annotate_([], [], 'noise'); % annotate as noise
@@ -7506,9 +7514,11 @@ if isempty(S_fig)
     S_fig.alim = [min(S_fig.mrPatchX(:)), max(S_fig.mrPatchX(:)), min(S_fig.mrPatchY(:)), max(S_fig.mrPatchY(:))];
     S_fig.cell_alim = get_lim_shank_(P);
     colormap jet;
-    mouse_figure(hFig);   
-    nSites = size(P.mrSiteXY,1);    
-    csText = arrayfun(@(i)sprintf('%d', i), 1:nSites, 'UniformOutput', 0);
+    mouse_figure(hFig);
+    nSites = size(P.mrSiteXY,1);
+    % Use actual channel numbers from viSite2Chan, not sequential site numbers
+    viChan = get_(P, 'viSite2Chan', 1:nSites); % fallback to 1:nSites if viSite2Chan doesn't exist
+    csText = arrayfun(@(i)sprintf('%d', i), viChan, 'UniformOutput', 0);
     S_fig.hText = text(P.mrSiteXY(:,1), P.mrSiteXY(:,2), csText, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');    
     xlabel('X Position (\mum)');
     ylabel('Y Position (\mum)');
@@ -23935,14 +23945,17 @@ else
     fGui = 1;
 end
 
-[S0, P] = load_cached_(P); 
+[S0, P] = load_cached_(P);
 if ~isfield(S0, 'S_clu'), fprintf(2, 'File must be sorted first.\n'); return; end
 S = S0.S_clu;
-[unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note] = ...
-    deal((1:S.nClu)', S.vrSnr_clu(:), S.viSite_clu(:), S.vnSpk_clu(:), ...
-    S.vrPosX_clu(:), S.vrPosX_clu(:), S.vrVmin_uv_clu, S.vrVpp_uv_clu, ...
-    S.vrIsoDist_clu(:), S.vrLRatio_clu(:), S.vrIsiRatio_clu(:), S.csNote_clu(:));
-%note(cellfun(@isempty, note)) = '';
+
+% Extract fields and ensure all are [nClu x 1] with proper size
+unit_id = (1:S.nClu)';
+SNR = S.vrSnr_clu(:); if numel(SNR) < S.nClu, SNR(end+1:S.nClu) = 0; elseif numel(SNR) > S.nClu, SNR = SNR(1:S.nClu); end
+center_site = S.viSite_clu(:); if numel(center_site) < S.nClu, center_site(end+1:S.nClu) = 0; elseif numel(center_site) > S.nClu, center_site = center_site(1:S.nClu); end
+nSpikes = S.vnSpk_clu(:); if numel(nSpikes) < S.nClu, nSpikes(end+1:S.nClu) = 0; elseif numel(nSpikes) > S.nClu, nSpikes = nSpikes(1:S.nClu); end
+uV_pp = S.vrVpp_uv_clu(:); if numel(uV_pp) < S.nClu, uV_pp(end+1:S.nClu) = 0; elseif numel(uV_pp) > S.nClu, uV_pp = uV_pp(1:S.nClu); end
+
 table_ = table(unit_id, SNR, center_site, nSpikes, uV_pp);
 disp(table_);
 
@@ -23973,14 +23986,32 @@ else
     fGui = 1;
 end
 
-[S0, P] = load_cached_(P); 
+[S0, P] = load_cached_(P);
 if ~isfield(S0, 'S_clu'), fprintf(2, 'File must be sorted first.\n'); return; end
 S = S0.S_clu;
-[unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note] = ...
-    deal((1:S.nClu)', S.vrSnr_clu(:), S.viSite_clu(:), S.vnSpk_clu(:), ...
-    S.vrPosX_clu(:), S.vrPosX_clu(:), S.vrVmin_uv_clu, S.vrVpp_uv_clu, ...
-    S.vrIsoDist_clu(:), S.vrLRatio_clu(:), S.vrIsiRatio_clu(:), S.csNote_clu(:));
-%note(cellfun(@isempty, note)) = '';
+
+% Extract fields and ensure all are [nClu x 1] with proper size
+unit_id = (1:S.nClu)';
+SNR = S.vrSnr_clu(:); if numel(SNR) < S.nClu, SNR(end+1:S.nClu) = 0; elseif numel(SNR) > S.nClu, SNR = SNR(1:S.nClu); end
+center_site = S.viSite_clu(:); if numel(center_site) < S.nClu, center_site(end+1:S.nClu) = 0; elseif numel(center_site) > S.nClu, center_site = center_site(1:S.nClu); end
+nSpikes = S.vnSpk_clu(:); if numel(nSpikes) < S.nClu, nSpikes(end+1:S.nClu) = 0; elseif numel(nSpikes) > S.nClu, nSpikes = nSpikes(1:S.nClu); end
+xpos = S.vrPosX_clu(:); if numel(xpos) < S.nClu, xpos(end+1:S.nClu) = 0; elseif numel(xpos) > S.nClu, xpos = xpos(1:S.nClu); end
+ypos = S.vrPosY_clu(:); if numel(ypos) < S.nClu, ypos(end+1:S.nClu) = 0; elseif numel(ypos) > S.nClu, ypos = ypos(1:S.nClu); end % Fixed: was vrPosX_clu
+uV_min = S.vrVmin_uv_clu(:); if numel(uV_min) < S.nClu, uV_min(end+1:S.nClu) = 0; elseif numel(uV_min) > S.nClu, uV_min = uV_min(1:S.nClu); end
+uV_pp = S.vrVpp_uv_clu(:); if numel(uV_pp) < S.nClu, uV_pp(end+1:S.nClu) = 0; elseif numel(uV_pp) > S.nClu, uV_pp = uV_pp(1:S.nClu); end
+IsoDist = S.vrIsoDist_clu(:); if numel(IsoDist) < S.nClu, IsoDist(end+1:S.nClu) = nan; elseif numel(IsoDist) > S.nClu, IsoDist = IsoDist(1:S.nClu); end
+LRatio = S.vrLRatio_clu(:); if numel(LRatio) < S.nClu, LRatio(end+1:S.nClu) = nan; elseif numel(LRatio) > S.nClu, LRatio = LRatio(1:S.nClu); end
+IsiRat = S.vrIsiRatio_clu(:); if numel(IsiRat) < S.nClu, IsiRat(end+1:S.nClu) = nan; elseif numel(IsiRat) > S.nClu, IsiRat = IsiRat(1:S.nClu); end
+
+% Handle cell array for notes
+if numel(S.csNote_clu) < S.nClu
+    note = S.csNote_clu(:);
+    note(end+1:S.nClu) = {''};
+else
+    note = S.csNote_clu(1:S.nClu);
+    note = note(:);
+end
+
 table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note);
 disp(table_);
 
