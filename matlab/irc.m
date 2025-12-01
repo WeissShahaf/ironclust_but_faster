@@ -9928,7 +9928,8 @@ nSites = size(mrSiteXY,1);
 if ~isempty(vrVpp)
     hPatch = patch(mrPatchX, mrPatchY, repmat(vrVpp(:)', [4, 1]), ...
         'EdgeColor', 'k', 'FaceColor', 'flat', 'FaceAlpha', .5); %[0 0 0], 'EdgeColor', 'none', 'FaceColor', 'flat', 'FaceVertexCData', [0 0 0], 'FaceAlpha', 0);
-    set(hFig.hAx, 'CLim', [0, max(vrVpp)]);
+    ax = gca;  % Get current axes or create new axes if needed.
+    set(ax, 'CLim', [0, max(vrVpp)]);
     colormap jet;
 else
     hPatch = patch(mrPatchX, mrPatchY, 'w', 'EdgeColor', 'k'); %[0 0 0], 'EdgeColor', 'none', 'FaceColor', 'flat', 'FaceVertexCData', [0 0 0], 'FaceAlpha', 0); 
@@ -23990,29 +23991,73 @@ end
 if ~isfield(S0, 'S_clu'), fprintf(2, 'File must be sorted first.\n'); return; end
 S = S0.S_clu;
 
-% Extract fields and ensure all are [nClu x 1] with proper size
+% % Extract fields and ensure all are [nClu x 1] with proper size
 unit_id = (1:S.nClu)';
-SNR = S.vrSnr_clu(:); if numel(SNR) < S.nClu, SNR(end+1:S.nClu) = 0; elseif numel(SNR) > S.nClu, SNR = SNR(1:S.nClu); end
-center_site = S.viSite_clu(:); if numel(center_site) < S.nClu, center_site(end+1:S.nClu) = 0; elseif numel(center_site) > S.nClu, center_site = center_site(1:S.nClu); end
-nSpikes = S.vnSpk_clu(:); if numel(nSpikes) < S.nClu, nSpikes(end+1:S.nClu) = 0; elseif numel(nSpikes) > S.nClu, nSpikes = nSpikes(1:S.nClu); end
-xpos = S.vrPosX_clu(:); if numel(xpos) < S.nClu, xpos(end+1:S.nClu) = 0; elseif numel(xpos) > S.nClu, xpos = xpos(1:S.nClu); end
-ypos = S.vrPosY_clu(:); if numel(ypos) < S.nClu, ypos(end+1:S.nClu) = 0; elseif numel(ypos) > S.nClu, ypos = ypos(1:S.nClu); end % Fixed: was vrPosX_clu
-uV_min = S.vrVmin_uv_clu(:); if numel(uV_min) < S.nClu, uV_min(end+1:S.nClu) = 0; elseif numel(uV_min) > S.nClu, uV_min = uV_min(1:S.nClu); end
-uV_pp = S.vrVpp_uv_clu(:); if numel(uV_pp) < S.nClu, uV_pp(end+1:S.nClu) = 0; elseif numel(uV_pp) > S.nClu, uV_pp = uV_pp(1:S.nClu); end
-IsoDist = S.vrIsoDist_clu(:); if numel(IsoDist) < S.nClu, IsoDist(end+1:S.nClu) = nan; elseif numel(IsoDist) > S.nClu, IsoDist = IsoDist(1:S.nClu); end
-LRatio = S.vrLRatio_clu(:); if numel(LRatio) < S.nClu, LRatio(end+1:S.nClu) = nan; elseif numel(LRatio) > S.nClu, LRatio = LRatio(1:S.nClu); end
-IsiRat = S.vrIsiRatio_clu(:); if numel(IsiRat) < S.nClu, IsiRat(end+1:S.nClu) = nan; elseif numel(IsiRat) > S.nClu, IsiRat = IsiRat(1:S.nClu); end
+SNR = S.vrSnr_clu(:);
+center_site = S.viSite_clu(:);
+nSpikes = S.vnSpk_clu(:);
+xpos = S.vrPosX_clu(:);
+ypos = S.vrPosY_clu(:);
+uV_min = S.vrVmin_uv_clu(:);
+uV_pp = S.vrVpp_uv_clu(:);
+IsoDist = S.vrIsoDist_clu(:);
+LRatio = S.vrLRatio_clu(:);
+IsiRat = S.vrIsiRatio_clu(:);
+note = S.csNote_clu(:);
 
-% Handle cell array for notes
-if numel(S.csNote_clu) < S.nClu
-    note = S.csNote_clu(:);
-    note(end+1:S.nClu) = {''};
-else
-    note = S.csNote_clu(1:S.nClu);
-    note = note(:);
+% Debug: Check array sizes
+%fprintf('DEBUG export_quality__: Array sizes - nClu=%d\n', S.nClu);
+% fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
+% fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
+% fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d\n', length(IsoDist), length(LRatio), length(IsiRat), length(note));
+
+% Ensure all arrays are the same length as nClu
+arrays_to_fix = {SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note};
+array_names = {'SNR', 'center_site', 'nSpikes', 'xpos', 'ypos', 'uV_min', 'uV_pp', 'IsoDist', 'LRatio', 'IsiRat', 'note'};
+
+for i = 1:length(arrays_to_fix)
+    if length(arrays_to_fix{i}) ~= S.nClu
+        fprintf('WARNING export_quality__: %s has %d elements, expected %d. Resizing.\n', ...
+            array_names{i}, length(arrays_to_fix{i}), S.nClu);
+        if length(arrays_to_fix{i}) > S.nClu
+            % Truncate if too long
+            arrays_to_fix{i} = arrays_to_fix{i}(1:S.nClu);
+        else
+            % Pad if too short
+            if isnumeric(arrays_to_fix{i})
+                arrays_to_fix{i}(end+1:S.nClu) = NaN;
+            else
+                arrays_to_fix{i}(end+1:S.nClu) = {''};
+            end
+        end
+    end
 end
 
-table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note);
+% Reassign fixed arrays
+[SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note] = ...
+    deal(arrays_to_fix{:});
+
+% Handle viSite2Chan
+viSite2Chan = S0.P.viSite2Chan;
+viSite2Chan = viSite2Chan(center_site)';
+if length(viSite2Chan) ~= S.nClu
+    fprintf('WARNING export_quality__: viSite2Chan has %d elements, expected %d. Resizing.\n', ...
+        length(viSite2Chan), S.nClu);
+    if length(viSite2Chan) > S.nClu
+        viSite2Chan = viSite2Chan(1:S.nClu);
+    else
+        viSite2Chan(end+1:S.nClu) = NaN;
+    end
+end
+
+% Final size check before creating table
+%fprintf('DEBUG export_quality__: Final array sizes before table creation:\n');
+%fprintf('  unit_id=%d, SNR=%d, center_site=%d, nSpikes=%d\n', length(unit_id), length(SNR), length(center_site), length(nSpikes));
+%fprintf('  xpos=%d, ypos=%d, uV_min=%d, uV_pp=%d\n', length(xpos), length(ypos), length(uV_min), length(uV_pp));
+%fprintf('  IsoDist=%d, LRatio=%d, IsiRat=%d, note=%d, viSite2Chan=%d\n', ...
+%    length(IsoDist), length(LRatio), length(IsiRat), length(note), length(viSite2Chan));
+
+table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note, viSite2Chan);
 disp(table_);
 
 vcFile_csv = subsFileExt_(P.vcFile_prm, '_quality.csv');
@@ -24030,7 +24075,48 @@ csMsg = { ...
     sprintf('\tColumn 9: IsoDist: Isolation distance quality metric'), ...
     sprintf('\tColumn 10: LRatio: L-ratio quality metric'), ...
     sprintf('\tColumn 11: IsiRat: ISI-ratio quality metric'), ...
-    sprintf('\tColumn 12: note: user comments')};
+    sprintf('\tColumn 12: note: user comments'),...
+    sprintf('\tColumn 13: viSite2Chan: channel in imro file')};
+% unit_id = (1:S.nClu)';
+% SNR = S.vrSnr_clu(:); if numel(SNR) < S.nClu, SNR(end+1:S.nClu) = 0; elseif numel(SNR) > S.nClu, SNR = SNR(1:S.nClu); end
+% center_site = S.viSite_clu(:); if numel(center_site) < S.nClu, center_site(end+1:S.nClu) = 0; elseif numel(center_site) > S.nClu, center_site = center_site(1:S.nClu); end
+% nSpikes = S.vnSpk_clu(:); if numel(nSpikes) < S.nClu, nSpikes(end+1:S.nClu) = 0; elseif numel(nSpikes) > S.nClu, nSpikes = nSpikes(1:S.nClu); end
+% xpos = S.vrPosX_clu(:); if numel(xpos) < S.nClu, xpos(end+1:S.nClu) = 0; elseif numel(xpos) > S.nClu, xpos = xpos(1:S.nClu); end
+% ypos = S.vrPosY_clu(:); if numel(ypos) < S.nClu, ypos(end+1:S.nClu) = 0; elseif numel(ypos) > S.nClu, ypos = ypos(1:S.nClu); end % Fixed: was vrPosX_clu
+% uV_min = S.vrVmin_uv_clu(:); if numel(uV_min) < S.nClu, uV_min(end+1:S.nClu) = 0; elseif numel(uV_min) > S.nClu, uV_min = uV_min(1:S.nClu); end
+% uV_pp = S.vrVpp_uv_clu(:); if numel(uV_pp) < S.nClu, uV_pp(end+1:S.nClu) = 0; elseif numel(uV_pp) > S.nClu, uV_pp = uV_pp(1:S.nClu); end
+% IsoDist = S.vrIsoDist_clu(:); if numel(IsoDist) < S.nClu, IsoDist(end+1:S.nClu) = nan; elseif numel(IsoDist) > S.nClu, IsoDist = IsoDist(1:S.nClu); end
+% LRatio = S.vrLRatio_clu(:); if numel(LRatio) < S.nClu, LRatio(end+1:S.nClu) = nan; elseif numel(LRatio) > S.nClu, LRatio = LRatio(1:S.nClu); end
+% IsiRat = S.vrIsiRatio_clu(:); if numel(IsiRat) < S.nClu, IsiRat(end+1:S.nClu) = nan; elseif numel(IsiRat) > S.nClu, IsiRat = IsiRat(1:S.nClu); end
+% 
+% % Handle cell array for notes
+% if numel(S.csNote_clu) < S.nClu
+%     note = S.csNote_clu(:);
+%     note(end+1:S.nClu) = {''};
+% else
+%     note = S.csNote_clu(1:S.nClu);
+%     note = note(:);
+% end
+% 
+% table_ = table(unit_id, SNR, center_site, nSpikes, xpos, ypos, uV_min, uV_pp, IsoDist, LRatio, IsiRat, note);
+% disp(table_);
+% 
+% vcFile_csv = subsFileExt_(P.vcFile_prm, '_quality.csv');
+% writetable(table_, vcFile_csv);
+% csMsg = { ...
+%     sprintf('Wrote to %s. Columns:', vcFile_csv), ...
+%     sprintf('\tColumn 1: unit_id: Unit ID'), ...
+%     sprintf('\tColumn 2: SNR: |Vp/Vrms|; Vp: negative peak amplitude of the peak site; Vrms: SD of the Gaussian noise (estimated from MAD)'), ...
+%     sprintf('\tColumn 3: center_site: Peak site number which contains the most negative peak amplitude'), ...
+%     sprintf('\tColumn 4: nSpikes: Number of spikes'), ...
+%     sprintf('\tColumn 5: xpos: x position (width dimension) center-of-mass'), ...
+%     sprintf('\tColumn 6: ypos: y position (depth dimension) center-of-mass, referenced from the tip'), ...
+%     sprintf('\tColumn 7: uV_min: negative peak voltage (microvolts)'), ...
+%     sprintf('\tColumn 8: uV_pp: peak-to-peak voltage (microvolts)'), ...
+%     sprintf('\tColumn 9: IsoDist: Isolation distance quality metric'), ...
+%     sprintf('\tColumn 10: LRatio: L-ratio quality metric'), ...
+%     sprintf('\tColumn 11: IsiRat: ISI-ratio quality metric'), ...
+%     sprintf('\tColumn 12: note: user comments')};
 
 cellfun(@(x)fprintf('%s\n',x), csMsg);
 if fGui, msgbox_(csMsg); end
