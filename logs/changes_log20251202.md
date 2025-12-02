@@ -1,11 +1,41 @@
 # Changes Log - December 2, 2025
 
 ## Summary
-Implemented CLASSIX clustering method (Mode 21) for post-merge clustering, added cluster reordering by spatial coordinates, and fixed critical bugs in auto-merge functionality.
+Implemented CLASSIX clustering in two modes: (1) as primary clustering method bypassing DPC, and (2) as post-merge refinement (Mode 21). Added cluster reordering by spatial coordinates and fixed critical bugs in auto-merge functionality. CLASSIX now supports MEX acceleration with multi-threaded BLAS for 2-4x speedup.
 
 ## New Features
 
-### 1. CLASSIX Clustering Method (Mode 21)
+### 1. CLASSIX Clustering (Two Usage Modes)
+
+CLASSIX can now be used in two ways:
+- **Mode A**: Primary clustering method (bypasses DPC entirely) - `vcCluster = 'classix'`
+- **Mode B**: Post-merge refinement (after DPC clustering) - `post_merge_mode0 = 21`
+
+#### Mode A: CLASSIX as Primary Clustering Method
+**Files Modified:**
+- Created: `G:\spi_sorters\ironclust_but_faster\matlab\cluster_classix_.m`
+- Modified: `G:\spi_sorters\ironclust_but_faster\matlab\irc.m` (line 2360-2361)
+
+**Description:**
+Use CLASSIX as the primary clustering algorithm, completely bypassing the density-peak clustering (DPC) stage. This skips the expensive rho/delta computation and uses CLASSIX for initial spike clustering.
+
+**Usage:**
+```matlab
+P.vcCluster = 'classix';  % Use CLASSIX instead of DPC
+```
+
+**Performance Benefits:**
+- Skips expensive DPC computation (rho/delta calculation)
+- Significantly faster for large datasets
+- CLASSIX is very fast: ~0.5 seconds for 2M spikes (from CLASSIX paper)
+
+**All CLASSIX parameters apply:**
+- `P.classix_radius`, `P.classix_minPts`, `P.classix_merge_tiny`
+- `P.classix_use_mex`, `P.classix_verbose`
+
+---
+
+#### Mode B: CLASSIX as Post-Merge Clustering (Mode 21)
 **Files Modified:**
 - Created: `G:\spi_sorters\ironclust_but_faster\matlab\post_merge_classix.m`
 - Modified: `G:\spi_sorters\ironclust_but_faster\matlab\irc.m` (lines 10286-10289)
@@ -123,15 +153,17 @@ Auto-merge operations now persist correctly across sessions.
 ## Files Changed
 
 ### New Files:
-1. `G:\spi_sorters\ironclust_but_faster\matlab\post_merge_classix.m` (73 lines)
+1. `G:\spi_sorters\ironclust_but_faster\matlab\cluster_classix_.m` (105 lines) - Primary CLASSIX clustering
+2. `G:\spi_sorters\ironclust_but_faster\matlab\post_merge_classix.m` (85 lines) - Post-merge CLASSIX refinement
 
 ### Modified Files:
 1. `G:\spi_sorters\ironclust_but_faster\matlab\irc.m`
-   - Lines 10286-10289: Added case 21 for CLASSIX
+   - Lines 2360-2361: Added case 'classix' to fet2clu_ (primary clustering)
+   - Lines 10286-10289: Added case 21 to assign_clu_count_ (post-merge)
    - Lines 9397-9423: Added `reorder_clu_by_coords_()` function
    - Line 6375: Added 'o' keyboard binding
    - Line 5884: Added menu item
-   - Line 18419: Added `save0_()` call
+   - Line 18419: Added `save0_()` call in merge_auto_
 
 ---
 

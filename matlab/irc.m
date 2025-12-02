@@ -2349,14 +2349,16 @@ fprintf('Clustering\n');
 vcCluster = get_set_(P, 'vcCluster', 'spacetime');
 switch lower(vcCluster)
     case 'spacetime'
-        S_clu = cluster_spacetime_(S0, P);        
+        S_clu = cluster_spacetime_(S0, P);
     case 'drift'
-        S_clu = cluster_drift_(S0, P);     
+        S_clu = cluster_drift_(S0, P);
     case {'drift-knn' ,'knn'}
         fGpu_sort = get_set_(P, 'fGpu_sort', 1);
-        S_clu = cluster_drift_knn_(S0, setfield(P, 'fGpu', fGpu_sort));                
+        S_clu = cluster_drift_knn_(S0, setfield(P, 'fGpu', fGpu_sort));
     case 'xcov' % waveform-covariance based clustering
         S_clu = cluster_xcov_(S0, P);
+    case 'classix' % CLASSIX clustering (bypasses DPC)
+        S_clu = cluster_classix_(S0, P);
     otherwise
         error('fet2clu_: unsupported vcCluster: %s', vcCluster);
 end
