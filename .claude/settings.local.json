@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(if not exist logs mkdir logs)"
+      "Bash(if not exist logs mkdir logs)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []
