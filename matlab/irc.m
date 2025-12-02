@@ -5881,6 +5881,7 @@ uimenu_(mh_edit,'Label', 'Auto split max-chan', 'Callback', @(h,e)auto_split_(0)
 uimenu_(mh_edit,'Label', 'Auto split multi-chan', 'Callback', @(h,e)auto_split_(1));
 uimenu_(mh_edit,'Label', 'Annotate', 'Callback', @(h,e)unit_annotate_(), 'Separator', 'on');
 uimenu_(mh_edit,'Label', 'Auto-label single units (refractory)', 'Callback', @(h,e)auto_annotate_single_units_());
+uimenu_(mh_edit,'Label', 'Re[o]rder by coordinates', 'Callback', @(h,e)keyPressFcn_cell_(hFig, 'o'), 'Separator', 'on');
 
 mh_view = uimenu_(hFig,'Label','View'); 
 uimenu_(mh_view,'Label', 'Show traces', 'Callback', @(h,e)traces_());
@@ -6372,6 +6373,7 @@ switch lower(event.Key)
         hFig_wait = figure_wait_(1);
         axis_([0, S0.S_clu.nClu + 1, 0, numel(P.viSite2Chan) + 1]);
         figure_wait_(0, hFig_wait);
+    case 'o', S0 = reorder_clu_by_coords_(S0); % reorder clusters by coordinates
     case {'d', 'backspace', 'delete'}, S0 = ui_delete_pending_(S0); % queue delete (deferred)
     case 'z' %zoom
         ui_zoom_(S0, hFig);
@@ -6396,7 +6398,7 @@ switch lower(event.Key)
             S0.iCluPaste = [];
             set(0, 'UserData', S0);
             button_CluWav_simulate_(S0.iCluCopy, []); % refresh with single selection
-            msgbox_('Cleared second cluster selection', 1);
+          %  msgbox_('Cleared second cluster selection', 1);
         end
     case '1', unit_annotate_([], [], 'single'); % annotate as single
     case '2', unit_annotate_([], [], 'multi'); % annotate as multi
@@ -8611,7 +8613,7 @@ viGroup = S0.cviMerge_pending{iGroup};
 vcGroupStr = sprintf('%d,', viGroup);
 vcGroupStr = vcGroupStr(1:end-1); % remove trailing comma
 
-msgbox_(sprintf('Merge queued: [%s]. Press U to execute.', vcGroupStr), 1);
+%msgbox_(sprintf('Merge queued: [%s]. Press U to execute.', vcGroupStr), 1);
 fprintf('%s [W] merge queued: Clu %d + %d -> group [%s]\n', datestr(now, 'HH:MM:SS'), iClu1, iClu2, vcGroupStr);
 end %func
 
@@ -9390,6 +9392,36 @@ viMap_clu(iClu2) = S_clu.nClu;
 viMap_clu(iClu1+2:end) = (iClu1+1):(S_clu.nClu-1);
 
 S_clu = S_clu_select_(S_clu, viMap_clu);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S0 = reorder_clu_by_coords_(S0)
+% Reorder clusters by spatial coordinates (x, then y)
+% Based on vrPosX_clu and vrPosY_clu from S_clu_position_
+if nargin<1, S0 = get(0, 'UserData'); end
+[S_clu, P] = deal(S0.S_clu, S0.P);
+
+% Make sure position is calculated
+if ~isfield(S_clu, 'vrPosX_clu') || isempty(S_clu.vrPosX_clu)
+    S_clu = S_clu_position_(S_clu);
+end
+if ~isfield(S_clu, 'vrPosY_clu') || isempty(S_clu.vrPosY_clu)
+    S_clu = S_clu_position_(S_clu);
+end
+
+% Sort by X coordinate first, then Y coordinate
+mrPosXY_clu = [S_clu.vrPosX_clu(:), S_clu.vrPosY_clu(:)];
+[~, viMap_clu] = sortrows(mrPosXY_clu, [1, 2]);
+
+% Reorder clusters using the mapping
+S_clu = S_clu_select_(S_clu, viMap_clu);
+S_clu.mrWavCor = set_diag_(S_clu.mrWavCor, S_clu_self_corr_(S_clu, [], S0));
+set0_(S_clu);
+S0 = gui_update_();
+save0_();
+
+msgbox_(sprintf('Reordered %d clusters by coordinates (X, then Y)', S_clu.nClu));
 end %func
 
 
@@ -10282,6 +10314,11 @@ else
             [S_clu.viClu, S_clu.icl] = assignCluster_(S_clu.viClu, S_clu.ordrho, S_clu.nneigh, S_clu.icl);
             [S_clu.viClu, S_clu.icl] = dpclus_remove_count_(S_clu.viClu, S_clu.icl, P.min_count);
             nClu_pre = numel(S_clu.icl);
+
+        case 21 % CLASSIX clustering
+            [S_clu.viClu, S_clu.icl] = assignCluster_(S_clu.viClu, S_clu.ordrho, S_clu.nneigh, S_clu.icl);
+            [S_clu.viClu, S_clu.icl] = dpclus_remove_count_(S_clu.viClu, S_clu.icl, P.min_count);
+            S_clu = post_merge_classix(S_clu, P);
 
         otherwise
             [S_clu.viClu, S_clu.icl] = assignCluster_(S_clu.viClu, S_clu.ordrho, S_clu.nneigh, S_clu.icl);
@@ -18410,7 +18447,8 @@ if nClu_merge>0
     S_clu.csNote_clu = cell(S_clu.nClu, 1);  %reset note
     S_clu = S_clu_quality_(S_clu, P);
     set0_(S_clu);
-    S0 = gui_update_();    
+    S0 = gui_update_();
+    save0_();  % Save changes to disk
 
     assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after deleting');
     nClu_merge1 = nClu_prev - S_clu.nClu;
