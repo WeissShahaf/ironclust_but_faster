@@ -43,6 +43,15 @@ P.post_merge_mode0 = 21;  % Enable CLASSIX clustering
 **Algorithm Source:**
 Based on CLASSIX implementation at `G:\spi_sorters\ironclust_but_faster\matlab\classix\classix.m`
 
+**Additional Features Available (not currently used):**
+- `explain()` function: CLASSIX returns a function handle for interactive cluster explanation
+  - Can show why two data points are in the same cluster
+  - Visualizes paths of overlapping groups
+  - Useful for debugging clustering decisions
+- `rand_index.m`: Utility for computing adjusted Rand index
+  - Used for benchmarking clustering quality against ground truth
+  - Available in classix folder if needed for validation
+
 ---
 
 ### 2. Reorder Clusters by Spatial Coordinates
