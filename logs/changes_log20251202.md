@@ -5,40 +5,81 @@ Implemented CLASSIX clustering in two modes: (1) as primary clustering method by
 
 ## New Features
 
-### 1. CLASSIX Clustering (Two Usage Modes)
+### 1. CLASSIX Clustering (Two Independent Methods)
 
-CLASSIX can now be used in two ways:
-- **Mode A**: Primary clustering method (bypasses DPC entirely) - `vcCluster = 'classix'`
-- **Mode B**: Post-merge refinement (after DPC clustering) - `post_merge_mode0 = 21`
+CLASSIX is implemented as **TWO COMPLETELY INDEPENDENT** methods:
+- **SORTING**: Primary clustering method (bypasses DPC entirely) - `vcCluster = 'classix'`
+- **MERGING**: Post-merge refinement (after any clustering) - `post_merge_mode0 = 21`
 
-#### Mode A: CLASSIX as Primary Clustering Method
-**Files Modified:**
+**Key Features:**
+- Can be used **separately** or **together**
+- Operate at different stages of the pipeline
+- Share the same parameters but function independently
+- Warning system alerts if using both (usually redundant)
+
+#### SORTING: CLASSIX as Primary Clustering
+**Files:**
 - Created: `G:\spi_sorters\ironclust_but_faster\matlab\cluster_classix_.m`
 - Modified: `G:\spi_sorters\ironclust_but_faster\matlab\irc.m` (line 2360-2361)
 
 **Description:**
-Use CLASSIX as the primary clustering algorithm, completely bypassing the density-peak clustering (DPC) stage. This skips the expensive rho/delta computation and uses CLASSIX for initial spike clustering.
+Use CLASSIX as the primary clustering algorithm, completely bypassing the density-peak clustering (DPC) stage. Operates directly on raw spike features.
 
 **Usage:**
 ```matlab
-P.vcCluster = 'classix';  % Use CLASSIX instead of DPC
+vcCluster = 'classix';  % Use CLASSIX for primary clustering (SORTING)
+classix_radius = 0.5;
 ```
 
-**Performance Benefits:**
-- Skips expensive DPC computation (rho/delta calculation)
-- Significantly faster for large datasets
-- CLASSIX is very fast: ~0.5 seconds for 2M spikes (from CLASSIX paper)
+**Independence:**
+- Completely independent from post-merge methods
+- Can be used with ANY post_merge_mode0 setting
+- Recommended: Use alone or with traditional merge (modes 12, 15, 17)
+- Not recommended: Use with mode 21 (clusters twice with CLASSIX)
 
-**All CLASSIX parameters apply:**
-- `P.classix_radius`, `P.classix_minPts`, `P.classix_merge_tiny`
-- `P.classix_use_mex`, `P.classix_verbose`
+**Process:**
+- Input: Raw spike features (`trFet_spk`)
+- Clusters ALL spikes from scratch
+- Output: Complete S_clu structure with cluster assignments
+
+**Performance:**
+- Skips expensive DPC computation (rho/delta calculation)
+- ~0.5 seconds for 2M spikes (from CLASSIX paper)
+- **10-100x faster than DPC** for large datasets
 
 ---
 
-#### Mode B: CLASSIX as Post-Merge Clustering (Mode 21)
-**Files Modified:**
+#### MERGING: CLASSIX as Post-Merge Refinement (Mode 21)
+**Files:**
 - Created: `G:\spi_sorters\ironclust_but_faster\matlab\post_merge_classix.m`
 - Modified: `G:\spi_sorters\ironclust_but_faster\matlab\irc.m` (lines 10286-10289)
+
+**Description:**
+Use CLASSIX to refine clusters after initial clustering. Re-clusters existing spikes to merge over-split units.
+
+**Usage:**
+```matlab
+vcCluster = 'drift-knn';  % or 'spacetime', etc. (SORTING)
+post_merge_mode0 = 21;    % Use CLASSIX for refinement (MERGING)
+classix_radius = 0.5;
+```
+
+**Independence:**
+- Completely independent from primary clustering method
+- Can be used with ANY vcCluster setting (drift-knn, spacetime, classix, etc.)
+- Recommended: Use with DPC methods (drift-knn, spacetime)
+- Not recommended: Use with vcCluster='classix' (clusters twice)
+
+**Process:**
+- Input: Existing S_clu with clustered spikes
+- Re-clusters only non-noise spikes (viClu > 0)
+- Output: Updated S_clu with refined cluster assignments
+
+**Behavior:**
+- Unlike modes 11-17 (which merge existing clusters)
+- **Performs complete re-clustering** of all spikes in feature space
+- Ignores original cluster assignments
+- Useful when DPC over-splits units
 
 **Description:**
 Added CLASSIX (Fast and Explainable Clustering Based on Sorting) as a new post-merge clustering option. CLASSIX uses a sorting-based approach for fast and interpretable clustering.
@@ -153,8 +194,9 @@ Auto-merge operations now persist correctly across sessions.
 ## Files Changed
 
 ### New Files:
-1. `G:\spi_sorters\ironclust_but_faster\matlab\cluster_classix_.m` (105 lines) - Primary CLASSIX clustering
-2. `G:\spi_sorters\ironclust_but_faster\matlab\post_merge_classix.m` (85 lines) - Post-merge CLASSIX refinement
+1. `G:\spi_sorters\ironclust_but_faster\matlab\cluster_classix_.m` (105 lines) - CLASSIX SORTING (primary clustering)
+2. `G:\spi_sorters\ironclust_but_faster\matlab\post_merge_classix.m` (100 lines) - CLASSIX MERGING (post-merge refinement)
+3. `G:\spi_sorters\ironclust_but_faster\matlab\CLASSIX_USAGE.md` - Comprehensive usage guide
 
 ### Modified Files:
 1. `G:\spi_sorters\ironclust_but_faster\matlab\irc.m`
@@ -164,14 +206,56 @@ Auto-merge operations now persist correctly across sessions.
    - Line 6375: Added 'o' keyboard binding
    - Line 5884: Added menu item
    - Line 18419: Added `save0_()` call in merge_auto_
+2. `G:\spi_sorters\ironclust_but_faster\matlab\default.prm`
+   - Line 146: Added 'classix' to vcCluster options
+   - Line 161: Updated post_merge_mode0 comment to mention mode 21
+   - Lines 171-181: Added CLASSIX parameters section with full documentation
+     - classix_radius = 0.5
+     - classix_minPts = []
+     - classix_merge_tiny = 1
+     - classix_use_mex = 1
+     - classix_verbose = 0
+
+---
+
+## Valid Usage Patterns
+
+### Recommended Configurations:
+
+1. **SORTING ONLY** (Fastest):
+   ```matlab
+   vcCluster = 'classix';
+   classix_radius = 0.5;
+   ```
+
+2. **MERGING ONLY** (Most conservative):
+   ```matlab
+   vcCluster = 'drift-knn';
+   post_merge_mode0 = 21;
+   classix_radius = 0.5;
+   ```
+
+3. **HYBRID** (CLASSIX + traditional merge):
+   ```matlab
+   vcCluster = 'classix';
+   post_merge_mode0 = [12, 15, 17];
+   ```
+
+4. **BOTH** (Not recommended - will show warning):
+   ```matlab
+   vcCluster = 'classix';
+   post_merge_mode0 = 21;  % Clusters twice with CLASSIX
+   ```
+
+**See `matlab/CLASSIX_USAGE.md` for detailed usage guide.**
 
 ---
 
 ## Backward Compatibility
 - All changes are backward compatible
 - No existing functionality modified
-- Default parameters unchanged
-- Mode 21 is purely additive
+- Default parameters unchanged (`vcCluster = 'spacetime'`, `post_merge_mode0 = [12,15,17]`)
+- CLASSIX methods are purely additive
 - Existing parameter files work without modification
 
 ---

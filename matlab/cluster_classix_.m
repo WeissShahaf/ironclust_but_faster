@@ -2,7 +2,12 @@ function S_clu = cluster_classix_(S0, P)
 % Primary clustering using CLASSIX algorithm (bypasses density-peak clustering)
 % Use this as an alternative to DPC-based clustering by setting P.vcCluster = 'classix'
 %
-% This is different from post_merge_classix which refines existing clusters.
+% INDEPENDENT from post-merge method - can be used with ANY post_merge_mode0:
+%   - vcCluster = 'classix' alone (CLASSIX sorting only - RECOMMENDED)
+%   - vcCluster = 'classix' + post_merge_mode0 = [12,15,17] (CLASSIX + traditional merge)
+%   - vcCluster = 'classix' + post_merge_mode0 = 21 (CLASSIX twice - not recommended)
+%
+% This is SEPARATE from post_merge_classix which refines existing clusters.
 % cluster_classix_ performs initial clustering from scratch using only CLASSIX.
 %
 % Parameters:

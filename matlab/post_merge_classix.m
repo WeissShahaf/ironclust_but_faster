@@ -2,6 +2,11 @@ function S_clu = post_merge_classix(S_clu, P)
 % Post-merge clustering using CLASSIX algorithm
 % Applies CLASSIX clustering to spike features for cluster refinement
 %
+% INDEPENDENT from primary clustering method - can be used with ANY vcCluster option:
+%   - vcCluster = 'drift-knn' (DPC) + post_merge_mode0 = 21 (CLASSIX merge)
+%   - vcCluster = 'spacetime' + post_merge_mode0 = 21 (CLASSIX merge)
+%   - vcCluster = 'classix' + post_merge_mode0 = 21 (CLASSIX twice - not recommended)
+%
 % Parameters:
 %   classix_radius (default: 0.5) - Grouping radius in normalized space
 %   classix_minPts (default: P.min_count) - Minimum spikes per cluster
@@ -10,6 +15,15 @@ function S_clu = post_merge_classix(S_clu, P)
 %   classix_verbose (default: 0) - Print detailed timing information
 
 fprintf('Automated merging using CLASSIX...\n'); t1 = tic;
+
+%% Check for redundant configuration
+vcCluster = get_set_(P, 'vcCluster', 'spacetime');
+if strcmpi(vcCluster, 'classix')
+    fprintf(2, '  WARNING: Using CLASSIX for both primary clustering AND post-merge.\n');
+    fprintf(2, '  This will cluster twice with CLASSIX, which may be redundant.\n');
+    fprintf(2, '  Consider using ONLY vcCluster=''classix'' (no post-merge),\n');
+    fprintf(2, '  OR use vcCluster=''drift-knn'' with post_merge_mode0=21.\n');
+end
 
 %% Get parameters
 classix_radius = get_set_(P, 'classix_radius', 0.5);  % clustering radius
