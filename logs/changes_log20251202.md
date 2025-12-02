@@ -25,6 +25,10 @@ P.post_merge_mode0 = 21;  % Enable CLASSIX clustering
   - Typical range: 0.1 to 1.0
 - `P.classix_minPts = P.min_count` - Minimum points per cluster (default: uses P.min_count)
 - `P.classix_merge_tiny = 1` - Merge groups with < minPts points (default: 1)
+- `P.classix_use_mex = 1` - Use MEX acceleration with multi-threaded BLAS (default: 1)
+  - Set to 0 to disable MEX if compatibility issues arise
+  - MEX provides 2-4x speedup on multi-core systems
+- `P.classix_verbose = 0` - Print detailed timing and statistics (default: 0)
 
 **Implementation Details:**
 - Extracts spike features from global `trFet_spk` tensor
@@ -33,6 +37,8 @@ P.post_merge_mode0 = 21;  % Enable CLASSIX clustering
 - Updates cluster centers based on highest delta values
 - Calls `S_clu_refresh_()` to update cluster statistics
 - Auto-scales data internally (centering + normalization by median norm)
+- Uses compiled MEX file (matxsubmat.mexw64) with multi-threaded BLAS for acceleration
+- MEX file already compiled for Windows x64 (can be disabled via `classix_use_mex=0`)
 
 **Algorithm Source:**
 Based on CLASSIX implementation at `G:\spi_sorters\ironclust_but_faster\matlab\classix\classix.m`
