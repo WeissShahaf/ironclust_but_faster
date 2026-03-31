@@ -3739,8 +3739,9 @@ if fMerge
     if maxWavCor < 1 && maxWavCor > 0
         S_clu = post_merge_wav4_(S_clu, merge_thresh, P);
     end %if
-    nClu_merge = S_clu.nClu - nClu_pre;
-    if nClu_merge==0, return; end % do not change anythign if no merge occured
+    nClu_merge = nClu_pre - S_clu.nClu; % positive count of merged clusters
+    fprintf('DEBUG post_merge_wav_: nClu_pre=%d, S_clu.nClu=%d, nClu_merge=%d\n', nClu_pre, S_clu.nClu, nClu_merge);
+    if nClu_merge==0, return; end % do not change anything if no merge occurred
 end
 
 % Old format compatibility
@@ -3796,9 +3797,10 @@ viTime_spk = viTime_spk(:);
 % nSites_fet = dimm_fet(1) / P.nPcPerChan;;
 n_burst = round(read_cfg_('interval_ms_burst') * P.sRateHz / 1000);
 
-% assert no empty clusters
-nClu = max(S_clu.viClu);
-cviSpk_clu = arrayfun(@(x)find(S_clu.viClu==x), 1:nClu, 'UniformOutput', 0);
+% Remove empty clusters and refresh before merging
+S_clu = S_clu_refresh_(S_clu);
+nClu = S_clu.nClu;
+cviSpk_clu = S_clu.cviSpk_clu(:)';
 [cviSpk_burst0_clu, cviSpk_burst1_clu] = cellfun(@(x)separate_burst_(x, viTime_spk, n_burst), cviSpk_clu, 'UniformOutput', 0);
 vrFracBurst_clu = cellfun(@numel,cviSpk_burst1_clu) ./ cellfun(@numel,cviSpk_clu);
 if ~fUseFirstBurst, cviSpk_burst0_clu = cviSpk_clu; end
@@ -3811,7 +3813,12 @@ cviTime_sub_clu = cellfun(@(vi_)viTime_spk(vi_), cviSpk_sub_clu, 'UniformOutput'
 
 % determine cluster centers
 mrPos_clu = cell2mat(cellfun(@(x)median(mrPos_spk(x,:))', cviSpk_sub_clu, 'UniformOutput', 0))';
+% Safety: ensure mrPos_clu has nClu rows (pad NaN for any missing)
+if size(mrPos_clu,1) < nClu
+    mrPos_clu(end+1:nClu,:) = NaN;
+end
 mrDist_clu = squareform(pdist(mrPos_clu));
+% NaN distances (from empty/invalid clusters) will never match <= dist_merge_um
 
 t1=tic;
 mlWavCor_clu = set_diag_(false(nClu), true(nClu,1));
@@ -5373,17 +5380,15 @@ switch lower(vcMode)
     case 'groundtruth'
         ;
     case 'normal'
-        if ~isempty(get_set_(S0, 'cS_log', {}))
-            switch lower(questdlg_('Load last saved?', 'Confirmation'))
-                case 'no'
-                    [S_clu, S0] = post_merge_(S0.S_clu, P);
-                    S0 = clear_log_(S0);
-                case 'cancel'
-                    return;
-                case 'yes'
-                    S0 = set0_(P); %update the P structure
-                    S0.S_clu = S_clu_update_wav_(S0.S_clu, P);                
-            end
+        switch lower(questdlg_('Load last saved or recompute?', 'Confirmation', 'Yes', 'No', 'Cancel', 'Yes'))
+            case 'no'
+                [S_clu, S0] = post_merge_(S0.S_clu, P);
+                S0 = clear_log_(S0);
+            case 'cancel'
+                return;
+            case 'yes'
+                S0 = set0_(P); %update the P structure
+                S0.S_clu = S_clu_update_wav_(S0.S_clu, P);
         end
         
     case 'debug'
@@ -5443,7 +5448,7 @@ create_figure_('FigMap', [0 .5 .15 .5], ['Probe map; ', P.vcFile_prm], 1, 0);
 create_figure_('FigWav', [.15 .25 .35 .75],['Averaged waveform: ', P.vcFile_prm], 0, 1);
 create_figure_('FigTime', [.15 0 .7 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
 
-create_figure_('FigProj', [.5 .25 .35 .5], ['Feature projection: ', P.vcFile_prm]);
+create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm], 0, 0);
 create_figure_('FigWavCor', [.5 .75 .35 .25], ['Waveform correlation (click): ', P.vcFile_prm]);
 
 create_figure_('FigHist', [.85 .75 .15 .25], ['ISI Histogram: ', P.vcFile_prm]);
@@ -5452,7 +5457,7 @@ create_figure_('FigCorr', [.85 .25 .15 .25], ['Time correlation: ', P.vcFile_prm
 create_figure_('FigRD', [.85 0 .15 .25], ['Cluster rho-delta: ', P.vcFile_prm]);
 
 % drawnow_();
-csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigProj', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
+csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
 cvrFigPos0 = cellfun(@(vc)get(get_fig_(vc), 'OuterPosition'), csFig, 'UniformOutput', 0);
 S0 = set0_(cvrFigPos0, csFig);
 end %func
@@ -5477,7 +5482,7 @@ else
     S0 = update_cursor_(S0, iCluPaste, 1);
 end
 
-S0 = keyPressFcn_cell_(get_fig_cache_('FigWav'), {'j','t','c','i','v','e','f'}, S0); %'z' to recenter
+S0 = keyPressFcn_cell_(get_fig_cache_('FigWav'), {'t','c','i','v','e','f'}, S0); %'z' to recenter
 set(0, 'UserData', S0);
 
 auto_scale_proj_time_(S0);
@@ -6386,7 +6391,7 @@ switch lower(event.Key)
     case 'h', msgbox_(S_fig.csHelp, 1);
     case 'w', toggleVisible_(S_fig.hSpkAll); %toggle spike waveforms
     case 't', plot_FigTime_(S0); % time view
-    case 'j', plot_FigProj_(S0); %projection view
+    case 'j', ui_show_drift_view_(0); %drift view (replaces projection view)
     case 'n'
         fText = get_set_(S_fig, 'fText', get_set_(P, 'fText', 1));
         figWav_clu_count_(S_fig, S_clu, ~fText);
@@ -6802,6 +6807,7 @@ S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
 % S_clu = S_clu_count_(S_clu);
 % S_clu.nClu = numel(unique(viMap_clu));
 S_clu.cviSpk_clu = vi2cell_(S_clu.viClu);
+S_clu.nClu = numel(S_clu.cviSpk_clu); % update cluster count after remapping
 S_clu.vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu);
 viSite_spk = get0_('viSite_spk');
 S_clu.viSite_clu = double(arrayfun(@(iClu)mode(viSite_spk(S_clu.cviSpk_clu{iClu})), 1:S_clu.nClu));
@@ -7868,11 +7874,11 @@ switch lower(event.Key)
             disp(lasterror());
         end
         
-    case 'p' %update projection view
+    case 'p' %update drift view
         vrPos = getPosition(S_fig.hRect);
         tlim_proj = [vrPos(1), sum(vrPos([1,3]))];
         P.tlim_proj = tlim_proj;
-        plot_FigProj_(S0);
+        ui_show_drift_view_(0);
         
 %     case 'f' % feature display instead of amplitude display
 %         if strcmpi(P.vcFet_show, 'fet')
@@ -8758,8 +8764,12 @@ set(0, 'UserData', S0);
 plot_FigWav_(S0);
 S0 = update_FigCor_(S0);
 
-% Step 6: Update selection
-S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
+% Step 6: Update selection - switch to minimum merged cluster
+if ~isempty(viClu_affected)
+    S0.iCluCopy = min(viClu_affected);
+else
+    S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
+end
 S0.iCluPaste = [];
 set(0, 'UserData', S0);
 button_CluWav_simulate_(S0.iCluCopy, []);
@@ -12936,8 +12946,10 @@ else
     [hAx_, lim_] = deal(arg1, arg2);
 end
 if any(isnan(lim_)), return; end
+lim_ = sort(lim_);
+if lim_(2) <= lim_(1), lim_(2) = lim_(1) + 1; end
 try
-    ylim(hAx_, sort(lim_));
+    ylim(hAx_, lim_);
 catch
     disperr_();
 end
@@ -12946,17 +12958,19 @@ end %func
 
 %--------------------------------------------------------------------------
 function xlim_(arg1, arg2)
-% ylim function
-% ylim_(lim_)
-% ylim_(hAx, lim_)
+% xlim function
+% xlim_(lim_)
+% xlim_(hAx, lim_)
 if nargin==1
     [hAx_, lim_] = deal(gca, arg1);
 else
     [hAx_, lim_] = deal(arg1, arg2);
 end
 if any(isnan(lim_)), return; end
+lim_ = sort(lim_);
+if lim_(2) <= lim_(1), lim_(2) = lim_(1) + 1; end
 try
-    xlim(hAx_, sort(lim_));
+    xlim(hAx_, lim_);
 catch
     disperr_();
 end
@@ -12975,6 +12989,9 @@ if ischar(lim_)
     return;
 end
 if any(isnan(lim_)), return; end
+% Validate: ensure second element > first for each axis pair
+if lim_(2) <= lim_(1), lim_(2) = lim_(1) + 1; end
+if numel(lim_) >= 4 && lim_(4) <= lim_(3), lim_(4) = lim_(3) + 1; end
 try
     axis(hAx_, [sort(lim_(1:2)), sort(lim_(3:4))]);
 catch
@@ -17701,27 +17718,24 @@ if nargin<1, S0 = get(0, 'UserData'); end
 if nargin<2, fPlot = 0; end
 
 autoscale_pct = get_set_(S0.P, 'autoscale_pct', 99.5);
+
+% FigProj auto-scaling (skip if FigProj replaced by FigDrift)
 [hFig_proj, S_fig_proj] = get_fig_cache_('FigProj');
-
-% Check if S_fig_proj has required fields
-if ~isstruct(S_fig_proj) || ~isfield(S_fig_proj, 'viSites_show')
-    return; % FigProj not properly initialized
+if isstruct(S_fig_proj) && isfield(S_fig_proj, 'viSites_show')
+    [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, S_fig_proj.viSites_show);
+    if isempty(mrMin2) || isempty(mrMax2)
+        cmrAmp = {mrMin1, mrMax1};
+    else
+        cmrAmp = {mrMin1, mrMax1, mrMin2, mrMax2};
+    end
+    maxAmp_proj = max(cellfun(@(x)quantile(x(:), autoscale_pct/100), cmrAmp));
+    % Handle NaN - use default from P
+    if isnan(maxAmp_proj) || isempty(maxAmp_proj)
+        maxAmp_proj = get_set_(S0.P, 'maxAmp', 250);
+    end
+    S_fig_proj.maxAmp = maxAmp_proj;
+    set(hFig_proj, 'UserData', S_fig_proj);
 end
-
-[mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, S_fig_proj.viSites_show);
-if isempty(mrMin2) || isempty(mrMax2)
-    cmrAmp = {mrMin1, mrMax1};
-else
-    cmrAmp = {mrMin1, mrMax1, mrMin2, mrMax2};
-end
-maxAmp_proj = max(cellfun(@(x)quantile(x(:), autoscale_pct/100), cmrAmp));
-% Handle NaN - use default from P
-if isnan(maxAmp_proj) || isempty(maxAmp_proj)
-    maxAmp_proj = get_set_(S0.P, 'maxAmp', 250);
-end
-S_fig_proj.maxAmp = maxAmp_proj;
-set(hFig_proj, 'UserData', S_fig_proj);
-
 
 % Update time
 [hFig_time, S_fig_time] = get_fig_cache_('FigTime');
@@ -17742,9 +17756,11 @@ set(hFig_time, 'UserData', S_fig_time);
 
 % plot
 if fPlot
-    keyPressFcn_cell_(get_fig_cache_('FigWav'), {'j', 't'}, S0); 
+    keyPressFcn_cell_(get_fig_cache_('FigWav'), {'j', 't'}, S0);
 else
-    rescale_FigProj_(S_fig_proj.maxAmp, hFig_proj, S_fig_proj, S0);    
+    if isstruct(S_fig_proj) && isfield(S_fig_proj, 'maxAmp')
+        rescale_FigProj_(S_fig_proj.maxAmp, hFig_proj, S_fig_proj, S0);
+    end
     rescale_FigTime_(S_fig_time.maxAmp, S0, S0.P);
 end
 end %func
@@ -18541,9 +18557,13 @@ end
 viMatch_m = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^m\w*_clu$'), csNames, 'UniformOutput', false));
 csNames_m = csNames(viMatch_m);
 
-% Get old nClu for dimension checking
+% Get expected dimension for viKeep_clu indexing
+if islogical(viKeep_clu)
+    nClu_index = numel(viKeep_clu);
+else
+    nClu_index = max(viKeep_clu);
+end
 nClu_old = S_clu.nClu;
-nClu_new = numel(viKeep_clu);
 
 % Process each m*_clu field (except those already handled)
 for iField = 1:numel(csNames_m)
@@ -18559,22 +18579,22 @@ for iField = 1:numel(csNames_m)
         [nRows, nCols] = size(mField);
 
         % Determine how to resize based on dimensions
-        if nRows == nClu_old && nCols == nClu_old
+        % Check against both nClu_old and nClu_index (viKeep_clu length)
+        if (nRows == nClu_old || nRows == nClu_index) && (nCols == nClu_old || nCols == nClu_index)
             % [nClu x nClu] matrix - select both dimensions
             S_clu.(vcField) = mField(viKeep_clu, viKeep_clu);
-        elseif nRows == nClu_old
+        elseif nRows == nClu_old || nRows == nClu_index
             % [nClu x X] matrix - select rows
             S_clu.(vcField) = mField(viKeep_clu, :);
-        elseif nCols == nClu_old
+        elseif nCols == nClu_old || nCols == nClu_index
             % [X x nClu] matrix - select columns
             S_clu.(vcField) = mField(:, viKeep_clu);
         else
-            % Neither dimension matches nClu_old - this field may cause validation error
-            fprintf(2, 'S_clu_select_: Warning - field %s has size [%d x %d], expected at least one dimension = %d\n', ...
-                vcField, nRows, nCols, nClu_old);
+            % Neither dimension matches - skip with warning
+            fprintf(2, 'S_clu_select_: Warning - field %s has size [%d x %d], no dimension matches %d or %d\n', ...
+                vcField, nRows, nCols, nClu_old, nClu_index);
         end
     catch ME
-        % If there's an error processing this field, continue with others
         fprintf(2, 'S_clu_select_: Error resizing field %s: %s\n', vcField, ME.message);
     end
 end
@@ -20349,11 +20369,16 @@ end %func
 function S0 = set0_(varargin)
 % Set(0, 'UserData')
 
-S0 = get(0, 'UserData'); 
+S0 = get(0, 'UserData');
 % set(0, 'UserData', []); %prevent memory copy operation
 for i=1:nargin
     try
-        S0.(inputname(i)) = varargin{i};
+        vcName = inputname(i);
+        if isempty(vcName)
+            disperr_(sprintf('set0_: argument %d has no variable name (inputname returned empty)', i));
+            continue;
+        end
+        S0.(vcName) = varargin{i};
     catch
         disperr_();
     end
@@ -30269,9 +30294,10 @@ if fNewFig
     if isvalid_(hFig)
         close(hFig); hFig = []; set(hMenu, 'Checked', 'off'); return;
     end
-    hFig = create_figure_('FigClust', [.85 0 .15 1], P.vcFile_prm, 1, 1);    
+    hFig = create_figure_('FigClust', [.85 0 .15 1], P.vcFile_prm, 1, 1);
     set(hMenu, 'Checked', 'on');
-    set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
+    setappdata(hFig, 'hMenu_toggle', hMenu);
+    set(hFig, 'CloseRequestFcn', 'try, set(getappdata(gcbf,''hMenu_toggle''),''Checked'',''off''); catch, end; delete(gcbf);');
 end
 clf(hFig);
 hAx = axes(hFig);
@@ -31472,22 +31498,11 @@ end %func
 %--------------------------------------------------------------------------
 % 2019/04/09 JJJ: cleaned code originally craeted by Zach Sperry
 function ui_show_drift_view_(fNewFig, hMenu)
-persistent hFig
 if nargin<2, hMenu = []; end
-% hFig = get_fig_('FigClust');
 if nargin<1, fNewFig=0; end
-if ~fNewFig && ~isvalid_(hFig), return; end
+[hFig, S_fig] = get_fig_cache_('FigDrift');
+if ~isvalid_(hFig), return; end
 S0 = get0_();
-P = S0.P;
-if fNewFig
-    if isvalid_(hFig) % close toggle
-        close(hFig); hFig = []; set(hMenu, 'Checked', 'off'); return;
-    end
-    % Use same position as FigProj [.5 .25 .35 .5] to replace it
-    hFig = create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm], 0, 0);
-    set(hMenu, 'Checked', 'on');
-    set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
-end
 try
     show_drift_view(S0, hFig);
 catch
@@ -31502,8 +31517,8 @@ end %func
 
 %--------------------------------------------------------------------------
 function close_figure_uncheck_menu_(hFig, hMenu)
-set(hMenu, 'Checked', 'off');
-close_(hFig);
+try set(hMenu, 'Checked', 'off'); catch, end
+try delete(hFig); catch, closereq; end
 end %func
 
 
