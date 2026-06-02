@@ -84,6 +84,16 @@ S_clu.icl = icl(icl > 0);
 % Nearest neighbor (not computed for CLASSIX-only mode)
 S_clu.nneigh = int32(zeros(nSpk, 1));
 
+% kNN graph required by the waveform-based post-merge modes (e.g. the default
+% post_merge_mode=1 templateMatch). CLASSIX does not compute one, so provide a
+% safe self-referential placeholder (valid spike indices, never 0/out-of-range).
+S_clu.miKnn = repmat(int32(1:nSpk), get_set_(P, 'knn', 30), 1);
+
+% Signal fet2clu_ to bypass postCluster_ so these CLASSIX labels are not
+% clobbered by density-peak (DPC) re-assignment. This is the fix for the
+% previously-broken CLASSIX primary clustering.
+S_clu.fLabelClu = 1;
+
 % CLASSIX-specific outputs
 S_clu.classix_out = out;  % Store CLASSIX output structure
 S_clu.classix_explain = explain;  % Store explain function handle

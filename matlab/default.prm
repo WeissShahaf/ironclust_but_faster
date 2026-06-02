@@ -143,7 +143,7 @@ fInterp_fet = 1;            % Interpolate the waveforms for feature projection t
 fRaw_feature = 0;           % Use raw waveform for feature extraction
 
 % #Clustering (run "jrc sort" after change)
-vcCluster = 'classix';%'drift-knn';        % cluster method: {'spacetime', 'drift', 'drift2', 'drift-knn', 'wavcov', 'classix'}, spacetime: spatiotemporal decentralized clustering that can handle slow drift; drift: fast drift clustering; classix: CLASSIX fast sorting-based clustering (10-100x faster than DPC); wavcov: waveform covariance (creates nChans^2*nDelays_wavcov number of features)
+vcCluster = 'drift-knn';        % cluster method: {'spacetime', 'drift', 'drift2', 'drift-knn', 'wavcov', 'classix', 'kmeans', 'hdbscan', 'isosplit6'}, spacetime: spatiotemporal decentralized clustering that can handle slow drift; drift: fast drift clustering; classix: CLASSIX fast sorting-based clustering (10-100x faster than DPC); kmeans/hdbscan/isosplit6: per-site label-based clustering (bypass DPC, merged across sites by post-merge); wavcov: waveform covariance (creates nChans^2*nDelays_wavcov number of features)
 knn = 30;                   % K nearest neighbor clustering
 nQuantile_drift = 8;        % Valid if vcCluster = 'drift'; # of bins for amplitude histogram per site to find drift pairs
 nTime_clu = [];             % number of time periods to perform separate clustering (later to be merged after clustering)
@@ -179,6 +179,19 @@ classix_minPts = [20];        % Minimum spikes per cluster. Set to [] to use min
 classix_merge_tiny = 1;     % Merge groups with < minPts points. 0=keep separate, 1=merge into nearest large cluster
 classix_use_mex = 1;        % Use MEX acceleration with multi-threaded BLAS. 1=enabled (2-4x speedup), 0=pure MATLAB (compatibility mode)
 classix_verbose = 1;        % Print detailed timing and statistics. 0=quiet, 1=show timing breakdown, distance computations, cluster sizes
+
+% #Alternative clustering methods (per-site, label-based; bypass density-peak clustering)
+% Set vcCluster = 'kmeans' | 'hdbscan' | 'isosplit6' to use these instead of DPC.
+% Each clusters the spikes of a detection site independently using that site's local
+% features, then post-merge (post_merge_mode) merges duplicate units across sites.
+% kmeans and (the knnsearch used by) hdbscan use the Statistics and Machine Learning Toolbox.
+kmeans_k = [];              % clusters per site for kmeans. [] = use maxCluPerSite (over-segment; post-merge collapses extras)
+kmeans_replicates = 3;      % kmeans restarts; best (lowest within-cluster sum of distances) is kept
+kmeans_distance = 'sqeuclidean';   % kmeans distance metric: 'sqeuclidean' | 'cityblock' | 'cosine' | 'correlation'
+hdbscan_minClusterSize = [];% HDBSCAN minimum spikes per cluster. [] = use min_count
+hdbscan_minPts = 10;        % HDBSCAN core-distance neighborhood size (min_samples); larger = more conservative/more noise
+isosplit_version = 6;       % ISO-SPLIT: try isosplit6 (Python backend) first, fall back to pure-MATLAB isosplit5 on failure
+isosplit_isocut_threshold = 1.0;   % ISO-SPLIT dip-score cutoff; smaller merges more aggressively, larger keeps clusters split
 
 % #Trial (used for plotting PSTH for each unit after clustering)
 vcFile_trial = '';          % .mat or .csv file containing timestamp in seconds unit. use any variable name.

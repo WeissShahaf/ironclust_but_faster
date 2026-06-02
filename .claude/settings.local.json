@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(if not exist logs mkdir logs)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "PowerShell(git log *)"
     ],
     "deny": [],
     "ask": []

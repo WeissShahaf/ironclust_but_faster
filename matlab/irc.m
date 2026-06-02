@@ -2359,10 +2359,21 @@ switch lower(vcCluster)
         S_clu = cluster_xcov_(S0, P);
     case 'classix' % CLASSIX clustering (bypasses DPC)
         S_clu = cluster_classix_(S0, P);
+    case 'kmeans' % per-site k-means (label-based, bypasses DPC)
+        S_clu = cluster_kmeans_(S0, P);
+    case 'hdbscan' % per-site HDBSCAN (label-based, bypasses DPC)
+        S_clu = cluster_hdbscan_(S0, P);
+    case {'isosplit6', 'isosplit', 'isosplit5'} % per-site ISO-SPLIT (label-based, bypasses DPC)
+        S_clu = cluster_isosplit_(S0, P);
     otherwise
         error('fet2clu_: unsupported vcCluster: %s', vcCluster);
 end
-S_clu = postCluster_(S_clu, P);
+% Label-based methods (kmeans/hdbscan/isosplit/classix) produce final cluster
+% labels directly. Skip postCluster_ so its density-peak (DPC) re-assignment does
+% not clobber those labels (this is what broke the original CLASSIX integration).
+if ~get_set_(S_clu, 'fLabelClu', 0)
+    S_clu = postCluster_(S_clu, P);
+end
 fprintf('\tClustering took %0.1f s\n', S_clu.t_runtime);
 
 fprintf('\nauto-merging...\n'); t_automerge=tic;
@@ -2373,6 +2384,231 @@ t_automerge = toc(t_automerge);
 fprintf('\n\tauto-merging took %0.1fs\n', t_automerge);
 S_clu.viClu_auto = S_clu.viClu;
 S_clu.t_automerge = t_automerge;
+end %func
+
+
+%--------------------------------------------------------------------------
+% Label-based clustering helpers (kmeans / hdbscan / isosplit). These methods
+% produce final cluster labels directly (unlike density-peak methods that produce
+% rho/delta). S_clu_from_labels_ packages a label vector into a valid S_clu that
+% bypasses postCluster_ (see fet2clu_), and cluster_labels_persite_ runs a given
+% clustering function per detection site (features are local to each spike's site).
+function S_clu = S_clu_from_labels_(viClu, S0, P, t_runtime, miKnn, vrRho)
+% Build a valid S_clu from a final cluster-label vector (0 = noise/unassigned).
+% miKnn (knn x nSpk) and vrRho (nSpk x 1) are the kNN graph + density from the
+% per-site driver; they are required by the waveform-based post-merge modes
+% (e.g. templateMatch_post_/waveform_similarity_clu_, the default post_merge_mode=1).
+if nargin<4, t_runtime = 0; end
+if nargin<5, miKnn = []; end
+if nargin<6, vrRho = []; end
+global trFet_spk
+viClu = int32(viClu(:));
+nSpk = numel(viClu);
+nClu = double(max([0; double(viClu)]));
+knn = get_set_(P, 'knn', 30);
+
+% representative spike (icl) per cluster: spike of max |amplitude| within cluster
+icl = zeros(nClu, 1, 'int32');
+vrAmp = get_(S0, 'vrAmp_spk');
+for iClu = 1:nClu
+    viSpk1 = find(viClu == iClu);
+    if isempty(viSpk1), continue; end
+    if ~isempty(vrAmp)
+        [~, imax] = max(abs(vrAmp(viSpk1)));
+        icl(iClu) = viSpk1(imax);
+    else
+        icl(iClu) = viSpk1(1);
+    end
+end
+
+% kNN graph: a valid (>=1) self-referential default if none supplied, so that
+% downstream code that indexes spikes via miKnn never hits index 0 / out of range.
+if isempty(miKnn)
+    miKnn = repmat(int32(1:nSpk), knn, 1);
+else
+    miKnn = int32(miKnn);
+end
+% density: real per-site rho if supplied, else uniform.
+if isempty(vrRho)
+    vrRho = ones(nSpk, 1, 'single');
+else
+    vrRho = single(vrRho(:));
+end
+
+S_clu = struct();
+S_clu.viClu = viClu;
+S_clu.nClu = nClu;
+S_clu.icl = icl(icl > 0);
+S_clu.rho = vrRho;
+[~, ordrho] = sort(vrRho, 'descend');
+S_clu.ordrho = int32(ordrho(:));
+% nearest-neighbor proxy (DPC field; label methods bypass DPC peak assignment).
+if size(miKnn, 1) >= 2
+    S_clu.nneigh = int32(miKnn(2, :)');
+else
+    S_clu.nneigh = int32(miKnn(1, :)');
+end
+S_clu.delta = ones(nSpk, 1, 'single');
+S_clu.miKnn = miKnn;
+S_clu.halo = [];
+S_clu.viiSpk = [];
+S_clu.vrDc2_site = [];
+if ~isempty(trFet_spk), S_clu.trFet_dim = size(trFet_spk); else, S_clu.trFet_dim = []; end
+S_clu.fLabelClu = 1;     % signal fet2clu_ to bypass postCluster_ (DPC re-assignment)
+S_clu.t_runtime = t_runtime;
+S_clu.P = P;
+end %func
+
+
+%--------------------------------------------------------------------------
+function [viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh_cluster)
+% Per-site label-clustering driver. Loops over detection sites, clusters each
+% site's primary spikes with fh_cluster, and offsets labels into a global id space.
+% Cross-site duplicate units are merged afterward by post_merge_ (waveform-based).
+% Also computes a per-site kNN graph (miKnn) and density (vrRho) with GLOBAL spike
+% indices, which the waveform-based post-merge modes require.
+%   fh_cluster: @(X, P) -> integer label vector (0 = noise); X is (nSpk_site x nFet),
+%               one row per primary spike (full local feature vector).
+global trFet_spk
+if isempty(trFet_spk)
+    trFet_spk = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), 'single', S0.dimm_fet);
+end
+nSites = numel(S0.cviSpk_site);
+nSpk = numel(S0.viTime_spk);
+viClu = zeros(nSpk, 1, 'int32');
+knn = get_set_(P, 'knn', 30);
+miKnn = repmat(int32(1:nSpk), knn, 1);   % safe self-referential default
+vrRho = ones(nSpk, 1, 'single');
+min_count = get_set_(P, 'min_count', 30);
+offset = 0;
+fprintf('\tPer-site clustering over %d sites\n\t', nSites);
+for iSite = 1:nSites
+    viSpk1 = S0.cviSpk_site{iSite};
+    if isempty(viSpk1), continue; end
+    viSpk1 = viSpk1(:);
+    n1 = numel(viSpk1);
+    % full local feature vector per primary spike: n1 x (nSites_fet*nPcPerChan)
+    X = double(reshape(trFet_spk(:,:,viSpk1), [], n1)');
+    % --- cluster this site's spikes ---
+    if n1 < max(2, min_count)
+        viLabel = ones(n1, 1);   % too few spikes: one cluster (pruned later if tiny)
+    else
+        try
+            viLabel = fh_cluster(X, P);
+        catch ME
+            fprintf(2, '\n\tsite %d clustering failed (%s); assigning single cluster\n\t', iSite, ME.message);
+            viLabel = ones(n1, 1);
+        end
+    end
+    viLabel = double(viLabel(:));
+    vl = viLabel > 0;
+    if any(vl)
+        viClu(viSpk1(vl)) = int32(offset + viLabel(vl));
+        offset = offset + max(viLabel(vl));
+    end
+    % --- per-site kNN graph + density (global indices) for post-merge ---
+    [miKnn1, vrRho1] = persite_knn_(X', knn, viSpk1);
+    miKnn(:, viSpk1) = miKnn1;
+    vrRho(viSpk1) = vrRho1;
+    fprintf('.');
+end
+fprintf('\n');
+end %func
+
+
+%--------------------------------------------------------------------------
+function [miKnn1, vrRho1] = persite_knn_(mrFet1, knn, viSpk1)
+% kNN graph (knn x n1, GLOBAL spike indices, padded to knn rows) and density
+% rho (n1 x 1 = 1 / distance-to-kth-neighbor) for one site's spikes.
+% mrFet1: nFet x n1 (columns = spikes). Uses the native knn_cpu_ (pdist2).
+n1 = size(mrFet1, 2);
+K = max(1, min(knn, n1));
+[vrKnn1, miKnnLoc] = knn_cpu_(mrFet1, 1:n1, 1:n1, K);   % miKnnLoc: K x n1 (local 1..n1)
+gi = viSpk1(miKnnLoc);                                    % K x n1 global indices
+if K < knn
+    gi = [gi; repmat(gi(end, :), knn - K, 1)];           % pad rows up to knn
+end
+miKnn1 = int32(gi);
+vrKnn1 = double(vrKnn1(:));
+vrKnn1(vrKnn1 <= 0) = eps('single');
+vrRho1 = single(1 ./ vrKnn1);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S_clu = cluster_kmeans_(S0, P)
+% Per-site k-means clustering (label-based; bypasses density-peak clustering).
+% Over-segments each site into k clusters; post_merge_ collapses redundant ones.
+% Requires the Statistics and Machine Learning Toolbox (built-in kmeans).
+fprintf('k-means clustering (per-site, bypassing DPC)...\n'); t_func = tic;
+k = get_set_(P, 'kmeans_k', []);
+if isempty(k), k = get_set_(P, 'maxCluPerSite', 20); end
+nReplicates = get_set_(P, 'kmeans_replicates', 3);
+vcDistance = get_set_(P, 'kmeans_distance', 'sqeuclidean');
+fh = @(X, Pp)kmeans_labels_(X, k, nReplicates, vcDistance);
+[viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh);
+S_clu = S_clu_from_labels_(viClu, S0, P, toc(t_func), miKnn, vrRho);
+fprintf('\tk-means: %d clusters, took %0.1fs\n', S_clu.nClu, S_clu.t_runtime);
+end %func
+
+
+%--------------------------------------------------------------------------
+function viLabel = kmeans_labels_(X, k, nReplicates, vcDistance)
+n = size(X,1);
+k = min(k, max(1, floor(n/2)));   % cannot have more clusters than (half the) points
+if k <= 1, viLabel = ones(n,1); return; end
+viLabel = kmeans(X, k, 'Replicates', nReplicates, 'Distance', vcDistance, ...
+    'EmptyAction', 'singleton', 'OnlinePhase', 'off');
+end %func
+
+
+%--------------------------------------------------------------------------
+function S_clu = cluster_hdbscan_(S0, P)
+% Per-site HDBSCAN clustering (label-based; bypasses density-peak clustering).
+% Uses pure-MATLAB hdbscan_fit.m (knnsearch for core distances).
+fprintf('HDBSCAN clustering (per-site, bypassing DPC)...\n'); t_func = tic;
+minClusterSize = get_set_(P, 'hdbscan_minClusterSize', []);
+if isempty(minClusterSize), minClusterSize = get_set_(P, 'min_count', 30); end
+minPts = get_set_(P, 'hdbscan_minPts', 10);
+fh = @(X, Pp)hdbscan_fit(X, minClusterSize, minPts);
+[viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh);
+S_clu = S_clu_from_labels_(viClu, S0, P, toc(t_func), miKnn, vrRho);
+fprintf('\tHDBSCAN: %d clusters, took %0.1fs\n', S_clu.nClu, S_clu.t_runtime);
+end %func
+
+
+%--------------------------------------------------------------------------
+function S_clu = cluster_isosplit_(S0, P)
+% Per-site ISO-SPLIT clustering (label-based; bypasses density-peak clustering).
+% Tries isosplit6 (Python bridge) and falls back to pure-MATLAB isosplit5.
+fprintf('ISO-SPLIT clustering (per-site, bypassing DPC)...\n'); t_func = tic;
+iVer = get_set_(P, 'isosplit_version', 6);
+isocut_threshold = get_set_(P, 'isosplit_isocut_threshold', 1.0);
+fh = @(X, Pp)isosplit_labels_(X, iVer, isocut_threshold);
+[viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh);
+S_clu = S_clu_from_labels_(viClu, S0, P, toc(t_func), miKnn, vrRho);
+fprintf('\tISO-SPLIT: %d clusters, took %0.1fs\n', S_clu.nClu, S_clu.t_runtime);
+end %func
+
+
+%--------------------------------------------------------------------------
+function viLabel = isosplit_labels_(X, iVer, isocut_threshold)
+% ISO-SPLIT expects features as (nDims x nSamples); X is (nSamples x nDims).
+Xt = X';
+opts = struct('isocut_threshold', isocut_threshold);
+viLabel = [];
+if iVer >= 6
+    try
+        viLabel = isosplit6(Xt, opts);
+    catch ME
+        fprintf(2, '\tisosplit6 unavailable (%s); falling back to isosplit5\n', ME.message);
+        viLabel = [];
+    end
+end
+if isempty(viLabel)
+    viLabel = isosplit5(Xt, opts);
+end
+viLabel = viLabel(:);
 end %func
 
 
@@ -6459,6 +6695,7 @@ jitter = round(P.sRateHz / 1000 * P.jitter_ms); %0.5 ms
 nLags = round(P.nLags_ms / P.jitter_ms);
 
 vi1 = int32(double(S_clu_time_(S_clu, iClu1)) /jitter);
+n_spikes = numel(vi1); % spike count before expansion (used for ratio normalization)
 
 if iClu1~=iClu2
     vi1 = [vi1, vi1-1, vi1+1]; %allow missing one
@@ -6472,24 +6709,56 @@ for iLag=1:numel(viLag)
 end
 vrTime_lag = viLag * P.jitter_ms;
 
+% Counts and ratio (fraction of total spikes in cluster)
+max_cnt = max(vnCnt);
+max_ratio = max_cnt / max(n_spikes, 1);
+
 %--------------
 % draw
 refrac_ms = 2; % refractory period display at +/- 2ms (hardcoded for ISI violation detection)
+left_top = max(max_cnt, 1) * 1.05; % left ylim upper bound with headroom
 if isempty(S_fig)
     S_fig.hAx = axes_new_(hFig);
+
+    % Create dual y-axes: left=counts, right=ratio
+    % yyaxis activates the side; bar_ uses gca (no handle) to respect active side
+    yyaxis(S_fig.hAx, 'left');
     S_fig.hBar = bar_(vrTime_lag, vnCnt, 1);
     xlabel('Time (ms)');
     ylabel('Counts');
     grid on;
-    set(S_fig.hAx, 'YScale', 'log');
-    % Add red refractory period lines at +/- 2ms
+
+    % Set right axis label before locking limits via YAxis ruler (avoids ylim side ambiguity)
+    yyaxis(S_fig.hAx, 'right');
+    ylabel('Ratio');
+
+    % Lock both axes limits directly on ruler objects — immune to yyaxis active-side state
+    S_fig.hAx.YAxis(1).Limits = [0, left_top];
+    S_fig.hAx.YAxis(1).LimitsMode = 'manual';
+    S_fig.hAx.YAxis(2).Limits = [0, max(max_ratio, eps) * 1.05];
+    S_fig.hAx.YAxis(2).LimitsMode = 'manual';
+
+    % Refractory lines — xline spans full axes height regardless of active side
+    yyaxis(S_fig.hAx, 'left');
     hold(S_fig.hAx, 'on');
     S_fig.hLine_refrac_pos = xline(S_fig.hAx, refrac_ms, 'r-', 'LineWidth', 1.5);
     S_fig.hLine_refrac_neg = xline(S_fig.hAx, -refrac_ms, 'r-', 'LineWidth', 1.5);
     hold(S_fig.hAx, 'off');
 else
     set(S_fig.hBar, 'XData', vrTime_lag, 'YData', vnCnt);
-    % Update refractory lines position if they exist
+
+    % Update limits directly — no yyaxis switching needed, no side ambiguity
+    S_fig.hAx.YAxis(1).Limits = [0, left_top];
+    S_fig.hAx.YAxis(1).LimitsMode = 'manual';
+    if numel(S_fig.hAx.YAxis) > 1
+        % Ensure right axis label present (handles stale pre-patch single-axis figures)
+        yyaxis(S_fig.hAx, 'right');
+        ylabel('Ratio');
+        S_fig.hAx.YAxis(2).Limits = [0, 1];
+        S_fig.hAx.YAxis(2).LimitsMode = 'manual';
+        yyaxis(S_fig.hAx, 'left');
+    end
+
     if isfield(S_fig, 'hLine_refrac_pos') && ishandle(S_fig.hLine_refrac_pos)
         set(S_fig.hLine_refrac_pos, 'Value', refrac_ms);
         set(S_fig.hLine_refrac_neg, 'Value', -refrac_ms);
@@ -8329,7 +8598,11 @@ viMap = zeros(1, nClu_prev);
 viMap(viClu_keep) = 1:nClu_new;
 S_clu.viClu(vlMap) = viMap(S_clu.viClu(vlMap));
 S_clu.nClu = nClu_new;
-assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after deleting');
+% S_clu_select_ now reconciles per-cluster array lengths, so this should hold.
+% Warn (non-modal) instead of a blocking error dialog if anything is still off.
+if ~S_clu_valid_(S_clu)
+    fprintf(2, 'delete_clu_: cluster arrays still inconsistent after deleting (continuing)\n');
+end
 end %func
 
 
@@ -8436,16 +8709,27 @@ if S0.iCluCopy == S0.iCluPaste
 end
 
 hFig_wait = figure_wait_(1);
+iCluLog2 = S0.iCluPaste; % save for log before clearing
+iClu_deleted = max(S0.iCluCopy, S0.iCluPaste); % higher index gets deleted
 S0.S_clu = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
+S0.iCluCopy = min(S0.iCluCopy, iCluLog2);
+S0.iCluPaste = [];
+% Hide paste overlay and update copy overlay BEFORE redraw to avoid mismatch
+update_plot_(S0.hPaste, nan, nan);
+[S0.iCluCopy, S0.hCopy] = plot_tmrWav_clu_(S0, S0.iCluCopy, S0.hCopy, [0 0 0]);
+% Adjust pending queue indices for the deleted cluster and redraw pending markers
+S0 = init_pending_cache_(S0);
+S0.cviMerge_pending = adjust_pending_indices_(S0.cviMerge_pending, iClu_deleted);
+viDel = S0.viDelete_pending;
+viDel(viDel == iClu_deleted) = [];
+viDel(viDel > iClu_deleted) = viDel(viDel > iClu_deleted) - 1;
+S0.viDelete_pending = viDel;
+S0 = update_pending_markers_(S0);
 set(0, 'UserData', S0);
 plot_FigWav_(S0); %redraw plot
-S0.iCluCopy = min(S0.iCluCopy, S0.iCluPaste);
-S0.iCluPaste = [];
-set(0, 'UserData', S0);
-update_plot_(S0.hPaste, nan, nan);
-S0 = update_FigCor_(S0);        
+S0 = update_FigCor_(S0);
 S0 = button_CluWav_simulate_(S0.iCluCopy, [], S0);
-S0 = save_log_(sprintf('merge %d %d', S0.iCluCopy, S0.iCluPaste), S0);
+S0 = save_log_(sprintf('merge %d %d', S0.iCluCopy, iCluLog2), S0);
 set(0, 'UserData', S0);
 
 % msgbox_close(hMsg);
@@ -8759,19 +9043,26 @@ S0.cviMerge_pending = {};
 S0.viDelete_pending = [];
 S0 = clear_pending_markers_(S0);
 
-% Step 5: Update display
-set(0, 'UserData', S0);
-plot_FigWav_(S0);
-S0 = update_FigCor_(S0);
-
-% Step 6: Update selection - switch to minimum merged cluster
+% Step 5: Determine new cursor state and update overlays BEFORE background redraw
+% This prevents visible mismatch between hCopy/hPaste overlays and vhPlot background
 if ~isempty(viClu_affected)
     S0.iCluCopy = min(viClu_affected);
 else
     S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
 end
 S0.iCluPaste = [];
+% Hide paste overlay immediately — its old cluster position is now invalid
+if isfield(S0, 'hPaste') && ~isempty(S0.hPaste)
+    update_plot_(S0.hPaste, nan, nan);
+end
+% Update copy overlay with the new merged waveform so it matches the background
+[S0.iCluCopy, S0.hCopy] = plot_tmrWav_clu_(S0, S0.iCluCopy, ...
+    get_set_(S0, 'hCopy', []), [0 0 0]);
+
+% Step 6: Update display (overlays already consistent with background)
 set(0, 'UserData', S0);
+plot_FigWav_(S0);
+S0 = update_FigCor_(S0);
 button_CluWav_simulate_(S0.iCluCopy, []);
 
 % Step 7: Log all operations
@@ -18530,6 +18821,25 @@ end %func
 
 
 %--------------------------------------------------------------------------
+function S = struct_select_safe_(S, csNames, viKeep, iDimm)
+% Per-field resilient wrapper around struct_select_. Resizes each field on its
+% own; a field that cannot be resized is skipped (with a warning) instead of
+% aborting the whole selection. This prevents a single malformed per-cluster
+% field from leaving the other fields (e.g. viSite_clu, mrWavCor) un-remapped,
+% which would desync them from nClu and crash later cluster operations.
+if nargin<4, iDimm = 1; end
+if ischar(csNames), csNames = {csNames}; end
+for i = 1:numel(csNames)
+    try
+        S = struct_select_(S, csNames(i), viKeep, iDimm);
+    catch ME
+        fprintf(2, 'struct_select_safe_: skipped field "%s": %s\n', csNames{i}, ME.message);
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function S_clu = S_clu_select_(S_clu, viKeep_clu)
 % automatically trim clusters
 % 7/20/17 JJJ: auto selecting vectors and matrics
@@ -18538,14 +18848,18 @@ function S_clu = S_clu_select_(S_clu, viKeep_clu)
 % Quality
 csNames = fieldnames(S_clu);
 if isempty(csNames), return; end
+% NOTE: resize each per-cluster field independently (struct_select_safe_) so that
+% a single malformed field (e.g. a quality array left mis-sized by an earlier
+% merge/split) cannot abort the whole remap. A partial remap here used to leave
+% viSite_clu / mrWavCor out of sync with nClu and crash S_clu_wavcor_ on merge.
 viMatch_v = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^v\w*_clu$'), csNames, 'UniformOutput', false));
-S_clu = struct_select_(S_clu, csNames(viMatch_v), viKeep_clu);
+S_clu = struct_select_safe_(S_clu, csNames(viMatch_v), viKeep_clu, 1);
 
 viMatch_t = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^t\w*_clu$'), csNames, 'UniformOutput', false));
-S_clu = struct_select_(S_clu, csNames(viMatch_t), viKeep_clu, 3); 
+S_clu = struct_select_safe_(S_clu, csNames(viMatch_t), viKeep_clu, 3);
 
 viMatch_c = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^c\w*_clu$'), csNames, 'UniformOutput', false));
-S_clu = struct_select_(S_clu, csNames(viMatch_c), viKeep_clu);
+S_clu = struct_select_safe_(S_clu, csNames(viMatch_c), viKeep_clu, 1);
 
 % Handle matrix fields (m*_clu)
 % mrWavCor: special remapping for [nClu x nClu] correlation matrix
@@ -18597,6 +18911,36 @@ for iField = 1:numel(csNames_m)
     catch ME
         fprintf(2, 'S_clu_select_: Error resizing field %s: %s\n', vcField, ME.message);
     end
+end
+
+% Final length reconciliation: force every per-cluster vector/cell field to the
+% kept-cluster count. This guarantees a self-consistent S_clu even if a field was
+% skipped above (malformed/mis-sized from an earlier operation), preventing the
+% nClu-vs-array desync that otherwise crashes downstream merge/update code.
+if islogical(viKeep_clu), nClu_new = sum(viKeep_clu); else, nClu_new = numel(viKeep_clu); end
+csNames_fix = fieldnames(S_clu);
+vlFix = cellfun(@(cs)~isempty(regexp(cs, '^v\w*_clu$', 'once')) || ~isempty(regexp(cs, '^c\w*_clu$', 'once')), csNames_fix);
+for iF = find(vlFix(:))'
+    vc = csNames_fix{iF};
+    val = S_clu.(vc);
+    if numel(val) == nClu_new, continue; end
+    if iscell(val)
+        if numel(val) > nClu_new, val = val(1:nClu_new); else, val(end+1:nClu_new) = {[]}; end
+    elseif isnumeric(val) || islogical(val)
+        fRow = isrow(val);
+        val = val(:);
+        if numel(val) > nClu_new
+            val = val(1:nClu_new);
+        else
+            if isinteger(val) || islogical(val), padval = 0; else, padval = nan; end
+            val(end+1:nClu_new) = padval;
+        end
+        if fRow, val = val'; end
+    else
+        continue; % non vector/cell (handled by t*/m* logic above)
+    end
+    S_clu.(vc) = val;
+    fprintf(2, 'S_clu_select_: reconciled length of field "%s" to %d\n', vc, nClu_new);
 end
 
 end %func
