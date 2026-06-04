@@ -188,10 +188,19 @@ classix_verbose = 1;        % Print detailed timing and statistics. 0=quiet, 1=s
 kmeans_k = [];              % clusters per site for kmeans. [] = use maxCluPerSite (over-segment; post-merge collapses extras)
 kmeans_replicates = 3;      % kmeans restarts; best (lowest within-cluster sum of distances) is kept
 kmeans_distance = 'sqeuclidean';   % kmeans distance metric: 'sqeuclidean' | 'cityblock' | 'cosine' | 'correlation'
+kmeans_max_iter = 100;      % kmeans: max Lloyd iterations per replicate
+kmeans_start = 'plus';      % kmeans: initialization 'plus' (k-means++) | 'sample' | 'uniform' | 'cluster'
+kmeans_online = 'off';      % kmeans: online update phase 'off' | 'on' (on is slower, sometimes lower distortion)
 hdbscan_minClusterSize = [];% HDBSCAN minimum spikes per cluster. [] = use min_count
 hdbscan_minPts = 10;        % HDBSCAN core-distance neighborhood size (min_samples); larger = more conservative/more noise
+hdbscan_k_graph = [];       % HDBSCAN kNN-graph size for the MST. [] = max(minPts,16); larger = more accurate/slower
+hdbscan_allow_single = 0;   % HDBSCAN: allow a single all-points cluster per site (1) vs labelling them noise (0, default)
 isosplit_version = 6;       % ISO-SPLIT: try isosplit6 (Python backend) first, fall back to pure-MATLAB isosplit5 on failure
 isosplit_isocut_threshold = 1.0;   % ISO-SPLIT dip-score cutoff; smaller merges more aggressively, larger keeps clusters split
+isosplit_min_cluster_size = 10;    % ISO-SPLIT (v5): minimum cluster size during merge/redistribute passes
+isosplit_K_init = 200;             % ISO-SPLIT (v5): number of initial parcels (over-segmentation) per site
+isosplit_max_iterations = 1000;    % ISO-SPLIT (v5): safety cap on merge/redistribute iterations
+isosplit_whiten = 1;               % ISO-SPLIT (v5): whiten comparison axis by pooled covariance (1=on, 0=off)
 
 % #Trial (used for plotting PSTH for each unit after clustering)
 vcFile_trial = '';          % .mat or .csv file containing timestamp in seconds unit. use any variable name.

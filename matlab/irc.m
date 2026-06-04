@@ -2545,7 +2545,10 @@ k = get_set_(P, 'kmeans_k', []);
 if isempty(k), k = get_set_(P, 'maxCluPerSite', 20); end
 nReplicates = get_set_(P, 'kmeans_replicates', 3);
 vcDistance = get_set_(P, 'kmeans_distance', 'sqeuclidean');
-fh = @(X, Pp)kmeans_labels_(X, k, nReplicates, vcDistance);
+opts = struct('MaxIter', get_set_(P, 'kmeans_max_iter', 100), ...
+              'Start', get_set_(P, 'kmeans_start', 'plus'), ...
+              'OnlinePhase', get_set_(P, 'kmeans_online', 'off'));
+fh = @(X, Pp)kmeans_labels_(X, k, nReplicates, vcDistance, opts);
 [viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh);
 S_clu = S_clu_from_labels_(viClu, S0, P, toc(t_func), miKnn, vrRho);
 fprintf('\tk-means: %d clusters, took %0.1fs\n', S_clu.nClu, S_clu.t_runtime);
@@ -2553,12 +2556,16 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function viLabel = kmeans_labels_(X, k, nReplicates, vcDistance)
+function viLabel = kmeans_labels_(X, k, nReplicates, vcDistance, opts)
+if nargin<5, opts = struct(); end
 n = size(X,1);
 k = min(k, max(1, floor(n/2)));   % cannot have more clusters than (half the) points
 if k <= 1, viLabel = ones(n,1); return; end
 viLabel = kmeans(X, k, 'Replicates', nReplicates, 'Distance', vcDistance, ...
-    'EmptyAction', 'singleton', 'OnlinePhase', 'off');
+    'EmptyAction', 'singleton', ...
+    'OnlinePhase', get_set_(opts, 'OnlinePhase', 'off'), ...
+    'Start', get_set_(opts, 'Start', 'plus'), ...
+    'MaxIter', get_set_(opts, 'MaxIter', 100));
 end %func
 
 
@@ -2570,7 +2577,9 @@ fprintf('HDBSCAN clustering (per-site, bypassing DPC)...\n'); t_func = tic;
 minClusterSize = get_set_(P, 'hdbscan_minClusterSize', []);
 if isempty(minClusterSize), minClusterSize = get_set_(P, 'min_count', 30); end
 minPts = get_set_(P, 'hdbscan_minPts', 10);
-fh = @(X, Pp)hdbscan_fit(X, minClusterSize, minPts);
+opts = struct('k_graph', get_set_(P, 'hdbscan_k_graph', []), ...
+              'allow_single_cluster', get_set_(P, 'hdbscan_allow_single', 0));
+fh = @(X, Pp)hdbscan_fit(X, minClusterSize, minPts, opts);
 [viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh);
 S_clu = S_clu_from_labels_(viClu, S0, P, toc(t_func), miKnn, vrRho);
 fprintf('\tHDBSCAN: %d clusters, took %0.1fs\n', S_clu.nClu, S_clu.t_runtime);
@@ -2583,8 +2592,13 @@ function S_clu = cluster_isosplit_(S0, P)
 % Tries isosplit6 (Python bridge) and falls back to pure-MATLAB isosplit5.
 fprintf('ISO-SPLIT clustering (per-site, bypassing DPC)...\n'); t_func = tic;
 iVer = get_set_(P, 'isosplit_version', 6);
-isocut_threshold = get_set_(P, 'isosplit_isocut_threshold', 1.0);
-fh = @(X, Pp)isosplit_labels_(X, iVer, isocut_threshold);
+opts = struct();
+opts.isocut_threshold     = get_set_(P, 'isosplit_isocut_threshold', 1.0);
+opts.min_cluster_size     = get_set_(P, 'isosplit_min_cluster_size', 10);
+opts.K_init               = get_set_(P, 'isosplit_K_init', 200);
+opts.max_iterations       = get_set_(P, 'isosplit_max_iterations', 1000);
+opts.whiten_cluster_pairs = get_set_(P, 'isosplit_whiten', 1);
+fh = @(X, Pp)isosplit_labels_(X, iVer, opts);
 [viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh);
 S_clu = S_clu_from_labels_(viClu, S0, P, toc(t_func), miKnn, vrRho);
 fprintf('\tISO-SPLIT: %d clusters, took %0.1fs\n', S_clu.nClu, S_clu.t_runtime);
@@ -2592,10 +2606,10 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function viLabel = isosplit_labels_(X, iVer, isocut_threshold)
+function viLabel = isosplit_labels_(X, iVer, opts)
 % ISO-SPLIT expects features as (nDims x nSamples); X is (nSamples x nDims).
+if nargin<3, opts = struct(); end
 Xt = X';
-opts = struct('isocut_threshold', isocut_threshold);
 viLabel = [];
 if iVer >= 6
     try

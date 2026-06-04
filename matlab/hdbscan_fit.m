@@ -1,11 +1,16 @@
-function [labels, info] = hdbscan_fit(X, minClusterSize, minPts)
+function [labels, info] = hdbscan_fit(X, minClusterSize, minPts, opts)
 % HDBSCAN_FIT  Pure-MATLAB HDBSCAN* clustering.
-%   labels = hdbscan_fit(X, minClusterSize, minPts)
+%   labels = hdbscan_fit(X, minClusterSize, minPts, opts)
 %
 %   Inputs:
 %     X              : (n x d) data matrix, one row per point.
 %     minClusterSize : smallest number of points that may form a cluster (>=2).
 %     minPts         : core-distance neighborhood size (a.k.a. min_samples).
+%     opts           : optional struct with fields
+%                        .k_graph              kNN graph size for the MST
+%                                              ([] -> max(minPts,16); larger=more accurate/slower)
+%                        .allow_single_cluster allow one all-points cluster (1)
+%                                              vs labelling as noise (0, default)
 %   Output:
 %     labels : (n x 1) integer labels in 1..K; 0 = noise.
 %     info   : struct with .num_clusters.
@@ -25,6 +30,7 @@ function [labels, info] = hdbscan_fit(X, minClusterSize, minPts)
 if nargin<1, test_hdbscan_fit_(); return; end
 if nargin<2 || isempty(minClusterSize), minClusterSize = 10; end
 if nargin<3 || isempty(minPts), minPts = 10; end
+if nargin<4, opts = struct(); end
 
 X = double(X);
 n = size(X, 1);
@@ -37,7 +43,13 @@ if n < 2 * mcs
     labels = ones(n, 1); info.num_clusters = 1; return;   % too few points for >1 cluster
 end
 minPts  = max(1, min(round(minPts), n - 1));
-k_graph = min(n - 1, max(minPts, 16));
+k_graph_opt = getf_(opts, 'k_graph', []);
+if isempty(k_graph_opt)
+    k_graph = min(n - 1, max(minPts, 16));
+else
+    k_graph = min(n - 1, max(2, round(k_graph_opt)));
+end
+allow_single = getf_(opts, 'allow_single_cluster', 0);
 
 % ---- 1-2. core distances and mutual-reachability kNN edges ----
 [idx, dst] = knn_(X, k_graph + 1);          % column 1 is the point itself
@@ -67,7 +79,7 @@ maxCluster = max([rp, rc(rc > n), baseCluster]);
 
 % ---- 6. stability + EOM selection + labelling ----
 stab = compute_stability_(rp, rc, rl, rs, n, maxCluster);
-selected = get_clusters_eom_(rp, rc, stab, n, baseCluster, maxCluster);
+selected = get_clusters_eom_(rp, rc, stab, n, baseCluster, maxCluster, allow_single);
 labels = do_labelling_(rp, rc, n, selected, maxCluster);
 info.num_clusters = numel(selected);
 end %func
@@ -272,14 +284,20 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function selected = get_clusters_eom_(rp, rc, stab, n, baseCluster, maxCluster)
-% Excess-of-Mass cluster selection. The root (baseCluster) is never selected
-% on its own (standard HDBSCAN default).
+function selected = get_clusters_eom_(rp, rc, stab, n, baseCluster, maxCluster, allow_single)
+% Excess-of-Mass cluster selection. By default the root (baseCluster) is never
+% selected on its own (standard HDBSCAN); allow_single=1 makes it eligible, so a
+% single all-points cluster can be returned instead of all-noise.
+if nargin<7, allow_single = 0; end
 clusterIds = baseCluster:maxCluster;
 nC = maxCluster - n;
 is_cluster = true(1, nC);
-is_cluster(baseCluster - n) = false;
-process = sort(clusterIds(clusterIds ~= baseCluster), 'descend');
+if allow_single
+    process = sort(clusterIds, 'descend');               % root eligible
+else
+    is_cluster(baseCluster - n) = false;                 % root not selectable
+    process = sort(clusterIds(clusterIds ~= baseCluster), 'descend');
+end
 for node = process
     ch = rc((rp == node) & (rc > n));
     if isempty(ch), subs = 0; else, subs = sum(stab(ch - n)); end
@@ -353,6 +371,13 @@ function D = pdist2_(A, B)
 AA = sum(A.^2, 2);
 BB = sum(B.^2, 2)';
 D = sqrt(max(0, bsxfun(@plus, AA, bsxfun(@minus, BB, 2 * (A * B')))));
+end %func
+
+
+%--------------------------------------------------------------------------
+function v = getf_(s, f, d)
+% struct field with default (treats missing/empty as default).
+if isstruct(s) && isfield(s, f) && ~isempty(s.(f)), v = s.(f); else, v = d; end
 end %func
 
 
