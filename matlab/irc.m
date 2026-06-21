@@ -3585,13 +3585,23 @@ function [S_clu, S0] = post_merge_(S_clu, P, fPostCluster)
 % also removes duplicate spikes
 if nargin<3, fPostCluster=1; end
 
+% Label-based clustering (kmeans/hdbscan/isosplit/classix) assigns final cluster labels
+% directly and bypasses density-peak clustering (DPC). postCluster_ re-runs DPC assignment
+% from S_clu.icl, which is empty for these methods (see "assigning clusters, nClu:0"), so it
+% wipes S_clu.viClu and collapses everything into a single cluster. Detect label-based
+% clustering -- via the flag set by the clusterer, or the active vcCluster (robust when the
+% saved _jrc.mat predates the flag) -- and skip postCluster_ so 'auto' preserves the labels.
+fLabelClu = get_set_(S_clu, 'fLabelClu', 0) || ...
+    ismember(lower(get_set_(P, 'vcCluster', '')), {'kmeans', 'hdbscan', 'isosplit', 'isosplit5', 'isosplit6', 'classix'});
+
 nRepeat_merge = get_set_(P, 'nRepeat_merge', 10);
 % refresh clu, start with fundamentals
 S_clu = struct_copy_(S_clu, 'rho', 'delta', 'ordrho', 'nneigh', 'P', ...
     't_runtime', 'halo', 'viiSpk', 'trFet_dim', 'vrDc2_site', 'miKnn', ...
     'viClu', 'icl', 'S_drift');
+S_clu.fLabelClu = fLabelClu;  % preserve across struct_copy_ so the saved _jrc.mat keeps the bypass
 
-if fPostCluster, S_clu = postCluster_(S_clu, P); end
+if fPostCluster && ~fLabelClu, S_clu = postCluster_(S_clu, P); end
 
 S_clu = S_clu_refresh_(S_clu);
 
@@ -3632,6 +3642,17 @@ switch get_set_(P, 'post_merge_mode', 1)
     otherwise, fprintf('No post-merge is performed\n'); 
 end %switch
 
+if fLabelClu && get_set_(P, 'maxWavCor', 1) > 0 && get_set_(P, 'maxWavCor', 1) < 1
+    % Label-based per-site clustering (kmeans/hdbscan/isosplit/classix) splits one neuron's
+    % spikes into separate clusters on adjacent sites. templateMatch_post_ (post_merge_mode=1)
+    % only compares clusters that share an EXACT peak site, so cross-site duplicates never get
+    % scored (their similarity stays NaN) and nothing merges. post_merge_wav4_ is the
+    % position-based merge that DOES compare clusters with different peak sites on their
+    % overlapping site-neighborhoods (irc.m ~4133), using the same maxWavCor threshold. Run it
+    % here with a generous radius (maxDist_site_um, ~55um) so cross-site duplicates collapse.
+    % post_merge_wav4_ refreshes S_clu and recomputes centroids from mrPos_spk internally.
+    S_clu = post_merge_wav4_(S_clu, get_set_(P, 'maxDist_site_um', 50), P);
+end
 S_clu = post_merge_wav_(S_clu, 0, P);
 S_clu = S_clu_sort_(S_clu, 'viSite_clu');
 S_clu = S_clu_refrac_(S_clu, P); % refractory violation removal
@@ -32060,6 +32081,14 @@ binsize = round(binsize_ms * P.sRateHz/1000); % 1 ms bin
 nbins_shift = ceil(burst_interval_ms / binsize_ms);
 cviTime_clu = arrayfun(@(x)viTime_spk(S_clu.viClu==x), 1:S_clu.nClu, 'UniformOutput', 0);
 nClu = numel(cviTime_clu);
+if nClu < 2
+    % Correlogram is undefined for fewer than 2 clusters. squareform(pdist(single point))
+    % returns a 0x0 matrix, which makes the mrDist_clu(:,iClu1) indexing below fail with
+    % "Index in position 2 exceeds array bounds." Return an empty/NaN matrix instead.
+    mrCC = nan(nClu);
+    fprintf('Computing correlogram...skipped (nClu=%d)\n', nClu);
+    return;
+end
 cviTime_b_clu = cellfun_(@(x)unique(int32(ceil(double(x(:))/binsize))), cviTime_clu);
 max_time = max(cellfun(@max, cviTime_b_clu));
 fprintf('Computing correlogram...'); t1=tic;

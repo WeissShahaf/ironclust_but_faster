@@ -105,6 +105,77 @@ irc2 clear `output_directory`
 irc2 clear `path_to_prm_file`
 ```
 
+## Clustering methods
+
+The primary clustering algorithm is selected with the `vcCluster` parameter (set it in the
+`.prm` file, then re-sort). The default `drift-knn` is the drift-resistant density-peak (DPC)
+method described under [Probe drift handling](#probe-drift-handling).
+
+In addition to the native DPC methods, IronClust includes **per-site, label-based** methods.
+These cluster the spikes of each detection site independently and let the automated post-merge
+combine matching units across sites:
+
+| `vcCluster` | Method | Notes |
+|---|---|---|
+| `drift-knn` *(default)* | Drift-resistant KNN density-peak | native DPC |
+| `spacetime` | Spatiotemporal decentralized DPC | native DPC, handles slow drift |
+| `drift` | Fast drift clustering | native DPC |
+| `xcov` | Waveform-covariance features | native DPC |
+| `kmeans` | Per-site k-means | requires Statistics & ML Toolbox |
+| `hdbscan` | Per-site HDBSCAN | pure MATLAB |
+| `isosplit6` | Per-site ISO-SPLIT | tries Python `isosplit6`, falls back to pure-MATLAB `isosplit5` |
+| `classix` | CLASSIX | label-based |
+
+Each method has tunable parameters (e.g. `isosplit_isocut_threshold`, `hdbscan_minPts`,
+`hdbscan_minClusterSize`, `kmeans_k`). See **[matlab/CLUSTERING_METHODS.md](matlab/CLUSTERING_METHODS.md)**
+for the full parameter reference and `matlab/default.prm` for defaults.
+
+To switch method, set `vcCluster` in your `.prm` (e.g. `vcCluster = 'isosplit6';`) and re-sort:
+```
+irc sort [path_to_my_param.prm]
+```
+
+## Manual curation
+
+Open the manual curation GUI:
+```
+irc manual [path_to_my_param.prm]
+```
+The cluster waveform view uses a **deferred-edit** workflow: queue merges/deletes, then apply
+them together with `u` (or cancel with `Esc`). Press `h` in the GUI for built-in help.
+
+### Keyboard shortcuts (cluster waveform view)
+
+| Key | Action |
+|---|---|
+| `←` / `→` | Select previous / next cluster |
+| `Shift`+`←` / `→` | Move the second (comparison) cluster selection |
+| `Home` / `End` | Jump to first / last cluster |
+| `Space` | Zoom and auto-select the most similar cluster for comparison |
+| `0` | Clear the second cluster selection |
+| `↑` / `↓` | Increase / decrease the waveform amplitude scale |
+| `z` | Zoom to the selected cluster |
+| `r` | Reset the view |
+| `m` | Queue a merge of the two selected clusters |
+| `d` / `Delete` / `Backspace` | Queue deletion of the selected cluster |
+| `s` | Auto-split the selected cluster |
+| `u` | Apply all queued (pending) merges/deletes and update |
+| `Esc` | Cancel all pending operations |
+| `o` | Reorder clusters by probe coordinates |
+| `1` / `2` / `3` / `4` | Annotate selected cluster as single / multi / noise / axonal |
+| `w` | Toggle individual spike waveforms |
+| `n` | Toggle cluster number/count labels |
+| `a` | Refresh the selected cluster's spikes |
+| `f` | Show cluster info / statistics |
+| `t` | Time vs. amplitude view |
+| `c` | Cross-correlogram |
+| `i` | ISI histogram |
+| `v` | ISI return map |
+| `e` | Probe / amplitude map |
+| `j` | Drift view |
+| `p` | PSTH (requires a trial file) |
+| `h` | Help |
+
 ## Importing multiple `.bin` files from [SpikeGLX](https://github.com/billkarsh/SpikeGLX)
 ```
 irc2 import-spikeglx [path_to_my_recording.bin] [path_to_probe_file.prb] (path_to_output_dir)
