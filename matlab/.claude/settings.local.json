@@ -7,7 +7,10 @@
       "Bash(dir:*)",
       "Read(//g//**)",
       "Bash(matlab:*)",
-      "Bash(python -c \"\nwith open(''''irc.m'''', ''''r'''') as f:\n    lines = f.readlines()\n    for i in range(len(lines)-1):\n        line = lines[i].rstrip()\n        next_line = lines[i+1]\n        # Check if line is commented and ends with ...\n        if line.strip().startswith(''''%'''') and line.strip().endswith(''''...''''):\n            # Check if next line is NOT commented\n            if next_line.strip() and not next_line.strip().startswith(''''%''''):\n                print(f''''Line {i+1}: {line}'''')\n                print(f''''Line {i+2}: {next_line.rstrip()}'''')\n                print()\n\")"
+      "Bash(git log *)",
+      "PowerShell(git --no-pager blame -L 4024,4024 -- irc.m 2>&1 | Select-Object -First 3)",
+      "Bash(git --no-pager diff --stat)",
+      "Bash(git --no-pager diff --cached --stat)"
     ],
     "deny": [],
     "ask": []
