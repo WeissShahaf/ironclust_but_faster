@@ -2521,12 +2521,21 @@ fParfor = get_set_(P, 'fParfor', 1);
 % Cap the worker pool (default 8; 4-8 recommended) to avoid CPU/RAM oversubscription
 % -- each worker holds one site's features + kNN distance matrix, so more workers is
 % not always faster and can blow up memory on large recordings.
-nWorkers = get_set_(P, 'nWorkers_clust', 8);
-nWorkers = max(1, min(round(nWorkers), feature('numcores')));
+nWorkers = max(1, round(get_set_(P, 'nWorkers_clust', 8)));
+% Clamp to what the local cluster profile actually permits. Requesting more than the
+% profile's NumWorkers throws ("Too many workers requested ..."), which would otherwise
+% drop us to the (much slower) serial path. To use more workers, raise the profile cap:
+%   c = parcluster('local'); c.NumWorkers = 12; saveProfile(c);
+nWorkersMax = feature('numcores');
+try
+    nWorkersMax = parcluster('local').NumWorkers;
+catch
+end
+nWorkers = min(nWorkers, nWorkersMax);
 progress_persite_('init', nSites);
 if fParfor
     try
-        % size the parallel pool to at most nWorkers
+        % reuse an existing pool when possible; otherwise size one to <= nWorkers
         hPool = gcp('nocreate');
         if isempty(hPool)
             hPool = parpool('local', nWorkers);
@@ -2538,8 +2547,18 @@ if fParfor
         hQueue = parallel.pool.DataQueue;
         afterEach(hQueue, @progress_persite_);   % live progress from workers
     catch ME0
-        fprintf(2, '\tparpool setup failed (%s); using serial loop\n', ME0.message);
-        fParfor = 0;   % no Parallel Computing Toolbox -> rich serial loop below
+        % last resort before serial: try the profile's default-size pool
+        try
+            hPool = gcp('nocreate');
+            if isempty(hPool), hPool = parpool('local'); end
+            nWorkers = hPool.NumWorkers;
+            hQueue = parallel.pool.DataQueue;
+            afterEach(hQueue, @progress_persite_);
+            fprintf(2, '\tpool sizing failed (%s); using default pool of %d workers\n', ME0.message, nWorkers);
+        catch
+            fprintf(2, '\tparpool setup failed (%s); using serial loop\n', ME0.message);
+            fParfor = 0;   % Parallel Computing Toolbox unavailable -> serial loop below
+        end
     end
 end
 fprintf('\tPer-site clustering over %d sites (%s)\n', nSites, ...
