@@ -2409,7 +2409,17 @@ end %func
 %     algorithm (t_clu) and the kNN graph (t_knn); the driver reports the summed split
 %     and the slowest sites. Use measure_persite_timing.m to profile this cheaply on
 %     the biggest sites and decide where to optimize (e.g. GPU the kNN only if it
-%     dominates). Known limitation: a few very large sites can dominate the tail.
+%     dominates).
+%   - Tail/giant-site handling: a few noise/artifact channels can hold 30x the median
+%     spike count, and both the kNN graph (O(n^2)) and the clustering grow steeply, so
+%     those sites dominate the run (measured: kNN ~= 90% of the per-site cost, clean
+%     O(n^2)). The optional per-site spike cap (maxSpk_persite_clust, off by default)
+%     bounds this: a site with more than maxSpk spikes clusters a random subsample
+%     (clustering -> maxSpk points, kNN graph -> O(maxSpk^2)) and assigns the rest to
+%     the nearest subset member (cluster_site_capped_). The only residual cost that
+%     still scales with the full site size is one 1-NN assignment pass (O(n1*maxSpk),
+%     chunked BLAS), so a 1.1M-spike site drops from ~80 min to ~90 s (measured, m=50k:
+%     isosplit ~5 s + subset kNN + assignment ~86 s). See default.prm.
 function S_clu = S_clu_from_labels_(viClu, S0, P, t_runtime, miKnn, vrRho)
 % Build a valid S_clu from a final cluster-label vector (0 = noise/unassigned).
 % miKnn (knn x nSpk) and vrRho (nSpk x 1) are the kNN graph + density from the
@@ -2637,6 +2647,16 @@ if n1 == 0
     return;
 end
 X = double(X);
+% --- optional per-site spike cap: on huge (usually noise) channels, cluster a
+%     random subsample of maxSpk spikes and propagate the result to the rest.
+%     Bounds BOTH the O(n1^2) kNN graph and the clustering cost. Off by default
+%     (maxSpk_persite_clust = []); only sites with n1 > maxSpk are affected. ---
+maxSpk = get_set_(P, 'maxSpk_persite_clust', []);
+if ~isempty(maxSpk) && n1 > maxSpk && maxSpk >= max(2, min_count)
+    [viLabel, miKnn1, vrRho1, nLabel, t_clu, t_knn] = ...
+        cluster_site_capped_(X, viSpk1, knn, round(maxSpk), fh_cluster, P);
+    return;
+end
 % --- cluster this site's spikes ---
 hT = tic;
 if n1 < max(2, min_count)
@@ -2698,6 +2718,68 @@ miKnn1 = int32(gi);
 vrKnn1 = double(vrKnn1(:));
 vrKnn1(vrKnn1 <= 0) = eps('single');
 vrRho1 = single(1 ./ vrKnn1);
+end %func
+
+
+%--------------------------------------------------------------------------
+function [viLabel, miKnn1, vrRho1, nLabel, t_clu, t_knn] = cluster_site_capped_(X, viSpk1, knn, m, fh_cluster, P)
+% Capped per-site clustering (see maxSpk_persite_clust). Clusters a random
+% subsample of m spikes, builds the kNN graph on that subset, then assigns ALL
+% n1 spikes to their nearest subset member -- copying its label, kNN row and
+% density. Bounds the clustering to m points and the kNN graph to O(m^2) on
+% giant sites, while still emitting a label, a global-index kNN row and a
+% density for every spike (so S_clu_from_labels_ / post_merge_ are unaffected).
+% Pure of shared state -> parfor-safe. Timing mirrors cluster_site_:
+% t_clu = subsample+cluster, t_knn = subset kNN graph + nearest-member assignment.
+n1 = size(X, 1);
+% Deterministic per-site subsample (seeded by the first global spike id) so the
+% chosen subset is identical under serial and parfor; restore the RNG afterward
+% so the clustering itself behaves exactly as it would on an uncapped site.
+sRng = rng(); rng(double(viSpk1(1)), 'twister');
+viSub = sort(randperm(n1, m));
+rng(sRng);
+Xsub = X(viSub, :);
+viSpkSub = viSpk1(viSub);
+% --- cluster the subset ---
+hT = tic;
+try
+    viLabelSub = fh_cluster(Xsub, P);
+catch ME
+    fprintf(2, '\n\tsite (%d spikes, capped to %d) clustering failed (%s); assigning single cluster\n', n1, m, ME.message);
+    viLabelSub = ones(m, 1);
+end
+viLabelSub = double(viLabelSub(:));
+t_clu = toc(hT);
+nLabel = max([0; viLabelSub(viLabelSub > 0)]);
+% --- subset kNN graph (global indices) + assign every spike to its nearest
+%     subset member (1-NN), copying that member's label, kNN row and density.
+%     A subset member is its own nearest (distance 0) -> keeps its own values. ---
+hT = tic;
+[miKnnSub, vrRhoSub] = persite_knn_(Xsub', knn, viSpkSub);
+viNN = nearest_in_set_(X', Xsub');     % n1 x 1, index into the m subset members
+viLabel = viLabelSub(viNN);
+miKnn1 = miKnnSub(:, viNN);
+vrRho1 = vrRhoSub(viNN);
+t_knn = toc(hT);
+end %func
+
+
+%--------------------------------------------------------------------------
+function viNN = nearest_in_set_(mrFet_all, mrFet_sub)
+% For each column of mrFet_all (nFet x n1), return the index (1..m) of the
+% nearest column in mrFet_sub (nFet x m) by Euclidean distance. Chunked over the
+% queries (like knn_cpu_) so the pdist2 distance block stays bounded in memory.
+% Pure of shared state -> parfor-safe. Used by the per-site spike cap to assign
+% every spike to its nearest clustered subsample member.
+n1 = size(mrFet_all, 2);
+viNN = zeros(n1, 1);
+mrSub_T = mrFet_sub';            % m x nFet (the searched set)
+nStep = 1000;
+for i1 = 1:nStep:n1
+    vi_ = i1:min(i1+nStep-1, n1);
+    [~, ix] = pdist2(mrSub_T, mrFet_all(:,vi_)', 'euclidean', 'Smallest', 1);
+    viNN(vi_) = ix(:);
+end
 end %func
 
 

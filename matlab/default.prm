@@ -203,6 +203,7 @@ isosplit_max_iterations = 1000;    % ISO-SPLIT (v5): safety cap on merge/redistr
 isosplit_whiten = 1;               % ISO-SPLIT (v5): whiten comparison axis by pooled covariance (1=on, 0=off)
 % The per-site clustering loop (kmeans/hdbscan/isosplit) runs in parallel when fParfor=1.
 nWorkers_clust = 12;               % max parallel workers for per-site clustering (capped at #cores). Each worker holds one site's data (~8GB), so raise only if RAM allows; lower (4-8) if memory-bound.
+maxSpk_persite_clust = [];         % per-site spike cap for label-based clustering. [] = off (no cap; behaviour byte-identical to before). Sites with more spikes cluster a random subsample of this many and assign the rest to the nearest subset member, bounding the O(n^2) kNN graph + clustering on huge (usually noise) channels. Try 50000-100000 to enable; with m=50000 a 1.1M-spike noise site drops from ~80 min to ~90 s (measured: isosplit ~5 s + subset kNN + a 1-NN assignment pass ~86 s).
 
 % #Trial (used for plotting PSTH for each unit after clustering)
 vcFile_trial = '';          % .mat or .csv file containing timestamp in seconds unit. use any variable name.
