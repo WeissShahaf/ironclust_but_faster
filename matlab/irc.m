@@ -2393,6 +2393,23 @@ end %func
 % rho/delta). S_clu_from_labels_ packages a label vector into a valid S_clu that
 % bypasses postCluster_ (see fet2clu_), and cluster_labels_persite_ runs a given
 % clustering function per detection site (features are local to each spike's site).
+%
+% Architecture / performance:
+%   - cluster_labels_persite_ is the shared driver for all three methods. It clusters
+%     each detection site independently (cluster_site_), then offsets the per-site
+%     labels into a global id space; cross-site duplicates are merged later by
+%     post_merge_ (waveform-based). Each site also gets a global-index kNN graph
+%     (persite_knn_) + density that the waveform post-merge needs.
+%   - The site loop runs in PARALLEL (parfor) across a capped worker pool
+%     (nWorkers_clust, default 12, clamped to #cores), with graceful fallback to a
+%     serial loop. The label offset is applied AFTER the loop (cumsum of per-site
+%     cluster counts) so the loop body carries no shared state; results are identical
+%     to the serial path. Live progress + ETA is printed via progress_persite_.
+%   - cluster_site_ also returns per-site CPU-time split between the clustering
+%     algorithm (t_clu) and the kNN graph (t_knn); the driver reports the summed split
+%     and the slowest sites. Use measure_persite_timing.m to profile this cheaply on
+%     the biggest sites and decide where to optimize (e.g. GPU the kNN only if it
+%     dominates). Known limitation: a few very large sites can dominate the tail.
 function S_clu = S_clu_from_labels_(viClu, S0, P, t_runtime, miKnn, vrRho)
 % Build a valid S_clu from a final cluster-label vector (0 = noise/unassigned).
 % miKnn (knn x nSpk) and vrRho (nSpk x 1) are the kNN graph + density from the
