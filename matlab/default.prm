@@ -201,6 +201,8 @@ isosplit_min_cluster_size = 10;    % ISO-SPLIT (v5): minimum cluster size during
 isosplit_K_init = 200;             % ISO-SPLIT (v5): number of initial parcels (over-segmentation) per site
 isosplit_max_iterations = 1000;    % ISO-SPLIT (v5): safety cap on merge/redistribute iterations
 isosplit_whiten = 1;               % ISO-SPLIT (v5): whiten comparison axis by pooled covariance (1=on, 0=off)
+% The per-site clustering loop (kmeans/hdbscan/isosplit) runs in parallel when fParfor=1.
+nWorkers_clust = 12;               % max parallel workers for per-site clustering (capped at #cores). Each worker holds one site's data (~8GB), so raise only if RAM allows; lower (4-8) if memory-bound.
 
 % #Trial (used for plotting PSTH for each unit after clustering)
 vcFile_trial = '';          % .mat or .csv file containing timestamp in seconds unit. use any variable name.

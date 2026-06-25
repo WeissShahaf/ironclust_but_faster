@@ -2469,50 +2469,180 @@ function [viClu, miKnn, vrRho] = cluster_labels_persite_(S0, P, fh_cluster)
 % indices, which the waveform-based post-merge modes require.
 %   fh_cluster: @(X, P) -> integer label vector (0 = noise); X is (nSpk_site x nFet),
 %               one row per primary spike (full local feature vector).
+%
+% Detection sites are independent, so the per-site work (clustering + kNN graph)
+% runs in PARALLEL across CPU cores when fParfor=1 (default; see default.prm) and
+% the Parallel Computing Toolbox is available, falling back to a serial loop
+% otherwise. Both paths report running progress with an ETA, since the per-site
+% loop can take many minutes-to-hours for the heavier methods (e.g. ISO-SPLIT).
 global trFet_spk
 if isempty(trFet_spk)
     trFet_spk = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), 'single', S0.dimm_fet);
 end
 nSites = numel(S0.cviSpk_site);
 nSpk = numel(S0.viTime_spk);
-viClu = zeros(nSpk, 1, 'int32');
 knn = get_set_(P, 'knn', 30);
+min_count = get_set_(P, 'min_count', 30);
+
+% Pre-slice each site's features (kept single to limit memory; cluster_site_ casts
+% to double) and its global spike indices, so the per-site loop body is data-parallel
+% (no shared/loop-carried state -> parfor-safe; labels are offset after the loop).
+[cmrX, cviSpk] = deal(cell(nSites, 1));
+for iSite = 1:nSites
+    viSpk1 = S0.cviSpk_site{iSite}(:);
+    cviSpk{iSite} = viSpk1;
+    if isempty(viSpk1), continue; end
+    n1 = numel(viSpk1);
+    cmrX{iSite} = reshape(trFet_spk(:,:,viSpk1), [], n1)';   % n1 x nFet (single)
+end
+
+[cviLabel, cmiKnn, cvrRho] = deal(cell(nSites, 1));
+vnLabel = zeros(nSites, 1);   % #clusters found per site (for global label offsets)
+[vt_clu, vt_knn] = deal(zeros(nSites, 1));   % per-site CPU-time: clustering vs kNN graph
+
+fParfor = get_set_(P, 'fParfor', 1);
+% Cap the worker pool (default 8; 4-8 recommended) to avoid CPU/RAM oversubscription
+% -- each worker holds one site's features + kNN distance matrix, so more workers is
+% not always faster and can blow up memory on large recordings.
+nWorkers = get_set_(P, 'nWorkers_clust', 8);
+nWorkers = max(1, min(round(nWorkers), feature('numcores')));
+progress_persite_('init', nSites);
+if fParfor
+    try
+        % size the parallel pool to at most nWorkers
+        hPool = gcp('nocreate');
+        if isempty(hPool)
+            hPool = parpool('local', nWorkers);
+        elseif hPool.NumWorkers > nWorkers
+            delete(hPool);                       % shrink an over-sized pool to the cap
+            hPool = parpool('local', nWorkers);
+        end
+        nWorkers = hPool.NumWorkers;
+        hQueue = parallel.pool.DataQueue;
+        afterEach(hQueue, @progress_persite_);   % live progress from workers
+    catch ME0
+        fprintf(2, '\tparpool setup failed (%s); using serial loop\n', ME0.message);
+        fParfor = 0;   % no Parallel Computing Toolbox -> rich serial loop below
+    end
+end
+fprintf('\tPer-site clustering over %d sites (%s)\n', nSites, ...
+    ifeq_(fParfor, sprintf('parallel: %d workers', nWorkers), 'serial'));
+if fParfor
+    try
+        parfor (iSite = 1:nSites, nWorkers)
+            [cviLabel{iSite}, cmiKnn{iSite}, cvrRho{iSite}, vnLabel(iSite), vt_clu(iSite), vt_knn(iSite)] = ...
+                cluster_site_(cmrX{iSite}, cviSpk{iSite}, knn, min_count, fh_cluster, P);
+            send(hQueue, iSite);
+        end
+    catch ME
+        fprintf(2, '\n\tparallel clustering failed (%s); retrying serially\n', ME.message);
+        fParfor = 0;
+        progress_persite_('init', nSites);
+    end
+end
+if ~fParfor
+    for iSite = 1:nSites
+        [cviLabel{iSite}, cmiKnn{iSite}, cvrRho{iSite}, vnLabel(iSite), vt_clu(iSite), vt_knn(iSite)] = ...
+            cluster_site_(cmrX{iSite}, cviSpk{iSite}, knn, min_count, fh_cluster, P);
+        progress_persite_(iSite);
+    end
+end
+
+% --- assemble global outputs: offset each site's labels by the running cluster
+%     count of the preceding sites (cumulative sum reproduces the old serial offset)
+viClu = zeros(nSpk, 1, 'int32');
 miKnn = repmat(int32(1:nSpk), knn, 1);   % safe self-referential default
 vrRho = ones(nSpk, 1, 'single');
-min_count = get_set_(P, 'min_count', 30);
-offset = 0;
-fprintf('\tPer-site clustering over %d sites\n\t', nSites);
+viOffset = cumsum([0; vnLabel(:)]);       % viOffset(iSite) = #clusters before iSite
 for iSite = 1:nSites
-    viSpk1 = S0.cviSpk_site{iSite};
+    viSpk1 = cviSpk{iSite};
     if isempty(viSpk1), continue; end
-    viSpk1 = viSpk1(:);
-    n1 = numel(viSpk1);
-    % full local feature vector per primary spike: n1 x (nSites_fet*nPcPerChan)
-    X = double(reshape(trFet_spk(:,:,viSpk1), [], n1)');
-    % --- cluster this site's spikes ---
-    if n1 < max(2, min_count)
-        viLabel = ones(n1, 1);   % too few spikes: one cluster (pruned later if tiny)
-    else
-        try
-            viLabel = fh_cluster(X, P);
-        catch ME
-            fprintf(2, '\n\tsite %d clustering failed (%s); assigning single cluster\n\t', iSite, ME.message);
-            viLabel = ones(n1, 1);
-        end
+    viLabel = cviLabel{iSite};
+    if ~isempty(viLabel)
+        vl = viLabel > 0;
+        if any(vl), viClu(viSpk1(vl)) = int32(viOffset(iSite) + viLabel(vl)); end
     end
-    viLabel = double(viLabel(:));
-    vl = viLabel > 0;
-    if any(vl)
-        viClu(viSpk1(vl)) = int32(offset + viLabel(vl));
-        offset = offset + max(viLabel(vl));
-    end
-    % --- per-site kNN graph + density (global indices) for post-merge ---
-    [miKnn1, vrRho1] = persite_knn_(X', knn, viSpk1);
-    miKnn(:, viSpk1) = miKnn1;
-    vrRho(viSpk1) = vrRho1;
-    fprintf('.');
+    if ~isempty(cmiKnn{iSite}), miKnn(:, viSpk1) = cmiKnn{iSite}; end
+    if ~isempty(cvrRho{iSite}), vrRho(viSpk1) = cvrRho{iSite}; end
 end
-fprintf('\n');
+
+% --- per-site work breakdown: clustering vs kNN graph (summed CPU-time across all
+%     sites). Tells us which stage to optimize next (e.g. GPU the kNN if it dominates).
+vn1 = cellfun(@numel, cviSpk);
+t_clu_tot = sum(vt_clu); t_knn_tot = sum(vt_knn); t_work = t_clu_tot + t_knn_tot;
+if t_work > 0
+    fprintf('\tPer-site work (summed CPU-time over %d sites): clustering %.0fs (%.0f%%) + kNN %.0fs (%.0f%%) = %.0fs\n', ...
+        nSites, t_clu_tot, 100*t_clu_tot/t_work, t_knn_tot, 100*t_knn_tot/t_work, t_work);
+    [~, viSrt] = sort(vt_clu + vt_knn, 'descend');
+    nTop = min(5, nSites);
+    fprintf('\ttop %d sites by time:', nTop);
+    for ii = 1:nTop
+        is = viSrt(ii);
+        fprintf(' [site %d: %d spk, clu %.1fs + knn %.1fs]', is, vn1(is), vt_clu(is), vt_knn(is));
+    end
+    fprintf('\n');
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function [viLabel, miKnn1, vrRho1, nLabel, t_clu, t_knn] = cluster_site_(X, viSpk1, knn, min_count, fh_cluster, P)
+% Cluster one detection site's spikes and build its global-index kNN graph.
+% X: n1 x nFet (single, rows = spikes); viSpk1: that site's global spike indices.
+% Returns local labels (0=noise), the knn x n1 global-index kNN graph, density rho
+% (n1 x 1 = 1/dist-to-kth-neighbor), the site's cluster count nLabel, and the CPU-time
+% spent on clustering (t_clu) vs the kNN graph (t_knn). Pure of shared state so it is
+% safe to call from parfor.
+viSpk1 = viSpk1(:);
+n1 = numel(viSpk1);
+[t_clu, t_knn] = deal(0, 0);
+if n1 == 0
+    [viLabel, miKnn1, vrRho1, nLabel] = deal(zeros(0,1), zeros(knn,0,'int32'), zeros(0,1,'single'), 0);
+    return;
+end
+X = double(X);
+% --- cluster this site's spikes ---
+hT = tic;
+if n1 < max(2, min_count)
+    viLabel = ones(n1, 1);   % too few spikes: one cluster (pruned later if tiny)
+else
+    try
+        viLabel = fh_cluster(X, P);
+    catch ME
+        fprintf(2, '\n\tsite (%d spikes) clustering failed (%s); assigning single cluster\n', n1, ME.message);
+        viLabel = ones(n1, 1);
+    end
+end
+t_clu = toc(hT);
+viLabel = double(viLabel(:));
+nLabel = max([0; viLabel(viLabel > 0)]);
+% --- per-site kNN graph + density (global indices) for post-merge ---
+hT = tic;
+[miKnn1, vrRho1] = persite_knn_(X', knn, viSpk1);
+t_knn = toc(hT);
+end %func
+
+
+%--------------------------------------------------------------------------
+function progress_persite_(arg, nTotal)
+% Progress / ETA reporter for the per-site clustering loop. Call once with
+% ('init', nSites) to reset, then once per completed site with the site index
+% (numeric). Works both as a parallel.pool.DataQueue afterEach callback (parallel
+% path) and as a direct per-iteration tick (serial path); state is kept on the
+% client in a persistent so worker-side calls never occur.
+persistent nDone N tStart
+if ischar(arg)
+    nDone = 0; N = nTotal; tStart = tic; return;
+end
+nDone = nDone + 1;
+nStep = max(1, round(N / 50));   % refresh ~50 times over the run
+if mod(nDone, nStep) == 0 || nDone >= N
+    tElapsed = toc(tStart);
+    tRemain = tElapsed / max(nDone, 1) * max(N - nDone, 0);
+    fprintf('\r\t  %d/%d sites done  (%.0fs elapsed, ~%.0fs remaining)        ', ...
+        nDone, N, tElapsed, tRemain);
+    if nDone >= N, fprintf('\n'); end
+end
 end %func
 
 
