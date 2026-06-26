@@ -94,3 +94,38 @@ latent ones.
 - Added: `logs/changes_log20260626.md`, `logs/plan_postmerge_robustness.md`.
 - Modified: `matlab/irc.m`, `matlab/clu_wave_similarity_paged.m`,
   `matlab/cluster_classix_.m`.
+
+---
+
+## Update — GUI "Merge auto" silently discarded merges (`ea6a8dc`)
+
+### Symptom
+From the curation GUI, **Edit > Merge auto** printed `Merged 29 waveforms (459->430)`
+and spent ~136 s recomputing cluster mean waveforms, but then popped up *"No clusters
+are merged, adjust the correlation threshold"* and the cluster count stayed at **459**.
+
+### Root cause — sign bug in `post_merge_wav_`
+`post_merge_wav_` returns `[S_clu, nClu_merge]`. Inside the merge block it correctly
+computes `nClu_merge = nClu_pre - S_clu.nClu` (= +29), but the function's **final** line
+returned the opposite, `nClu_merge = S_clu.nClu - nClu_pre` (= −29). `merge_auto_` commits
+the merged `S_clu` (`set0_`/`gui_update_`/`save0_`) only when `nClu_merge > 0`; with −29 it
+took the else branch, so the computed merge was **discarded** and the GUI state never
+changed. The waveform recomputation ran (the early-return guard at the in-block `+29` was
+not hit), which is why time was spent with no result.
+
+A git bisect of the line confirmed a **regression**: `b99996f` ("Refactor and streamline
+cluster and UI operations") flipped the sign; it was `nClu_pre - S_clu.nClu` before
+(`5489202`). So GUI threshold-merging had been silently no-op since that refactor.
+
+### Fix
+- `post_merge_wav_` final line restored to `nClu_merge = nClu_pre - S_clu.nClu` (positive
+  = #clusters removed by merge + de-duplication), consistent with the in-block computation,
+  so `merge_auto_` commits and reports correctly.
+- Gated the stray `DEBUG post_merge_wav_:` print behind `fVerbose` (was always-on console
+  noise left over from debugging this issue).
+
+Pure logic fix; no effect on a healthy auto-`sort` run (that path calls
+`post_merge_wav_(S_clu, 0, P)` with `fMerge=0` and ignores `nClu_merge`). To pick up the
+fix in an open GUI session: `clear functions`, then click **Merge auto** again.
+
+- Modified: `matlab/irc.m`.
