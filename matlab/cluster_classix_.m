@@ -60,6 +60,17 @@ end
 
 %% Build S_clu structure
 % Create minimal structure required by postCluster_ and downstream functions
+% Make positive labels contiguous (1..nClu) so a CLASSIX label gap (e.g. from
+% merge_tiny) can't leave an empty cluster id that drops an icl entry below and
+% misaligns icl with cluster numbers. Identity when labels are already dense; 0
+% (noise) preserved. classix_out is stored raw and never indexed by label value
+% downstream, so compacting the labels is safe.
+viClu = int32(viClu(:));
+vlPos = viClu > 0;
+if any(vlPos)
+    [~, ~, vi1] = unique(viClu(vlPos));
+    viClu(vlPos) = int32(vi1);
+end
 nClu = max(viClu);
 S_clu = struct();
 S_clu.viClu = int32(viClu);

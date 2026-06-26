@@ -2430,6 +2430,15 @@ if nargin<5, miKnn = []; end
 if nargin<6, vrRho = []; end
 global trFet_spk
 viClu = int32(viClu(:));
+% Make positive labels contiguous (1..nClu) so a gap in the input labels (possible
+% from an external/custom fh_cluster, e.g. CLASSIX) can't create an empty cluster id
+% that drops an icl entry below and misaligns icl with cluster numbers. 0 (noise) kept.
+% For the shipped methods labels are already dense+ascending, so this is the identity.
+vlPos = viClu > 0;
+if any(vlPos)
+    [~, ~, vi1] = unique(viClu(vlPos));
+    viClu(vlPos) = int32(vi1);
+end
 nSpk = numel(viClu);
 nClu = double(max([0; double(viClu)]));
 knn = get_set_(P, 'knn', 30);
@@ -2510,6 +2519,14 @@ nSites = numel(S0.cviSpk_site);
 nSpk = numel(S0.viTime_spk);
 knn = get_set_(P, 'knn', 30);
 min_count = get_set_(P, 'min_count', 30);
+% Warn once if the per-site spike cap is set below min_count: cluster_site_ activates
+% the cap only when maxSpk >= max(2,min_count), so a smaller value silently disables it
+% and giant sites run fully uncapped (the O(n^2) blow-up the cap was meant to bound).
+maxSpk_warn = get_set_(P, 'maxSpk_persite_clust', []);
+if ~isempty(maxSpk_warn) && maxSpk_warn < max(2, min_count)
+    fprintf(2, '\tmaxSpk_persite_clust (%g) < min_count (%d): cap ignored, sites run uncapped.\n', ...
+        maxSpk_warn, max(2, min_count));
+end
 
 % Pre-slice each site's features (kept single to limit memory; cluster_site_ casts
 % to double) and its global spike indices, so the per-site loop body is data-parallel
@@ -2673,8 +2690,18 @@ t_clu = toc(hT);
 viLabel = double(viLabel(:));
 nLabel = max([0; viLabel(viLabel > 0)]);
 % --- per-site kNN graph + density (global indices) for post-merge ---
+% Guard the O(n1^2) kNN step: on a huge UNCAPPED site it can OOM/throw. Without this
+% the serial loop in cluster_labels_persite_ would abort the whole (multi-hour) sort
+% instead of degrading this one site. Fallback = self-referential kNN + uniform rho
+% (same shapes/types as a normal return); the spike labels from fh_cluster are kept.
 hT = tic;
-[miKnn1, vrRho1] = persite_knn_(X', knn, viSpk1);
+try
+    [miKnn1, vrRho1] = persite_knn_(X', knn, viSpk1);
+catch ME
+    fprintf(2, '\n\tsite (%d spikes) kNN graph failed (%s); self-referential fallback\n', n1, ME.message);
+    miKnn1 = repmat(int32(viSpk1(:)'), knn, 1);   % each spike -> itself (valid global idx)
+    vrRho1 = ones(n1, 1, 'single');
+end
 t_knn = toc(hT);
 end %func
 
@@ -2755,11 +2782,21 @@ nLabel = max([0; viLabelSub(viLabelSub > 0)]);
 %     subset member (1-NN), copying that member's label, kNN row and density.
 %     A subset member is its own nearest (distance 0) -> keeps its own values. ---
 hT = tic;
-[miKnnSub, vrRhoSub] = persite_knn_(Xsub', knn, viSpkSub);
-viNN = nearest_in_set_(X', Xsub');     % n1 x 1, index into the m subset members
-viLabel = viLabelSub(viNN);
-miKnn1 = miKnnSub(:, viNN);
-vrRho1 = vrRhoSub(viNN);
+try
+    [miKnnSub, vrRhoSub] = persite_knn_(Xsub', knn, viSpkSub);
+    viNN = nearest_in_set_(X', Xsub');     % n1 x 1, index into the m subset members
+    viLabel = viLabelSub(viNN);
+    miKnn1 = miKnnSub(:, viNN);
+    vrRho1 = vrRhoSub(viNN);
+catch ME
+    % Bounded m makes this unlikely, but degrade gracefully rather than kill the sort.
+    % Collapse the site to ONE cluster (nLabel=1) so no label gap is created.
+    fprintf(2, '\n\tsite (%d spikes, capped to %d) kNN/assign failed (%s); single-cluster fallback\n', n1, m, ME.message);
+    viLabel = ones(n1, 1);
+    nLabel = 1;
+    miKnn1 = repmat(int32(viSpk1(:)'), knn, 1);
+    vrRho1 = ones(n1, 1, 'single');
+end
 t_knn = toc(hT);
 end %func
 
@@ -2774,7 +2811,7 @@ function viNN = nearest_in_set_(mrFet_all, mrFet_sub)
 n1 = size(mrFet_all, 2);
 viNN = zeros(n1, 1);
 mrSub_T = mrFet_sub';            % m x nFet (the searched set)
-nStep = 1000;
+nStep = 10000;                   % larger blocks = fewer calls + better BLAS efficiency
 for i1 = 1:nStep:n1
     vi_ = i1:min(i1+nStep-1, n1);
     [~, ix] = pdist2(mrSub_T, mrFet_all(:,vi_)', 'euclidean', 'Smallest', 1);
@@ -4331,7 +4368,12 @@ ctrWav_sub_clu = cellfun(@(vi_)single(tnWav_spk(:,:,vi_)), cviSpk_sub_clu, 'Unif
 cviTime_sub_clu = cellfun(@(vi_)viTime_spk(vi_), cviSpk_sub_clu, 'UniformOutput', 0);
 
 % determine cluster centers
-mrPos_clu = cell2mat(cellfun(@(x)median(mrPos_spk(x,:))', cviSpk_sub_clu, 'UniformOutput', 0))';
+% median(0×nPos) without an explicit dim returns scalar NaN on some MATLAB
+% versions, making the transposed cell nPos×1 vs 1×1 → cell2mat fails.
+% Specifying dim 1 always yields 1×nPos (NaN-filled for empty); reshape pins
+% it to nPos×1 so all cells are consistent.
+nPos = size(mrPos_spk, 2);
+mrPos_clu = cell2mat(cellfun(@(x)reshape(median(mrPos_spk(x,:), 1), nPos, 1), cviSpk_sub_clu, 'UniformOutput', 0))';
 % Safety: ensure mrPos_clu has nClu rows (pad NaN for any missing)
 if size(mrPos_clu,1) < nClu
     mrPos_clu(end+1:nClu,:) = NaN;
@@ -4383,8 +4425,11 @@ for iClu1 = 1:nClu
         end
         [viSpk1_, viiSpk1_] = sortby_(viSpk1, min(mrDist21,[],1), 'ascend');
         [viSpk2_, viiSpk2_] = sortby_(viSpk2, min(mrDist21,[],2), 'ascend');
-        [viSpk1_, viiSpk1_] = deal(viSpk1_(1:end*FRAC_NEAR), viiSpk1_(1:end*FRAC_NEAR));
-        [viSpk2_, viiSpk2_] = deal(viSpk2_(1:end*FRAC_NEAR), viiSpk2_(1:end*FRAC_NEAR));
+        % max(1,..) guards a single-spike sub-cluster: end*FRAC_NEAR = 0.5 makes
+        % 1:0.5 empty -> mode([])=NaN -> miSites(:,NaN) crash. Behaviour is
+        % unchanged for >=2 spikes (max only binds when end*FRAC_NEAR < 1).
+        [viSpk1_, viiSpk1_] = deal(viSpk1_(1:max(1,end*FRAC_NEAR)), viiSpk1_(1:max(1,end*FRAC_NEAR)));
+        [viSpk2_, viiSpk2_] = deal(viSpk2_(1:max(1,end*FRAC_NEAR)), viiSpk2_(1:max(1,end*FRAC_NEAR)));
         [viSite_spk1_, viSite_spk2_] = deal(viSite_spk1(viiSpk1_), viSite_spk2(viiSpk2_));
         [iSite1_, iSite2_] = deal(mode(viSite_spk1_), mode(viSite_spk2_));
         [viSite1_, viSite2_] = deal(miSites(:,iSite1_), miSites(:,iSite2_));
@@ -7341,9 +7386,13 @@ nClu = double(max(S_clu.viClu));
 S_clu.nClu = nClu;
 if nargin<3, viSite_spk = get0_('viSite_spk'); end
 S_clu.cviSpk_clu = vi2cell_(S_clu.viClu, nClu);
-S_clu.vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu); 
+S_clu.vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu);
 if ~isempty(viSite_spk)
-    S_clu.viSite_clu = double(arrayfun(@(iClu)mode(viSite_spk(S_clu.cviSpk_clu{iClu})), 1:nClu));
+    % double() inside mode keeps arrayfun outputs uniformly double: viSite_spk is
+    % int32, and mode(int32([])) (an empty cluster, before removal below) can return
+    % a double NaN -> non-uniform class -> arrayfun errors. NaN entries are dropped
+    % by S_clu_remove_empty_.
+    S_clu.viSite_clu = double(arrayfun(@(iClu)mode(double(viSite_spk(S_clu.cviSpk_clu{iClu}))), 1:nClu));
 end
 if fRemoveEmpty, [S_clu, vlKeep_clu] = S_clu_remove_empty_(S_clu); end
 end %func
@@ -7362,7 +7411,9 @@ S_clu.cviSpk_clu = vi2cell_(S_clu.viClu);
 S_clu.nClu = numel(S_clu.cviSpk_clu); % update cluster count after remapping
 S_clu.vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu);
 viSite_spk = get0_('viSite_spk');
-S_clu.viSite_clu = double(arrayfun(@(iClu)mode(viSite_spk(S_clu.cviSpk_clu{iClu})), 1:S_clu.nClu));
+% double() inside mode keeps arrayfun outputs uniformly double (viSite_spk is int32;
+% mode(int32([])) on an empty remapped cluster can return double NaN -> class mismatch).
+S_clu.viSite_clu = double(arrayfun(@(iClu)mode(double(viSite_spk(S_clu.cviSpk_clu{iClu}))), 1:S_clu.nClu));
 % remao note
 end %func
 
@@ -31096,6 +31147,7 @@ mrMean_site = zeros(nDrift, S_clu.nClu);
 for iClu = 1:S_clu.nClu
     viSpk1 = find(S_clu.viClu == iClu);
     viSpk1 = viSpk1(:);
+    if isempty(viSpk1), continue; end   % 0-spike cluster: leave empty cells, skip (else viSpk1(vii1) errors)
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
     [vlKeep_clu1, viSite_clu1] = deal(true(nDrift, 1), zeros(nDrift,1));
     trWav_clu1 = zeros(dimm_spk(1), dimm_spk(2), nDrift, 'single');
@@ -31375,6 +31427,7 @@ fprintf('\tComputing template\n\t'); t_template = tic;
 for iClu = 1:S_clu.nClu
     viSpk1 = find(S_clu.viClu == iClu);
     viSpk1 = viSpk1(:);
+    if isempty(viSpk1), continue; end   % 0-spike cluster: leave empty cells, skip (else viSpk1(vii1) errors)
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
     [vlKeep_clu1, viSite_clu1] = deal(true(nDrift, 1), zeros(nDrift,1));
     [trWav_clu1, trWav_b_clu1] = deal(zeros(size(tnWav_spk,1), size(tnWav_spk,2), nDrift, 'single'));
@@ -32338,7 +32391,7 @@ if nClu < 2
     return;
 end
 cviTime_b_clu = cellfun_(@(x)unique(int32(ceil(double(x(:))/binsize))), cviTime_clu);
-max_time = max(cellfun(@max, cviTime_b_clu));
+max_time = max(cellfun(@(x)max([int32(0); x(:)]), cviTime_b_clu));   % empty-cluster-safe: plain max([]) errors in cellfun
 fprintf('Computing correlogram...'); t1=tic;
 mnCC = nan(nClu);
 mrDist_clu = squareform(pdist(P.mrSiteXY(S_clu.viSite_clu,:)));

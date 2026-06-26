@@ -139,7 +139,13 @@ function mr1 = cell2mat_vi_(cmr1)
 vn1 = cellfun(@(x)size(x,1), cmr1);
 arrayfun_ = @(fh,A)cell2mat(arrayfun(fh, A(:), 'UniformOutput', 0));
 vi1 = arrayfun_(@(x)repmat(x, vn1(x), 1), 1:numel(cmr1));
-mr1 = [cell2mat(cmr1(:)), vi1];
+% Drop empty cells before cell2mat: an empty cell is a 0x0 double, while
+% non-empty cells carry int32 spike indices (from S_clu.miKnn). Mixing the
+% two makes cell2mat error ("must be of the same data type"). This happens
+% when a cluster/drift bin keeps no spikes - common with many small clusters
+% from per-site clustering. vi1 already accounts for empties (vn1==0 -> 0
+% rows) so the original cluster/drift indices stay correct and aligned.
+mr1 = [cell2mat(cmr1(vn1 > 0)), vi1];
 end %func
 
 
