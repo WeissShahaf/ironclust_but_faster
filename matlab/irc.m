@@ -4296,7 +4296,9 @@ if fMerge
         S_clu = post_merge_wav4_(S_clu, merge_thresh, P);
     end %if
     nClu_merge = nClu_pre - S_clu.nClu; % positive count of merged clusters
-    fprintf('DEBUG post_merge_wav_: nClu_pre=%d, S_clu.nClu=%d, nClu_merge=%d\n', nClu_pre, S_clu.nClu, nClu_merge);
+    if get_set_(P, 'fVerbose', 0)
+        fprintf('\tpost_merge_wav_: nClu %d -> %d (%d merged)\n', nClu_pre, S_clu.nClu, nClu_merge);
+    end
     if nClu_merge==0, return; end % do not change anything if no merge occurred
 end
 
@@ -4315,7 +4317,10 @@ if fRemove_duplicate && dimm1(2) >= get_set_(P, 'nChans_min_car', 8) && ndims(di
         fprintf('%d duplicate units removed\n', sum(~vlKeep_clu));
     end    
 end
-nClu_merge = S_clu.nClu - nClu_pre;
+nClu_merge = nClu_pre - S_clu.nClu;  % positive = #clusters removed (merged + de-duplicated).
+% NB: sign matters - merge_auto_ (GUI "Merge auto") commits only when nClu_merge>0. A refactor
+% had flipped this to S_clu.nClu-nClu_pre (always <=0), so GUI merges were computed then silently
+% discarded with a "No clusters are merged" popup. Keep this consistent with line ~4298.
 end %func
 
 
