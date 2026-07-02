@@ -8133,15 +8133,21 @@ if isempty(S_fig)
     S_fig.cell_alim = get_lim_shank_(P);
     colormap jet;
     mouse_figure(hFig);
-    nSites = size(P.mrSiteXY,1);
-    % Use actual channel numbers from viSite2Chan, not sequential site numbers
-    viChan = get_(P, 'viSite2Chan', 1:nSites); % fallback to 1:nSites if viSite2Chan doesn't exist
-    csText = arrayfun(@(i)sprintf('%d', i), viChan, 'UniformOutput', 0);
-    S_fig.hText = text(P.mrSiteXY(:,1), P.mrSiteXY(:,2), csText, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');    
+    % Build the selectable site-label sets (channel #, site #, region) and
+    % cycle among them with the [C] key (see keyPressFcn_FigMap_).
+    S_fig.csLabelMode = site_label_modes_(P);
+    S_fig.iLabelMode = 1;
+    csText = S_fig.csLabelMode(1).csText;
+    S_fig.hText = text(P.mrSiteXY(:,1) + 20, P.mrSiteXY(:,2), csText, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
     xlabel('X Position (\mum)');
     ylabel('Y Position (\mum)');
-else    
-    set(S_fig.hPatch, 'CData', mrVpp);    
+    S_fig.csHelp = { ...
+        '[C] cycle site labels: channel #, site #, region', ...
+        '[H] help', ...
+        '------------------', ...
+        'Region labels are read from the CSV named by the', ...
+        '.prm variable ''vcFile_site_region'' ("key,region" rows).'};
+    set(hFig, 'KeyPressFcn', @keyPressFcn_FigMap_);
 end
 try
     iShank1 = P.viShank_site(S_clu.viSite_clu(S0.iCluCopy));
@@ -8151,10 +8157,180 @@ catch
     axis_(S_fig.hAx, S_fig.alim);
     vcTitle = sprintf('Max: %0.1f uVpp', max(vrVpp));
 end
-title_(S_fig.hAx, vcTitle);
-set(S_fig.hAx, 'CLim', [0, max(vrVpp)]);
+S_fig.vcTitle_base = vcTitle;
+S_fig.vrVpp = vrVpp;
+title_(S_fig.hAx, FigMap_title_(S_fig));
+apply_FigMap_color_(S_fig, vrVpp); % Vpp (jet) or region (categorical) per label mode
 
 set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Build the list of selectable site-label modes for the probe map (FigMap).
+% Each mode has .name (shown in the title) and .csText (per-site labels).
+% [C] in the probe map cycles: channel # -> site # -> region (if available).
+function S_modes = site_label_modes_(P)
+nSites = size(P.mrSiteXY, 1);
+viSite = (1:nSites)';
+viChan = get_set_(P, 'viSite2Chan', viSite);
+if numel(viChan) ~= nSites, viChan = viSite; end
+
+% Mode 1: channel number (default; matches previous probe-map behavior)
+S_modes(1).name = 'channel #';
+S_modes(1).csText = arrayfun(@(i)sprintf('%d', i), viChan(:), 'UniformOutput', 0);
+% Mode 2: sequential site index
+S_modes(2).name = 'site #';
+S_modes(2).csText = arrayfun(@(i)sprintf('%d', i), viSite, 'UniformOutput', 0);
+% Mode 3: region label from CSV (added only when the CSV is available).
+% Also color-code the probe-map boxes by region (one categorical color each).
+csRegion = load_site_region_(P);
+if ~isempty(csRegion)
+    [csUniq, ~, viRegion] = unique(csRegion, 'stable');
+    S_modes(3).name = 'region';
+    S_modes(3).csText = csRegion;
+    S_modes(3).viColor = viRegion(:);          % per-site region index (colormap row)
+    S_modes(3).mrColormap = region_colormap_(numel(csUniq));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Read per-site region labels from the CSV named by the .prm variable
+% 'vcFile_site_region'. The CSV holds "key,region" rows where key is either a
+% channel number (matched against viSite2Chan) or a 1-based site index. Returns
+% {} when the file is unset / missing / unparseable so callers skip the mode.
+function csRegion = load_site_region_(P)
+csRegion = {};
+vcFile = get_set_(P, 'vcFile_site_region', '');
+if isempty(vcFile), return; end
+if ~exist_file_(vcFile)
+    fprintf(2, 'load_site_region_: file not found: %s\n', vcFile);
+    return;
+end
+nSites = size(P.mrSiteXY, 1);
+viChan = get_set_(P, 'viSite2Chan', (1:nSites)');
+if numel(viChan) ~= nSites, viChan = (1:nSites)'; end
+
+% Parse "key,region" rows; skip blank lines and a non-numeric header row.
+csLines = file2cellstr_(vcFile);
+[vnKey, csLabel] = deal(nan(numel(csLines),1), cell(numel(csLines),1));
+nRow = 0;
+for iLine = 1:numel(csLines)
+    vcLine = strtrim(csLines{iLine});
+    if isempty(vcLine), continue; end
+    cs1 = strsplit(vcLine, ',');
+    if numel(cs1) < 2, continue; end
+    key1 = str2double(cs1{1});
+    if isnan(key1), continue; end % header/comment row
+    nRow = nRow + 1;
+    vnKey(nRow) = key1;
+    csLabel{nRow} = strtrim(cs1{2});
+end
+if nRow == 0
+    fprintf(2, 'load_site_region_: no "key,region" rows in %s\n', vcFile);
+    return;
+end
+[vnKey, csLabel] = deal(vnKey(1:nRow), csLabel(1:nRow));
+
+csRegion = repmat({'?'}, nSites, 1); % '?' marks sites the CSV does not cover
+% Strategy 1: key = channel number (match against viSite2Chan).
+[vlHit, viLoc] = ismember(viChan(:), vnKey);
+csRegion(vlHit) = csLabel(viLoc(vlHit));
+% Strategy 2: key = 1-based site index (fill sites still uncovered).
+vlBlank = strcmp(csRegion, '?');
+if any(vlBlank)
+    viBlank = find(vlBlank);
+    [vlHit2, viLoc2] = ismember(viBlank, vnKey);
+    csRegion(viBlank(vlHit2)) = csLabel(viLoc2(vlHit2));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Probe-map (FigMap) key handler: [C] cycles the site labels, [H] shows help.
+function keyPressFcn_FigMap_(hObject, event)
+hFig = hObject;
+S_fig = get(hFig, 'UserData');
+if isempty(S_fig), return; end
+switch lower(event.Key)
+    case 'c' % cycle site labels: channel # -> site # -> region
+        cycle_FigMap_label_(hFig, S_fig);
+    case 'h'
+        msgbox_(get_set_(S_fig, 'csHelp', {'[C] cycle site labels'}), 1);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Advance the probe-map site labels to the next available mode and redraw.
+function S_fig = cycle_FigMap_label_(hFig, S_fig)
+if nargin<2, S_fig = get(hFig, 'UserData'); end
+csLabelMode = get_(S_fig, 'csLabelMode');
+if isempty(csLabelMode) || ~isfield(S_fig, 'hText'), return; end
+nModes = numel(csLabelMode);
+iMode = mod(get_set_(S_fig, 'iLabelMode', 1), nModes) + 1;
+S_fig.iLabelMode = iMode;
+csText = csLabelMode(iMode).csText;
+for iSite = 1:min(numel(S_fig.hText), numel(csText))
+    set(S_fig.hText(iSite), 'String', csText{iSite});
+end
+apply_FigMap_color_(S_fig, get_set_(S_fig, 'vrVpp', [])); % recolor boxes for the mode
+title_(S_fig.hAx, FigMap_title_(S_fig)); % reflect the active mode
+set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Compose the probe-map title: base "Max uVpp" text plus the active label mode.
+function vcTitle = FigMap_title_(S_fig)
+vcTitle = get_set_(S_fig, 'vcTitle_base', '');
+csLabelMode = get_(S_fig, 'csLabelMode');
+iMode = get_set_(S_fig, 'iLabelMode', 1);
+if ~isempty(csLabelMode) && iMode>=1 && iMode<=numel(csLabelMode)
+    vcTitle = sprintf('%s [%s]', vcTitle, csLabelMode(iMode).name);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Color the probe-map boxes: categorical by region when the region label
+% mode is active, otherwise by the selected cluster's Vpp (jet colormap).
+function apply_FigMap_color_(S_fig, vrVpp)
+if nargin<2, vrVpp = get_set_(S_fig, 'vrVpp', []); end
+csLabelMode = get_(S_fig, 'csLabelMode');
+iMode = get_set_(S_fig, 'iLabelMode', 1);
+S_mode = [];
+if ~isempty(csLabelMode) && iMode>=1 && iMode<=numel(csLabelMode)
+    S_mode = csLabelMode(iMode);
+end
+if ~isempty(S_mode) && isfield(S_mode, 'viColor') && ~isempty(S_mode.viColor)
+    % region mode: one categorical color per region (direct colormap index)
+    set(S_fig.hPatch, 'CData', repmat(S_mode.viColor(:)', [4, 1]), 'CDataMapping', 'direct');
+    colormap(S_fig.hAx, S_mode.mrColormap);
+elseif ~isempty(vrVpp)
+    % channel/site mode: scale by Vpp of the selected cluster
+    mx = max(vrVpp); if ~(mx > 0), mx = 1; end
+    set(S_fig.hPatch, 'CData', repmat(vrVpp(:)', [4, 1]), 'CDataMapping', 'scaled');
+    colormap(S_fig.hAx, 'jet');
+    set(S_fig.hAx, 'CLim', [0, mx]);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Return an nReg-by-3 categorical palette for region-coded probe-map boxes.
+function mrColor = region_colormap_(nReg)
+if nReg < 1, mrColor = [0.2 0.6 1]; return; end
+try
+    if nReg <= 7
+        mrColor = lines(nReg);
+    else
+        mrColor = hsv(nReg);
+    end
+catch
+    mrColor = jet(max(nReg, 1));
+end
 end %func
 
 

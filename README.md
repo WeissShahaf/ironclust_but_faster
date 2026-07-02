@@ -15,6 +15,14 @@
 # IronClust
 Terabyte-scale, drift-resistant spike sorter for multi-day recordings from [high-channel-count probes](https://www.nature.com/articles/nature24636)
 
+> **Note — this is a fork.** A performance- and workflow-focused fork of
+> [IronClust](https://github.com/flatironinstitute/ironclust) (upstream:
+> `flatironinstitute/ironclust`). It adds per-site/label-based and CLASSIX clustering,
+> parallel and memory-bounded sorting, several manual-GUI improvements, and a number of
+> robustness fixes, on top of retuned default parameters.
+> **See [What's different from upstream IronClust](#whats-different-from-upstream-ironclust)
+> for the full list.**
+
 ## Getting Started
 
 ## Probe drift handling
@@ -30,8 +38,9 @@ IronClust tracks the probe drift by computing the anatomical similarity between 
 ### Installation
 - Clone from Github
 ```
-git clone https://github.com/flatironinstitute/ironclust
+git clone https://github.com/WeissShahaf/ironclust_but_faster
 ```
+(upstream project: `https://github.com/flatironinstitute/ironclust`)
 - (optional) Compile GPU codes (.cu extension)
 ```
 irc2 compile
@@ -105,6 +114,91 @@ irc2 clear `output_directory`
 irc2 clear `path_to_prm_file`
 ```
 
+## What's different from upstream IronClust
+
+This fork tracks `flatironinstitute/ironclust` (diverged at upstream `master`, commit
+`2d7b56c`) and adds the following. Items marked *(default change)* alter out-of-the-box
+behaviour relative to upstream; everything else is additive or a bug fix.
+
+### New clustering methods
+- **Per-site, label-based clustering** — `vcCluster = 'kmeans' | 'hdbscan' | 'isosplit6'`.
+  Each detection site is clustered independently on its local features (over-segmentation),
+  then the normal cross-site post-merge collapses duplicates. HDBSCAN is a pure-MATLAB
+  implementation; ISO-SPLIT tries the Python `isosplit6` backend and falls back to a bundled
+  pure-MATLAB `isosplit5`. See [Clustering methods](#clustering-methods) and
+  [matlab/CLUSTERING_METHODS.md](matlab/CLUSTERING_METHODS.md).
+- **CLASSIX clustering** — `vcCluster = 'classix'` (fast sorting-based clustering) and, as a
+  post-merge refinement, `post_merge_mode0 = 21`. See
+  [matlab/CLASSIX_USAGE.md](matlab/CLASSIX_USAGE.md).
+- Label-based methods keep their own labels (an internal `fLabelClu` flag makes `fet2clu_`
+  skip the density-peak `postCluster_`).
+
+### Performance
+- **Parallel per-site clustering** — the kmeans/HDBSCAN/isosplit per-site loop runs across
+  workers when `fParfor = 1` *(default change: `fParfor` is now `1`)*, capped by
+  `nWorkers_clust`.
+- **Per-site spike cap** — `maxSpk_persite_clust` bounds the O(n²) kNN/clustering cost on huge
+  (usually noise) sites by clustering a random subsample and assigning the rest to the nearest
+  member. `[]` = off (byte-identical to upstream). Example: a 1.1 M-spike site drops from
+  ~80 min to ~90 s at `m = 50000`.
+- **I/O and detection tuning** — larger load blocks (`MAX_LOAD_SEC = 10`, larger `nPad_filt`),
+  Wiener detection filter by default, plus GUI/plot performance work. Details in
+  `matlab/GUI_PERFORMANCE_OPTIMIZATIONS.md`, `matlab/MERGE_OPTIMIZATIONS.md`,
+  `matlab/FIND_OPTIMIZATION_ANALYSIS.md`, and `matlab/GPU_USAGE_ANALYSIS.md`.
+
+### Robustness & bug fixes
+- Hardened the **post-merge and per-site paths** against empty / single-spike / gappy-label
+  clusters (the many-small-cluster case produced by label methods + spike cap). No healthy run
+  changes its output. (`logs/changes_log20260626.md`, `logs/plan_postmerge_robustness.md`.)
+- Fixed **GUI "Merge auto"** silently discarding merges (a sign-flip regression in
+  `post_merge_wav_`).
+- Fixed cluster **merge / delete** bugs and added defensive sizing of cluster-quality arrays in
+  manual curation.
+
+### Manual curation / GUI
+- **Deferred-edit workflow** — queue merges/deletes and apply them together with `u` (cancel
+  with `Esc`).
+- **Drift view shown by default.**
+- **Probe-map site labels & region colouring** — in the probe map (`e`), press `c` to cycle
+  site labels between channel #, site #, and anatomical region; in region mode the boxes are
+  colour-coded by region (region source: `vcFile_site_region`).
+  See [Manual curation → Probe map window](#probe-map-window).
+- **Cluster annotations** — `1` / `2` / `3` / `4` mark a unit as single / multi / noise /
+  axonal.
+
+### Changed default parameters *(behaviour changes vs upstream)*
+
+| Parameter | Upstream | This fork | Purpose |
+|---|---|---|---|
+| `fParfor` | `0` | `1` | parallelise per-site clustering |
+| `MAX_LOAD_SEC` | `[]` | `10` | fewer, larger I/O blocks |
+| `nPad_filt` | `300` | `150000` | 0.5 s filter-edge overlap at 30 kHz |
+| `vcFilter_detect` | `''` | `'wiener'` | detection filter |
+| `vcCommonRef` | `'mean'` | `'none'` | local referencing |
+| `freqLimNotch` | `{}` | `{[48,52]}` | 50 Hz mains notch |
+| `qqFactor` | `4.5` | `5` | detection threshold |
+| `spkLim_ms` | `[-.25, .75]` | `[-.3, 1.25]` | wider waveform window |
+| `blank_thresh` | `[]` | `8` | reject artifact bursts |
+| `maxDist_site_spk_um` | `75` | `85` | waveform extraction radius |
+| `post_merge_mode0` | `[12, 15, 17]` | `[12, 17]` | auto-merge sequence |
+| `fCheckSites` | `0` | `1` | auto-reject bad sites |
+| `fWav_raw_show` | `0` | `1` | show raw waveforms |
+| `fText` | `1` | `0` | hide per-unit counts by default |
+| `nShow_proj` | `500` | `50` | faster projection view |
+
+### New parameters
+- **Clustering:** `classix_*` (`radius`, `minPts`, `merge_tiny`, `use_mex`, `verbose`),
+  `kmeans_*`, `hdbscan_*`, `isosplit_*`, `nWorkers_clust`, `maxSpk_persite_clust`.
+- **Detection thresholds (opt-in, mostly commented in `default.prm`):** a fixed/global/smoothed
+  threshold hierarchy (`fUseGlobalThresh`, `fSmoothThresh`, `vcSmoothMethod`, `nSmoothWindow`,
+  `nSmoothOverlap`, `smoothSigma`) and `fDiagnosticMode`.
+- **Manual GUI:** `vcFile_site_region` (CSV of site→region for the probe map).
+
+`matlab/default.prm` is the authoritative parameter list with inline docs. Per-topic
+documents live alongside the code
+([CLUSTERING_METHODS.md](matlab/CLUSTERING_METHODS.md),
+[CLASSIX_USAGE.md](matlab/CLASSIX_USAGE.md)) and dated change logs under [`logs/`](logs/).
+
 ## Clustering methods
 
 The primary clustering algorithm is selected with the `vcCluster` parameter (set it in the
@@ -171,10 +265,32 @@ them together with `u` (or cancel with `Esc`). Press `h` in the GUI for built-in
 | `c` | Cross-correlogram |
 | `i` | ISI histogram |
 | `v` | ISI return map |
-| `e` | Probe / amplitude map |
+| `e` | Probe / amplitude map (in that window, `c` cycles channel #/site #/region labels + region colouring — see below) |
 | `j` | Drift view |
 | `p` | PSTH (requires a trial file) |
 | `h` | Help |
+
+### Probe map window
+
+The probe map (opened with `e`, top-left) draws each site as a box coloured by the selected
+cluster's peak-to-peak amplitude. That window has its own controls:
+
+| Key | Action |
+|---|---|
+| `c` | Cycle the site labels: **channel #** → **site #** → **region** |
+| `h` | Help |
+
+In **region** mode the boxes are colour-coded by anatomical region (one colour per region).
+Region labels are read from a CSV named by the `vcFile_site_region` parameter in your `.prm`:
+
+```
+vcFile_site_region = 'path/to/sites_region.csv';
+```
+
+The CSV holds `key,region` rows, where `key` is either a **channel number** (matched against
+`viSite2Chan`) or a **1-based site index**; a header row is allowed. Sites the CSV does not
+cover are labelled `?`. If the parameter is empty or the file is missing, `c` simply cycles
+channel # ↔ site #.
 
 ## Importing multiple `.bin` files from [SpikeGLX](https://github.com/billkarsh/SpikeGLX)
 ```
