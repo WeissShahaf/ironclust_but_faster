@@ -259,6 +259,84 @@ output for `struct_select_safe_: skipped field` / `S_clu_select_: Warning` /
 `S_clu_select_: Error resizing`. If none fire, that's empirical (not just
 static) confirmation the automated path stays clean in practice.
 
+---
+
+## Update — Resolving check: does the skip-path actually produce a stale cache?
+
+### What this checks
+The prior update left one open question: does the automated pipeline ever hit
+`struct_select_safe_`'s skip-on-error path in `S_clu_select_`, and if so, does
+`cviSpk_clu` end up stale relative to `viClu` afterward, or is the "final
+length reconciliation" block (added in the June 26 hardening pass) enough to
+keep it correct? This was checked empirically rather than by further static
+reading.
+
+### Method (Tier 2 — verbatim code, synthetic inputs; no real recording available)
+No real failing `.bin`/`.prm` session exists in this environment, and standing
+up a synthetic end-to-end `irc('sort', ...)` run (probe file, raw data, full
+parameter set, GPU-dependent stages) was judged impractical for the signal it
+would add. Instead, `struct_select_`, `struct_select_safe_`, `S_clu_select_`,
+`S_clu_wavcor_remap_`, `S_clu_remove_empty_`, `S_clu_keep_`, and `vi2cell_`
+were copied **verbatim** (not reimplemented) from the current `irc.m` into a
+standalone script
+(scratchpad `test_stale_cache_check.m`, not part of the repo) and driven
+against a synthetic `S_clu` shaped like the real 1081-cluster degenerate run
+(many clusters sized 0-5, ~50 empty, plus `viSite_clu`/`mrWavCor`/
+`csNote_clu`/`tmrWav_clu` so all of `S_clu_select_`'s field-type branches are
+exercised). Three scenarios, run via `matlab -batch`:
+- **A — healthy**: `cviSpk_clu` correctly sized before calling
+  `S_clu_remove_empty_`.
+- **B**: `cviSpk_clu` deliberately one cell short before the call (simulating
+  a field that drifted out of sync from some earlier, unmodeled operation),
+  then `S_clu_remove_empty_`.
+- **C**: same corruption, via `S_clu_keep_` instead.
+
+### Result
+- **Scenario A (healthy)**: no warnings printed; post-call `cviSpk_clu`
+  matched a from-`viClu` rebuild exactly. Confirms the June 26 claim — a
+  clean input produces no skip and no drift.
+- **Scenario B**: `struct_select_: Error resizing field "cviSpk_clu" ...The
+  logical indices contain a true value outside of the array bounds.` →
+  `struct_select_safe_: skipped field "cviSpk_clu": ...` → `S_clu_select_:
+  reconciled length of field "cviSpk_clu" to 859` all fired, exactly as the
+  source predicts. After the call, `cviSpk_clu` had the *correct length*
+  (859, matching the new `nClu`) but **wrong contents** — 857 of 859 clusters
+  diverged from a `viClu`-derived rebuild (e.g. cluster 3: truth 1 spike,
+  cache 0 spikes). The length-reconciliation block pads/truncates the
+  *stale* pre-skip array rather than rebuilding it, so the resulting
+  `S_clu` is shape-consistent (won't crash on a dimension mismatch) but
+  silently wrong — and it prints to stderr, not somewhere a batch/automated
+  run's log would typically surface.
+- **Scenario C (`S_clu_keep_`)**: same pattern — skip fires, reconciliation
+  masks the shape, 846 of 848 clusters diverge.
+
+### Interpretation
+This **confirms the mechanism is real and not merely theoretical**: if
+`cviSpk_clu` is ever mis-sized relative to `S_clu.nClu` at the moment
+`S_clu_remove_empty_`/`S_clu_keep_` runs, the current code silently produces
+a shape-valid but content-stale cache, matching exactly the failure class
+behind the manual-split bug fixed earlier today.
+
+What this test does **not** show: whether the automated `irc('sort', ...)`
+pipeline ever actually produces that mis-sized precondition on its own. That
+question was addressed separately (see the previous update) by tracing every
+automated caller — `S_clu_refresh_`/`S_clu_map_index_` rebuild `cviSpk_clu`
+directly from `viClu` (bypassing this mechanism entirely), and the automated
+callers of `S_clu_remove_empty_`/`S_clu_keep_` were found to hand them an
+already-consistent cache in every path traced. Combining both results: the
+**vulnerability is live and would bite silently if triggered**, but no
+concrete automated trigger path has been found, and this test does not
+change that — a full synthetic or real end-to-end `irc sort` run (Tier 1)
+would be needed to either produce or rule out the triggering precondition
+itself.
+
+### Verification
+- `matlab -batch` run of `test_stale_cache_check.m` (scratchpad, not
+  committed) — exit code 0, all three scenarios completed, output as above.
+- Not run against the real pipeline or a real recording (none available);
+  this is synthetic-input verbatim-code testing, one tier down from a live
+  `irc sort` run.
+
 ## Files
 - Added: `logs/changes_log20260710.md`.
 - Modified: `matlab/irc.m`.
