@@ -6493,6 +6493,7 @@ uimenu_(mh_info, 'Label', 'Annotate unit', 'Callback', @unit_annotate_);
 uimenu_(mh_info, 'Label', 'single', 'Callback', @(h,e)unit_annotate_(h,e,'single'));
 uimenu_(mh_info, 'Label', 'multi', 'Callback', @(h,e)unit_annotate_(h,e,'multi'));
 uimenu_(mh_info, 'Label', 'noise', 'Callback', @(h,e)unit_annotate_(h,e,'noise'));
+uimenu_(mh_info, 'Label', 'collision', 'Callback', @(h,e)unit_annotate_(h,e,'collision'));
 uimenu_(mh_info, 'Label', 'clear annotation', 'Callback', @(h,e)unit_annotate_(h,e,''));
 uimenu_(mh_info, 'Label', 'equal to', 'Callback', @(h,e)unit_annotate_(h,e,'=%d'));
 
@@ -6980,6 +6981,7 @@ switch lower(event.Key)
     case '2', unit_annotate_([], [], 'multi'); % annotate as multi
     case '3', unit_annotate_([], [], 'noise'); % annotate as noise
     case '4', unit_annotate_([], [], 'axonal'); % annotate as axonal
+    case '5', unit_annotate_([], [], 'collision'); % annotate as spike collision
     otherwise, figure_wait_(0); %stop waiting
 end
 figure_(hObject); %change the focus back to the current object
@@ -9762,6 +9764,34 @@ end %func
 
 
 %--------------------------------------------------------------------------
+function viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1)
+% Return cluster iClu1's spike indices, preferring the S_clu.cviSpk_clu cache
+% (what the rest of the GUI/display relies on) but cross-validated against the
+% per-spike label vector S_clu.viClu, which can disagree with the cache after
+% some merge/reorder operations. Intersecting with viClu can only shrink an
+% over-large/stale cache entry - it can never grow it - so this bounds a
+% destructive split at the cache size while still rejecting any spikes viClu no
+% longer attributes to this cluster. If the two sources disagree completely
+% (empty intersection), fall back to the raw cache rather than returning no
+% spikes at all, since the cache is what auto_split_/split_clu_ historically
+% relied on and empirically remains reliable in practice.
+viSpk1 = [];
+if iClu1 <= numel(S_clu.cviSpk_clu)
+    viSpk1 = S_clu.cviSpk_clu{iClu1};
+end
+if isempty(viSpk1)
+    viSpk1 = find(S_clu.viClu==iClu1);
+    return;
+end
+viSpk1 = viSpk1(:);
+vlConfirmed = S_clu.viClu(viSpk1) == iClu1;
+if any(vlConfirmed) && ~all(vlConfirmed)
+    viSpk1 = viSpk1(vlConfirmed);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function auto_split_(fMulti, S0)
 % Auto-split feature that calls Hidehiko Inagaki's code
 % 20160426
@@ -9784,8 +9814,15 @@ else
     viSites1 = iSite1;
 end
 % mrSpkWav1 = tnWav2uV_(tnWav_sites_(tnWav_spk, S_clu.cviSpk_clu{iClu1}, viSites1));
-trSpkWav1 = tnWav2uV_(tnWav_spk_sites_(S_clu.cviSpk_clu{iClu1}, viSites1, S0), P, 0);
-% mrSpkWav1 = tnWav2uV_(tnWav_spk_sites_(find(S_clu.viClu==iClu1), viSites1, S0), P);
+% S_clu.cviSpk_clu (a cache) and S_clu.viClu (the per-spike label vector) can
+% disagree after certain operations. Cross-validate: start from the cache (the
+% source both the rest of the GUI and the previous behavior rely on), but keep
+% only spikes S_clu.viClu also confirms belong to this cluster - this can only
+% shrink an over-large/stale cache entry (fixing a split that silently pulled in
+% thousands of unrelated spikes), never empty it out when the two genuinely
+% disagree (falls back to the raw cache instead of splitting nothing).
+viSpk_split1 = get_clu_spk_confirmed_(S_clu, iClu1);
+trSpkWav1 = tnWav2uV_(tnWav_spk_sites_(viSpk_split1, viSites1, S0), P, 0);
 [vlSpkIn, mrFet_split, vhAx, hFigTemp] = auto_split_wav_(trSpkWav1, [], 2, viSites1);
 [hPoly, hFig_wav] = deal([]);
 try 
@@ -10453,14 +10490,10 @@ hFig_wait = figure_wait_(1);
 hMsg = msgbox_open_('Splitting...');
 figure(get_fig_cache_('FigWav'));
 
-% Get spikes belonging to this cluster - use cviSpk_clu to match auto_split_
-% Note: auto_split_ uses S_clu.cviSpk_clu{iClu1} to build waveforms for splitting,
-% so we must use the same source here to ensure vlIn indices match
-if iClu1 <= numel(S_clu.cviSpk_clu) && ~isempty(S_clu.cviSpk_clu{iClu1})
-    viSpk1 = S_clu.cviSpk_clu{iClu1};
-else
-    viSpk1 = find(S_clu.viClu==iClu1);
-end
+% Get spikes belonging to this cluster the same way auto_split_ built its
+% waveforms (get_clu_spk_confirmed_: cache cross-validated against S_clu.viClu),
+% so vlIn indices stay aligned with viSpk1 here.
+viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1);
 viSpk1 = viSpk1(:); % ensure column vector
 nSpk1 = numel(viSpk1);
 
@@ -11378,7 +11411,7 @@ function [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0)
 if nargin<4, S0 = get(0, 'UserData'); end
 fUseCenterSpk = 0; % set to zero to use all spikes
 nSamples_max = 1000;
-fMedian = strcmpi(get_set_(S0.P, 'vcCluWavMode'), 'median');
+fMedian = strcmpi(get_set_(S0.P, 'vcCluWavMode', 'median'), 'median');
 fh1 = ifeq_(fMedian, @median, @mean);
 
 [mrWav_clu1, viSite_clu1] = deal([]);
@@ -11434,7 +11467,7 @@ end %func
 
 %--------------------------------------------------------------------------
 function mrWav_clu1 = nanmean_int16_(tnWav0, dimm_mean, fUseCenterSpk, iSite1, viSite0, P) % * S0.P.uV_per_bit;
-fMedian = strcmpi(get_set_(P, 'vcCluWavMode'), 'median');
+fMedian = strcmpi(get_set_(P, 'vcCluWavMode', 'median'), 'median');
 nSites_spk = size(tnWav0,2);
 if fUseCenterSpk
     if fMedian
@@ -13670,9 +13703,16 @@ nSpks = size(mrSpkWav,2);
 vlIn_spk = false(nSpks,1);
 vlIn_spk(1:end/2) = true;
 
-if isempty(mrFet)    
+if isempty(mrFet)
 %     [~,mrFet,vrD] = pca(double(mrSpkWav'), 'Centered', 1, 'NumComponents', 3);
-    [mrFet,~,vrD] = pca(double(mrSpkWav), 'NumComponents', 3);
+    % pca(X,'NumComponents',k) requires k <= min(size(X,1)-1, size(X,2)); requesting
+    % a fixed 3 throws outright once #spikes drops to 2 (empirically verified: for
+    % mrSpkWav = [nFeatures x nSpks], the achievable max is min(nFeatures-1, nSpks)).
+    % Cap the request so a tiny cluster degrades gracefully instead of erroring
+    % before the split-preview figure is even created. No-op for nSpks>=4 or the
+    % nSpks==3 boundary (both already achieve exactly 3, unchanged from before).
+    nPc_req = max(1, min([3, size(mrSpkWav,1)-1, size(mrSpkWav,2)]));
+    [mrFet,~,vrD] = pca(double(mrSpkWav), 'NumComponents', nPc_req);
 end
 % nSplit = preview_split_(mrSpkWav1);
 % if isnan(nSplit), return; end
@@ -13682,21 +13722,27 @@ vhAx = zeros(4,1);
 for iAx=1:numel(vhAx)
     vhAx(iAx) = subplot(2,2,iAx, 'Parent', hFig); hold on;
 end
-if size(mrFet,2) == 3
+nPc = size(mrFet,2);
+if nPc >= 3
     plot_(vhAx(1), mrFet(:,1), mrFet(:,2), '.'); xylabel_(vhAx(1), 'PC1', 'PC2', 'PC1 vs PC2');
     plot_(vhAx(2), mrFet(:,3), mrFet(:,2), '.'); xylabel_(vhAx(2), 'PC3', 'PC2', 'PC3 vs PC2');
     plot_(vhAx(3), mrFet(:,1), mrFet(:,3), '.'); xylabel_(vhAx(3), 'PC1', 'PC3', 'PC1 vs PC3');
     drawnow_();
+elseif nPc == 2
+    % too few spikes for a 3rd PCA component; still auto-split on the 2 available
+    plot_(vhAx(1), mrFet(:,1), mrFet(:,2), '.'); xylabel_(vhAx(1), 'PC1', 'PC2', 'PC1 vs PC2');
+    drawnow_();
 else
-    plot_(vhAx(1), mrFet(vlIn_spk,1), mrFet(vlIn_spk,2), 'b.', mrFet(~vlIn_spk,1), mrFet(~vlIn_spk,2), 'r.');
+    % too few spikes/features for even 2 PCA components; nothing meaningful to cluster on
+    plot_(vhAx(1), mrFet(vlIn_spk,1), zeros(sum(vlIn_spk),1), 'b.', mrFet(~vlIn_spk,1), zeros(sum(~vlIn_spk),1), 'r.');
     return;
 end
 
 % Ask how many clusters there are
-try    
+try
     % kmean clustering into 2
-    idx = kmeans(mrFet, nSplits);     
-    dist_mad = mad_dist_(mrFet(idx==1,:)', mrFet(idx==2,:)'); 
+    idx = kmeans(mrFet, nSplits);
+    dist_mad = mad_dist_(mrFet(idx==1,:)', mrFet(idx==2,:)');
 %     fprintf('mad_dist: %f\n', dist_mad);
 %     idx = kmeans([pca_1,pca_2], NUM_SPLIT);
     vlIn_spk = logical(idx-1);
@@ -13706,8 +13752,10 @@ catch
 end
 vlOut_spk = ~vlIn_spk;
 plot_(vhAx(1), mrFet(vlIn_spk,1), mrFet(vlIn_spk,2), 'b.', mrFet(vlOut_spk,1), mrFet(vlOut_spk,2), 'r.');
-plot_(vhAx(2), mrFet(vlIn_spk,3), mrFet(vlIn_spk,2), 'b.', mrFet(vlOut_spk,3), mrFet(vlOut_spk,2), 'r.');
-plot_(vhAx(3), mrFet(vlIn_spk,1), mrFet(vlIn_spk,3), 'b.', mrFet(vlOut_spk,1), mrFet(vlOut_spk,3), 'r.');
+if nPc >= 3
+    plot_(vhAx(2), mrFet(vlIn_spk,3), mrFet(vlIn_spk,2), 'b.', mrFet(vlOut_spk,3), mrFet(vlOut_spk,2), 'r.');
+    plot_(vhAx(3), mrFet(vlIn_spk,1), mrFet(vlIn_spk,3), 'b.', mrFet(vlOut_spk,1), mrFet(vlOut_spk,3), 'r.');
+end
 
 min_y=min(reshape(mrSpkWav,1,[]));
 max_y=max(reshape(mrSpkWav,1,[]));
