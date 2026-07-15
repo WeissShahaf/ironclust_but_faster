@@ -10,7 +10,8 @@
       "Bash(git log *)",
       "PowerShell(git --no-pager blame -L 4024,4024 -- irc.m 2>&1 | Select-Object -First 3)",
       "Bash(git --no-pager diff --stat)",
-      "Bash(git --no-pager diff --cached --stat)"
+      "Bash(git --no-pager diff --cached --stat)",
+      "Bash(git --no-pager show 45b5333 --stat)"
     ],
     "deny": [],
     "ask": []

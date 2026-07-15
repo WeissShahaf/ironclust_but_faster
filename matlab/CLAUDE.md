@@ -72,11 +72,31 @@ irc('compile')  % Compile CUDA kernels
 
 ## Performance Optimizations
 
-### Cluster Merging (from MERGE_OPTIMIZATIONS.md)
-- Deferred UI updates: Toggle with `fUpdateImmediate` parameter
-- Batch merging: Use `[B]` key or Edit > Batch merge menu
-- Pre-computed spike indices in `cviSpk_clu` for fast cluster operations
-- Incremental correlation matrix updates
+### Cluster Merging (manual curation GUI)
+Merges and deletes are **queued, then applied together** — they are not applied on keypress:
+- `[M]` queues a merge (`ui_merge_pending_`); `[D]`/Backspace/Delete queues a delete (`ui_delete_pending_`)
+- `[U]` applies all pending operations and refreshes the figures (`execute_pending_and_update_`)
+- `[Escape]` discards pending operations (`cancel_pending_operations_`)
+
+### Cluster state: `viClu` is authoritative, `cviSpk_clu` is a cache
+- `S_clu.viClu` — per-**spike** cluster labels. **The source of truth.** Every cache rebuild
+  derives from it (`S_clu_refresh_`, `S_clu_update_`, `merge_clu_pair_`).
+- `S_clu.cviSpk_clu{i}` — per-**cluster** spike indices. A derived cache that exists to avoid
+  `find()` over millions of spikes; it can drift stale relative to `viClu`.
+- **`S_clu_select_` reindexes per-cluster fields only and CANNOT remap `viClu`** (that name ends
+  in `Clu`, not `_clu`, so it matches none of its patterns). Any caller passing a permutation
+  that changes cluster **identity** must remap `viClu` itself first — see `clu_reorder_` for the
+  correct pattern. Omitting this silently corrupts cluster identity and `save0_()` persists it
+  (this was the `reorder_clu_by_coords_` bug; see `logs/changes_log20260715.md`).
+- `S_clu_valid_` checks array **lengths** only, never content — it will not catch a desync.
+
+> **Stale docs — do not trust:** `MERGE_OPTIMIZATIONS.md`, `OPTIMIZATION_SUMMARY.md`,
+> `PROFILER_ANALYSIS.md`, `PERFORMANCE_AUDIT.md`, `GUI_PERFORMANCE_OPTIMIZATIONS.md`, and
+> `GPU_USAGE_ANALYSIS.md` describe functions that **do not exist** in `irc.m`
+> (`ui_merge_batch_`, `update_correlation_after_merge_`, `compute_cluster_correlations_`,
+> `fUpdateImmediate`, `fUpdateCorrelation`, the `[B]` batch key, and a cached-index fast path in
+> `merge_clu_pair_`). They are proposals that were never implemented. Verify against `irc.m`
+> before relying on any claim in them.
 
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)

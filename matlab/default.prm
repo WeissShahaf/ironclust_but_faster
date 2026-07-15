@@ -45,12 +45,13 @@ maxAmp = 250;               % Amplitude range in uV (initial setting, changeable
 nShow = 200;                % Maximum number of traces to show [D?# spikes to show]
 corrLim = [.9 1];           % Correlation color plot range
 nSpk_show = 30;             % show spike waveforms for manual clustering
-nShow_proj = 50;           % Max. number of spikes to show in the projection view
+nShow_proj = 50;           % Max. number of BACKGROUND spikes to show in the projection view (selected clusters are shown in full so the display matches what [S] splits)
 vcFet_show = 'vpp';         % Feature to show in time plot {'vpp', 'cov', 'pca'} (*)
 mrColor_proj = [.75 .75 .75; 0 0 0; 1 0 0];     % background, selected, comparison color
 vcFilter_show = '';         % Filter to apply in the "traces" view. Choices: {'', 'bandpass', 'sgdiff'}. '' uses vcFilter setting.
 fText = 0;                  % Show spike count per unit (*, press 'n' to toggle in manual GUI)
 vcFile_site_region = '';    % .csv of "key,region" rows (key = channel # or 1-based site #). In the manual GUI probe map, press 'c' to cycle site labels between channel #, site #, and region.
+fCheck_clu_sync = 1;        % Warn (console) if S_clu.cviSpk_clu disagrees with S_clu.viClu on commit. Catches cache/label desync, which silently corrupts splits and merges. Set 0 to silence.
 
 % #Pre-processing (run "jrc spikesort" after change)
 vcDataType_filter = 'single';   % Internal data representation after filtering

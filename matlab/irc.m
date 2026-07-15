@@ -6069,6 +6069,7 @@ function ui_show_elective_()
 plot_aux_rate_();
 ui_show_all_chan_();
 ui_show_drift_view_();
+ui_show_FigProj_(); % no-op unless the user opened it (View > Show projection view)
 end %func
 
 
@@ -6472,6 +6473,7 @@ uimenu_(mh_view,'Label', '[N]umbers (toggle)', 'Callback', @(h,e)keyPressFcn_cel
 uimenu_(mh_view,'Label', 'Show averaged waveforms on all channels','Callback', @(h,e)ui_show_all_chan_(1,h));
 uimenu_(mh_view,'Label', 'Show global drift','Callback', @(h,e)plot_drift_());
 uimenu_(mh_view,'Label', 'Show drift view','Callback', @(h,e)ui_show_drift_view_(1,h));
+uimenu_(mh_view,'Label', 'Show projection view','Callback', @(h,e)ui_show_FigProj_(1,h));
 uimenu_(mh_view,'Label', 'Reset window positions[1]', 'Callback', @reset_position_);
 
 mh_proj = uimenu_(hFig,'Label','Projection'); 
@@ -7332,7 +7334,10 @@ if isempty(S_fig)
 end
 % get features for x0,y0,S_plot0 in one go
 %[mrMin, mrMax, vi0, vi1, vi2] = fet2proj_(S0, P.viSites_show);
-[mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, P.viSites_show);
+[mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2, viSpk1] = fet2proj_(S0, P.viSites_show);
+% Keep the ids behind hPlot1 so [S] can map a polygon selection back to spikes
+% (see plot_split_). Without this the mapping is unrecoverable.
+S_fig.viSpk1 = viSpk1;
 % S_fig.maxAmp %debug
 if ~isfield(S_fig, 'viSites_show'), S_fig.viSites_show = []; end
 if ~equal_vr_(S_fig.viSites_show, P.viSites_show) || ...
@@ -7765,8 +7770,14 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, viSites0)
+function [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2, viSpk01] = fet2proj_(S0, viSites0)
 % show spikes excluding the clusters excluding clu1 and 2
+%
+% viSpk01 (7th output, added 2026/07/15): the GLOBAL spike indices behind mrMin1/mrMax1,
+% in plotted order. Previously this was computed and thrown away, which destroyed the
+% displayed-point -> spike mapping and left plot_split_ no choice but to recompute over a
+% different population than the one on screen. Callers that let the user select points
+% (plot_FigProj_ -> plot_split_) must use this to map a selection back to spikes.
 P = S0.P;
 S_clu = S0.S_clu;
 iClu1 = S0.iCluCopy;
@@ -7784,10 +7795,16 @@ if ~isempty(P.tlim_proj)
     viTime0 = viTime0(viSpk01);
 end
 viClu0 = S_clu.viClu(viSpk0);
+% Subsample the BACKGROUND only. The selected clusters are shown in full, matching
+% getFet_clu_/plot_FigTime_ (whose MAX_SAMPLE cap likewise applies to the background
+% branch only). Subsampling them to nShow_proj used to display ~50 dots of a cluster
+% while plot_split_ evaluated the polygon over ALL its spikes, so circling a third of
+% what was visible silently split a third of thousands. Showing them in full makes the
+% display and the split the same population by construction.
 viSpk00 = randomSelect_(viSpk0, P.nShow_proj*2);
-viSpk01 = randomSelect_(viSpk0(viClu0 == iClu1), P.nShow_proj);
+viSpk01 = viSpk0(viClu0 == iClu1);
 if ~isempty(iClu2)
-    viSpk02 = randomSelect_(viSpk0(viClu0 == iClu2), P.nShow_proj);
+    viSpk02 = viSpk0(viClu0 == iClu2);
 else
     [mrMin2, mrMax2] = deal([]);
 end
@@ -8653,7 +8670,17 @@ switch lower(event.Key)
             vlIn = inpolygon(vrX1, vrY1, mrPolyPos(:,1), mrPolyPos(:,2));
             hSplit = line(vrX1(vlIn), vrY1(vlIn), 'Color', [1 0 0], 'Marker', '.', 'LineStyle', 'none');
             if strcmpi(questdlg_('Split?', 'Confirmation', 'Yes'), 'yes')
-                split_clu_(S0.iCluCopy, vlIn);
+                % Split by absolute spike id, not by this plot's positional mask.
+                % plot_FigTime_ already stashes the ids behind hPlot1 as S_fig.viSpk1
+                % (one per plotted point, same order), so the selection cannot be
+                % misaligned onto a different spike set. Fall back to the positional
+                % path only for figures cached before viSpk1 was stored.
+                viSpk_plot1 = get_(S_fig, 'viSpk1');
+                if numel(viSpk_plot1) == numel(vlIn)
+                    split_clu_by_id_(S0.iCluCopy, viSpk_plot1(vlIn));
+                else
+                    split_clu_(S0.iCluCopy, vlIn);
+                end
             end
             delete_multi_(hPoly, hSplit);
         catch
@@ -8799,11 +8826,13 @@ switch lower(event.Key)
         if ~isempty(S0.iCluPaste)
             msgbox_('Select one cluster to split'); return;
         end
-        S_plot1 = select_polygon_(S_fig.hPlot1); 
+        S_plot1 = select_polygon_(S_fig.hPlot1);
         if ~isempty(S_plot1)
-            [fSplit, vlIn] = plot_split_(S_plot1);
+            [fSplit, vlIn, viSpk_in] = plot_split_(S_plot1);
             if fSplit
-                S_clu = split_clu_(S0.iCluCopy, vlIn);
+                % Split by absolute spike id so the selection cannot be misapplied to a
+                % different population than the one the polygon was drawn over.
+                S_clu = split_clu_by_id_(S0.iCluCopy, viSpk_in);
             else
                 update_plot2_proj_();
 %                 delete_multi_(S_plot1.hPoly);
@@ -9765,16 +9794,23 @@ end %func
 
 %--------------------------------------------------------------------------
 function viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1)
-% Return cluster iClu1's spike indices, preferring the S_clu.cviSpk_clu cache
+% Return cluster iClu1's spike indices, starting from the S_clu.cviSpk_clu cache
 % (what the rest of the GUI/display relies on) but cross-validated against the
 % per-spike label vector S_clu.viClu, which can disagree with the cache after
 % some merge/reorder operations. Intersecting with viClu can only shrink an
 % over-large/stale cache entry - it can never grow it - so this bounds a
 % destructive split at the cache size while still rejecting any spikes viClu no
-% longer attributes to this cluster. If the two sources disagree completely
-% (empty intersection), fall back to the raw cache rather than returning no
-% spikes at all, since the cache is what auto_split_/split_clu_ historically
-% relied on and empirically remains reliable in practice.
+% longer attributes to this cluster.
+%
+% On TOTAL disagreement (empty intersection) the two arrays describe unrelated
+% spike sets, and one of them is wrong. This used to return the raw cache; that
+% is backwards. viClu is the authoritative source - every cache rebuild in this
+% file derives FROM it (S_clu_refresh_, S_clu_update_, merge_clu_pair_) - so a
+% cache that agrees with viClu on nothing is the stale one, and trusting it here
+% can resurrect the very corruption this helper exists to prevent. Prefer viClu,
+% loudly. The one exception: if viClu attributes no spikes at all to iClu1 we
+% keep the cache rather than return empty, preserving the original guarantee
+% that this never silently splits nothing.
 viSpk1 = [];
 if iClu1 <= numel(S_clu.cviSpk_clu)
     viSpk1 = S_clu.cviSpk_clu{iClu1};
@@ -9785,8 +9821,21 @@ if isempty(viSpk1)
 end
 viSpk1 = viSpk1(:);
 vlConfirmed = S_clu.viClu(viSpk1) == iClu1;
-if any(vlConfirmed) && ~all(vlConfirmed)
+if all(vlConfirmed), return; end
+if any(vlConfirmed)
     viSpk1 = viSpk1(vlConfirmed);
+else
+    viSpk_viClu1 = find(S_clu.viClu == iClu1);
+    if isempty(viSpk_viClu1)
+        fprintf(2, ['get_clu_spk_confirmed_: Clu%d cache (%d spikes) disagrees with viClu ', ...
+            'entirely AND viClu claims no spikes for it; keeping the cache.\n'], iClu1, numel(viSpk1));
+    else
+        fprintf(2, ['get_clu_spk_confirmed_: Clu%d cache (%d spikes) disagrees with viClu ', ...
+            'entirely; using viClu (%d spikes). The cache is stale - check for an ', ...
+            'S_clu_select_ caller that failed to remap viClu.\n'], ...
+            iClu1, numel(viSpk1), numel(viSpk_viClu1));
+        viSpk1 = viSpk_viClu1;
+    end
 end
 end %func
 
@@ -10269,6 +10318,25 @@ end
 mrPosXY_clu = [S_clu.vrPosX_clu(:), S_clu.vrPosY_clu(:)];
 [~, viMap_clu] = sortrows(mrPosXY_clu, [1, 2]);
 
+% Remap the per-spike labels (viClu) in lockstep with the per-cluster arrays that
+% S_clu_select_ reindexes below. viClu is a per-spike field and does not match
+% S_clu_select_'s ^v\w*_clu$ pattern, so that function never remaps it - the caller
+% must, exactly as clu_reorder_ does before its own S_clu_select_ call. Omitting it
+% left cviSpk_clu/viSite_clu/vnSpk_clu/csNote_clu/mrWavCor on the new position-sorted
+% numbering while viClu kept the old one; the next split/merge then rebuilt the cache
+% from the stale viClu (S_clu_update_) and silently swapped cluster identity, which
+% surfaced as splits producing thousands of spikes at the wrong depth.
+nClu = S_clu.nClu;
+if numel(viMap_clu) ~= nClu % refuse to reorder rather than desync viClu
+    fprintf(2, 'reorder_clu_by_coords_: position array (%d) ~= nClu (%d), skipping reorder.\n', ...
+        numel(viMap_clu), nClu);
+    return;
+end
+viOld2New = zeros(1, nClu);
+viOld2New(viMap_clu) = 1:nClu; % viMap_clu(iClu_new) = iClu_old, so invert it
+vlRemap = S_clu.viClu >= 1 & S_clu.viClu <= nClu; % leave unassigned (<=0) spikes alone
+S_clu.viClu(vlRemap) = viOld2New(S_clu.viClu(vlRemap));
+
 % Reorder clusters using the mapping
 S_clu = S_clu_select_(S_clu, viMap_clu);
 S_clu.mrWavCor = set_diag_(S_clu.mrWavCor, S_clu_self_corr_(S_clu, [], S0));
@@ -10537,7 +10605,12 @@ if n2 == 0 || n2 == nSpk1
     figure_wait_(0, hFig_wait);
     return;
 end
-iClu2 = max(S_clu.viClu) + 1;
+% Allocate the new cluster past BOTH the declared cluster count and the highest live
+% label. Using max(viClu)+1 alone silently overwrote an existing cluster whenever
+% max(viClu) < nClu (i.e. trailing empty clusters): nClu was then assigned a SMALLER
+% value below, leaving the per-cluster arrays longer than nClu, so S_clu_valid_ failed
+% and S_clu_commit_ discarded the entire split with only a console message.
+iClu2 = max(double(S_clu.nClu), double(max(S_clu.viClu))) + 1;
 
 % update cluster count and index
 S_clu.nClu = double(iClu2);
@@ -10580,23 +10653,72 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function [fSplit, vlIn] = plot_split_(S1)
+% 2026/07/15: split a cluster by ABSOLUTE spike indices rather than a positional mask.
+function S_clu = split_clu_by_id_(iClu1, viSpk_in)
+% [Usage]
+% -----
+% S_clu = split_clu_by_id_(iClu1, viSpk_in)
+%   iClu1:    cluster to split
+%   viSpk_in: GLOBAL spike indices (into S_clu.viClu / S0.viTime_spk) to split off.
+%             NOT positional indices into the cluster - use split_clu_ for those.
+%
+% Why this exists: split_clu_ takes a positional mask over a spike list that it
+% re-derives internally via get_clu_spk_confirmed_. The caller and callee must
+% therefore agree on both the population AND its order, with nothing enforcing it;
+% on mismatch split_clu_ silently truncates or zero-pads the mask, misapplying it to
+% a different spike set. Building the mask here by membership against the same list
+% split_clu_ uses makes numel(vlIn) == numel(viSpk1) unconditionally, so that whole
+% failure mode is structurally impossible regardless of how the caller obtained its
+% ids or how stale its plot data is. Callers that already hold absolute ids (the
+% polygon views all do) should prefer this entry point.
+%
+% split_clu_ is unchanged and remains valid for existing positional callers.
+S_clu = get0_('S_clu');
+viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1);
+vlIn = ismember(viSpk1(:), viSpk_in(:)); % numel(vlIn) == numel(viSpk1) by construction
+if ~any(vlIn)
+    msgbox_('Cannot split: none of the selected spikes belong to this cluster', 1);
+    return;
+end
+S_clu = split_clu_(iClu1, vlIn);
+end %func
+
+
+%--------------------------------------------------------------------------
+function [fSplit, vlIn, viSpk_in] = plot_split_(S1)
+% [fSplit, vlIn, viSpk_in] = plot_split_(S1)
+%   vlIn:     positional mask over viSpk_show (kept for backward compatibility)
+%   viSpk_in: GLOBAL spike indices selected - pass these to split_clu_by_id_
+%
+% This evaluates the polygon over exactly the spikes FigProj DISPLAYED (S_fig.viSpk1,
+% stashed by plot_FigProj_), not over the whole cluster. It used to read
+% S_clu.cviSpk_clu{iClu1} directly, which was a different population than the one on
+% screen in two ways: the display is filtered to viSites0 (so spikes detected elsewhere
+% were invisible yet still selectable - they carry ~0 amplitude on site12 and pile at the
+% projection origin, so any polygon near the origin swept them in), and it used to be
+% subsampled to nShow_proj as well. Both are now aligned by construction.
 % find site
 mrPolyPos = getPosition(S1.hPoly);
 site12_show = floor(mean(mrPolyPos));
-site12 = S1.viSites_show(site12_show+1);  
+site12 = S1.viSites_show(site12_show+1);
 
 % get amp
 S0 = get(0, 'UserData');
 S_clu = S0.S_clu;
 P = S0.P;
 iClu1 = S0.iCluCopy;
+[~, S_fig_proj] = get_fig_cache_('FigProj');
+viSpk_show = get_(S_fig_proj, 'viSpk1');
+if isempty(viSpk_show) % pre-patch cached figure: fall back to the old population
+    viSpk_show = get_clu_spk_confirmed_(S_clu, iClu1);
+end
+viSpk_show = viSpk_show(:);
 if ismember(P.vcFet_show, {'pca', 'ppca', 'gpca'})
     fWav_raw_show = 0;
 else
     fWav_raw_show = get_set_(P, 'fWav_raw_show', 0);
 end
-trWav12 = tnWav2uV_(tnWav_spk_sites_(S_clu.cviSpk_clu{iClu1}, site12, S0, fWav_raw_show), P);
+trWav12 = tnWav2uV_(tnWav_spk_sites_(viSpk_show, site12, S0, fWav_raw_show), P);
 if diff(site12) == 0, trWav12(:,2,:) = trWav12(:,1,:); end
 vxPoly = (mrPolyPos([1:end,1],1) - site12_show(1)) * S1.maxAmp;
 vyPoly = (mrPolyPos([1:end,1],2) - site12_show(2)) * S1.maxAmp;
@@ -10616,7 +10738,7 @@ switch lower(P.vcFet_show)
         end  
         
     case {'cov', 'spacetime'}   
-        [mrAmin12, mrAmax12] = calc_cov_spk_(S_clu.cviSpk_clu{iClu1}, site12);
+        [mrAmin12, mrAmax12] = calc_cov_spk_(viSpk_show, site12);
         [mrAmin12, mrAmax12] = multifun_(@(x)abs(x'), mrAmin12, mrAmax12);
         vyPlot = mrAmin12(:,2);
         vcYlabel = sprintf('Site %d (cov1)', site12(2));
@@ -10631,9 +10753,9 @@ switch lower(P.vcFet_show)
     case {'pca', 'ppca', 'gpca'}
         if strcmpi(P.vcFet_show, 'ppca')
             [mrPv1, mrPv2] = pca_pv_clu_(site12, S0.iCluCopy, S0.iCluPaste);
-            [mrAmin12, mrAmax12] = pca_pc_spk_(S_clu.cviSpk_clu{iClu1}, site12, mrPv1, mrPv2);
+            [mrAmin12, mrAmax12] = pca_pc_spk_(viSpk_show, site12, mrPv1, mrPv2);
         else
-            [mrAmin12, mrAmax12] = pca_pc_spk_(S_clu.cviSpk_clu{iClu1}, site12);
+            [mrAmin12, mrAmax12] = pca_pc_spk_(viSpk_show, site12);
         end
         [mrAmin12, mrAmax12] = multifun_(@(x)x', mrAmin12, mrAmax12);
         vyPlot = mrAmin12(:,2);
@@ -10663,6 +10785,7 @@ switch lower(P.vcFet_show)
 end
 
 vlIn = inpolygon(vxPlot, vyPlot, vxPoly, vyPoly);
+viSpk_in = viSpk_show(vlIn); % global ids -> split_clu_by_id_
 
 % Plot temporary figure (auto-close)
 hFig = figure(10221); clf;
@@ -10671,7 +10794,9 @@ subplot(2,2,[1,3]); hold on;
 line(vxPlot, vyPlot, 'Color', P.mrColor_proj(2,:), 'Marker', 'o', 'MarkerSize', 2, 'LineStyle', 'none');
 hPlot = line(vxPlot(vlIn), vyPlot(vlIn), 'Color', P.mrColor_proj(3,:), 'Marker', 'o', 'MarkerSize', 2, 'LineStyle', 'none');
 % plot_(vxPoly, vyPoly, 'b+-'); %boundary
-title(sprintf('Cluster %d (%d spikes)', iClu1, S_clu.vnSpk_clu(iClu1)));
+% Count what is actually selectable here (the displayed population), not vnSpk_clu -
+% they differ whenever the cluster has spikes detected outside the shown sites.
+title(sprintf('Cluster %d (%d of %d spikes shown)', iClu1, numel(viSpk_show), S_clu.vnSpk_clu(iClu1)));
 xlabel(sprintf('Site %d', site12(1)));
 ylabel(vcYlabel);   xlabel(vcXlabel);
 grid on;
@@ -19407,6 +19532,15 @@ function S_clu = S_clu_select_(S_clu, viKeep_clu)
 % automatically trim clusters
 % 7/20/17 JJJ: auto selecting vectors and matrics
 % excl vnSpk_clu, viSite_clu, vrPosX_clu, vrPosY_clu
+%
+% CONTRACT: this reindexes the per-CLUSTER fields only (v*_clu, c*_clu, t*_clu,
+% m*_clu). It does NOT touch S_clu.viClu, the per-SPIKE label vector - that name
+% ends in 'Clu', not '_clu', so it matches none of the patterns below, and by
+% design this function cannot remap it. If viKeep_clu changes cluster IDENTITY
+% (a permutation, not just dropping trailing empties), the CALLER MUST remap
+% S_clu.viClu with the same mapping BEFORE calling this. See clu_reorder_ for the
+% correct pattern. reorder_clu_by_coords_ omitted it and produced a silent, saved
+% viClu/cviSpk_clu desync that corrupted every later split and merge.
 
 % Quality
 csNames = fieldnames(S_clu);
@@ -19572,6 +19706,78 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% 2026/07/15: content-level consistency check for the cviSpk_clu cache.
+function nBad_clu = S_clu_assert_synced_(S_clu, vcCaller)
+% Report (do NOT fix, do NOT gate) any disagreement between S_clu.viClu - the
+% authoritative per-spike label vector - and the derived S_clu.cviSpk_clu cache.
+%
+% Why this exists: S_clu_valid_ only compares array LENGTHS to nClu, so a cache that
+% describes a completely different set of spikes than viClu passes it silently. That is
+% exactly how the reorder_clu_by_coords_ desync went undetected: a single [O] press
+% renumbered every per-cluster array without remapping viClu, and the next split rebuilt
+% the cache from the stale labels, swapping cluster identity - with the corrupted result
+% saved to disk. See logs/changes_log20260715.md.
+%
+% Why it only WARNS: S_clu_commit_ reverts the caller's work when S_clu_valid_ returns
+% false. Folding a content check into that verdict would mean a desync silently discards
+% the operation - reproducing the silent-data-loss failure mode this is meant to expose,
+% and potentially wedging a session where every action appears to do nothing. Warn loudly,
+% let the user decide.
+%
+% Never throws: a diagnostic that breaks the GUI is worse than the bug it reports.
+nBad_clu = 0;
+try
+    if ~get_set_(get0_('P'), 'fCheck_clu_sync', 1), return; end
+    if ~isfield(S_clu, 'cviSpk_clu') || ~isfield(S_clu, 'viClu'), return; end
+    nClu = get_(S_clu, 'nClu');
+    viClu = S_clu.viClu;
+    if isempty(nClu) || isempty(viClu), return; end
+    nClu_chk = min(double(nClu), numel(S_clu.cviSpk_clu));
+    if nClu_chk < 1, return; end
+
+    % Count spikes per label from viClu ONCE: O(nSpk), vs O(nSpk*nClu) for per-cluster find()
+    vlPos = viClu(:) >= 1 & viClu(:) <= nClu_chk;
+    vnSpk_viClu = accumarray(double(viClu(vlPos)), 1, [nClu_chk, 1]);
+    nSpk_max = numel(viClu);
+    csMsg = {};
+    for iClu = 1:nClu_chk
+        viCache1 = S_clu.cviSpk_clu{iClu};
+        viCache1 = viCache1(:);
+        nCache1 = numel(viCache1);
+        if nCache1 > 0 && (min(viCache1) < 1 || max(viCache1) > nSpk_max)
+            nBad_clu = nBad_clu + 1;
+            csMsg{end+1} = sprintf('\tClu%d: cache holds out-of-range spike indices.', iClu); %#ok<AGROW>
+            continue;
+        end
+        % nForeign: cached spikes viClu attributes to some OTHER cluster
+        % nMiss:    spikes viClu attributes here that the cache omits
+        nForeign = 0;
+        if nCache1 > 0, nForeign = sum(viClu(viCache1) ~= iClu); end
+        nMiss = vnSpk_viClu(iClu) - (nCache1 - nForeign);
+        if nForeign == 0 && nMiss == 0, continue; end
+        nBad_clu = nBad_clu + 1;
+        csMsg{end+1} = sprintf(...
+            '\tClu%d: %d cached spikes belong elsewhere, %d missing (cache=%d, viClu=%d).', ...
+            iClu, nForeign, nMiss, nCache1, vnSpk_viClu(iClu)); %#ok<AGROW>
+    end
+    if nBad_clu > 0
+        fprintf(2, ['S_clu_assert_synced_ (%s): %d/%d clusters have a STALE cviSpk_clu ', ...
+            'cache. viClu is authoritative - look for an S_clu_select_ caller that failed ', ...
+            'to remap it (see the S_clu_select_ contract note). Splitting or merging these ', ...
+            'clusters will corrupt cluster identity.\n'], vcCaller, nBad_clu, nClu_chk);
+        nShow = min(numel(csMsg), 10);
+        fprintf(2, '%s\n', csMsg{1:nShow});
+        if numel(csMsg) > nShow
+            fprintf(2, '\t... and %d more (set fCheck_clu_sync=0 to silence).\n', numel(csMsg)-nShow);
+        end
+    end
+catch
+    ; % diagnostic only - never break the caller
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function [S_clu, S0] = S_clu_commit_(S_clu, vcMsg)
 if nargin<2, vcMsg = ''; end
 if ~S_clu_valid_(S_clu)
@@ -19579,6 +19785,8 @@ if ~S_clu_valid_(S_clu)
     S0 = get(0, 'UserData');
     S_clu = get_(S0, 'S_clu');
 else
+    % Length-valid but possibly content-stale: warn, never gate (see the function header).
+    S_clu_assert_synced_(S_clu, vcMsg);
     S0 = set0_(S_clu);
 end
 end %func
@@ -32420,6 +32628,40 @@ end
 try
     mouse_figure(hFig);
 catch
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% 2026/07/15: optional projection view (FigProj).
+% FigProj is deliberately NOT created at startup - the drift view replaced it as the
+% default (see the create_figure_ block and the [J] key), so its figure never existed
+% and its [S] split was unreachable. It is restored here as an opt-in view, following
+% ui_show_all_chan_'s toggle pattern: the menu item opens/closes it, and thereafter
+% ui_show_elective_ refreshes it on every cluster selection. Called with no arguments
+% it is a no-op unless the figure is already open, so users who never open it pay
+% nothing - which matters because FigProj now draws every spike of the selected
+% clusters rather than a 50-spike sample (see fet2proj_).
+function ui_show_FigProj_(fNewFig, hMenu)
+if nargin<2, hMenu = []; end
+if nargin<1, fNewFig = 0; end
+hFig = get_fig_('FigProj');
+if fNewFig
+    if isvalid_(hFig) % toggle off
+        close_(hFig);
+        if ~isempty(hMenu), set(hMenu, 'Checked', 'off'); end
+        return;
+    end
+    P = get0_('P');
+    create_figure_('FigProj', [.5 .25 .35 .5], ['Projection view: ', P.vcFile_prm], 0, 1);
+    if ~isempty(hMenu), set(hMenu, 'Checked', 'on'); end
+elseif ~isvalid_(hFig)
+    return; % not open - nothing to refresh
+end
+try
+    plot_FigProj_(get0_());
+catch
+    disperr_();
 end
 end %func
 
