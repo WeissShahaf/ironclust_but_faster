@@ -3,7 +3,72 @@
 **Date:** 2026-07-16 · **Scope:** the per-site spike cap for label-based clustering (CID-13 area).
 **Code:** `cluster_labels_persite_` (irc.m:2500), `cluster_site_` (2656), `cluster_site_capped_`
 (2756), `nearest_in_set_` (2809), `persite_knn_` (2737) → `knn_cpu_` (26518).
-**Not a code change — analysis only.**
+**Update (2026-07-16):** now carries a **real-data benchmark (below) that supersedes the cost-model
+estimates** in §2/§4 where they conflict; also adds an additive `P.vcKnn_backend` switch to
+`persite_knn_` (default `'cpu'` = unchanged exact path).
+
+---
+
+## ⚠ Real-data benchmark (2026-07-16) — MEASURED; overrides the estimates below
+
+Run on a real recording (`260324_afm18349`, NP2.0 region-reduced 1-shank probe), time-trimmed to
+`tlim_load=[0 300]` → **1,142,789 spikes**, 384 sites, **`nFet=36`**, `knn=50`, `vcCluster='hdbscan'`.
+Each config sorted in an **isolated MATLAB process** (RTX 4000 Ada, R2023b) for crash/oversubscription
+isolation. Harness: `scratchpad/bench_all.m`, `bench_one.m`, `bench_orch.ps1`. **Where these numbers
+conflict with the cost model below, trust these.**
+
+### Per-site kNN backend — all EXACT (identical output: 84 clusters, 131,742 clustered spikes)
+
+Clean apples-to-apples (**serial**, so no parfor confound):
+
+| backend | per-site kNN (serial) | total sort WALL |
+|---|---|---|
+| **CPU `pdist2` (current default)** | **19 s** | **52.7 s** ← fastest |
+| GPU `cuda_knn_` (`cuda_knn_index.ptx`) | 30 s | 63.7 s |
+| kd-tree `knnsearch` (parfor ×12) | 1095 s summed | 402.8 s |
+
+- **Strategy 3 (GPU) does NOT win here — this corrects §4.3 and the TL;DR "biggest structural win /
+  mostly plumbing" claim.** `cuda_knn_` *does* engage (30 s ≠ the 19 s CPU figure, so it is not a
+  fallback) but is **slower than CPU**: the per-site problems are small (busiest site ~47 k spikes),
+  so GPU launch/transfer overhead across 384 sites outweighs the compute saving. GPU kNN only pays off
+  on one very large problem, which the per-site decomposition never creates. (A separate *per-site
+  micro-bench* spuriously showed `cuda_knn_` falling back — a harness artifact; the isolated
+  end-to-end sorts here are authoritative.)
+- **Strategy 4 (kd-tree) confirmed bad at `nFet=36`:** ~6.5× more kNN compute, 2.7× slower end-to-end.
+
+### Parallelization — the ACTUAL dominant lever (corrects §4.1 / Strategy 1)
+
+Same CPU `pdist2`, identical output, only `fParfor` changed:
+
+| mode | total sort WALL |
+|---|---|
+| **serial (`fParfor=0`)** | **52.7 s** ← fastest |
+| parfor ×12 (`fParfor=1`, the default) | 150.4 s ← **2.9× SLOWER** |
+
+**`fParfor=1` is a ~3× pessimization on this machine.** Per-site summed compute inflates ~12× under
+12 workers (clustering 23 s→276 s, kNN 19 s→169 s) — classic **BLAS oversubscription**:
+`pdist2`/`knnsearch`/hdbscan are already multithreaded, so 12 workers × BLAS threads thrash the cores.
+§4.1 assumed "more workers → faster"; on real data here the opposite holds. **Free ~3× win: run
+serial, cap `maxNumCompThreads`/BLAS threads per worker, or use far fewer workers.** When the cap is
+off, this is the real runtime lever — bigger than any kNN-backend choice.
+
+### Clustering methods (real data; these ran parfor, so CPU-bound rows would also speed up serial)
+
+| method | WALL | #clusters | #spikes clustered | % of 1.14 M |
+|---|---|---|---|---|
+| drift-knn | 54.6 s | 265 | 1,101,547 | 96 % |
+| hdbscan | 150.4 s (serial 52.7 s) | 84 | 131,742 | 12 % |
+| isosplit6 | 157.1 s | 595 | 1,135,974 | 99 % |
+| classix | — | — | — | MEX → MATLAB access-violation crash; pure-MATLAB → timeout >15 min |
+
+Methods produce **fundamentally different partitions**, not merely different speeds: hdbscan is
+conservative (12 % of spikes → 84 units, rest labelled noise); drift-knn and isosplit6 cluster ~all
+spikes into hundreds of units. classix is currently unusable on this data.
+
+### Code note
+`persite_knn_` gained an **additive** `P.vcKnn_backend` switch (`'cpu'` default = unchanged exact
+path; `'gpu'`→`cuda_knn_`, `'kdtree'`→`knnsearch`) purely to run this comparison. Since neither
+alternative beats CPU here, it is a benchmarking hook, **not** a recommended production change.
 
 ---
 
