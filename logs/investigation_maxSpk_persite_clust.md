@@ -23,12 +23,18 @@
   sites); **50 000 recommended** (only genuine giants capped, preserves units down to ~0.06% of the
   site). Runtime is **~linear in `m`**, so lower `m` is always faster — the binding constraint is
   small-cluster recall, never speed.
-- **When off (`[]`), the top runtime levers, in order:** (1) right-size the worker pool
-  (`nWorkers_clust` vs the local cluster profile); (2) **suppress the noise upstream** so giant sites
+- **When off (`[]`), the top runtime levers:** (1) **suppress the noise upstream** so giant sites
   never form (`blank_thresh`, `qqFactor`, CAR, bad-channel exclusion) — the giants are usually
-  artifact; (3) GPU the per-site kNN (kernel exists but needs index support); (4) kd-tree/approximate
-  kNN for the O(n²) graph; (5) a cheaper `vcCluster` if the printed `t_clu` breakdown says clustering
-  (not kNN) dominates. Note **parallelism cannot rescue a single giant site** — one site = one worker.
+  artifact, so this *removes* the work (usually the biggest + most correct win); (2) right-size the
+  worker pool (`nWorkers_clust` vs the local cluster profile) for the non-giant bulk; (3) GPU the
+  per-site kNN — an **index-returning GPU kNN already exists** (`cuda_knn_` + `cuda_knn_index.ptx`,
+  live in the drift path), so this is mostly *plumbing*, not kernel work (my earlier "needs kernel
+  work" note pointed at the wrong wrapper); (4) kd-tree/approximate kNN for the O(n²) graph when there
+  is no GPU; (5) a cheaper `vcCluster` if the printed `t_clu` breakdown says clustering (not kNN)
+  dominates. The outer loop is **one site = one worker**, so pool width cannot bound a single giant;
+  the only ways to shrink a giant are its kNN/clustering half (3–5), its spike count (1), or splitting
+  that one site across workers (§4.8, high effort, generally dominated by 3–4). See the §4 comparison
+  table for the head-to-head.
 
 ---
 
@@ -132,12 +138,20 @@ Uncapped, a giant site pays `O(n1²·nFet)` kNN (`knn_cpu_` → chunked exact `p
    This removes the work instead of bounding it, and is *more* correct (you don't want 1M noise spikes
    clustered at all).
 
-3. **GPU the per-site kNN (code).** The `O(n1²)` kNN dominates uncapped giants. A CUDA kNN kernel
-   already exists (`cuda_knn__`, irc.m:26543, `cuda_knn.cu/.ptx`, `fGpu = 1` by default) but
-   `persite_knn_` calls the **CPU** `knn_cpu_`, and the kernel currently returns only density (`rho`) —
-   the neighbor-index (`miKnn`) output is commented out (26568-69). Wiring `persite_knn_` to a
-   GPU kNN that also emits indices would turn a giant site's kNN from CPU-minutes into GPU-seconds.
-   Highest-value uncapped win, but needs kernel work.
+3. **GPU the per-site kNN (code — less work than first thought).** The `O(n1²)` kNN dominates
+   uncapped giants, and `persite_knn_` currently calls the **CPU** `knn_cpu_`. Two GPU kNN wrappers
+   exist: `cuda_knn__` (irc.m:26543, kernel `cuda_knn.ptx`) returns density ONLY — its `miKnn` output
+   is commented out (26568-69) and it forces CPU when indices are requested — **but `cuda_knn_`**
+   (single trailing underscore, irc.m:26476, kernel `cuda_knn_index.ptx`, "it computes the index of
+   KNN") **already returns neighbor indices from the GPU** and is a live, exercised path (used by
+   `rho_drift_knn_` at 26462 and the merge/split path at 17549). So this is mostly **plumbing** — point
+   `persite_knn_` at `cuda_knn_`, gather `vrKnn`/`miKnn`, map local→global indices — not new kernel
+   work (my earlier "needs kernel work" note pointed at the wrong wrapper). Caveats: `cuda_knn_`
+   engages the GPU only when the feature dim `nC ≤ nC_max` (default 36) and auto-falls-back to
+   `knn_cpu_` otherwise (so it is a safe swap), and under the per-site `parfor` many workers would
+   contend for one GPU — so the natural pairing is to pull the few giant sites OUT of the `parfor` and
+   GPU them (see lever 8), leaving the small-site bulk on the CPU pool. Highest-value structural win
+   for an uncapped, kNN-dominated giant.
 
 4. **kd-tree / approximate kNN (code).** `knn_cpu_` is exact `O(n1²)`. `knnsearch(...,'NSMethod',
    'kdtree')` is ~`O(n1 log n1)` for low-dimensional features; `nFet` is a few dozen, so a kd-tree
@@ -155,6 +169,46 @@ Uncapped, a giant site pays `O(n1²·nFet)` kNN (`knn_cpu_` → chunked exact `p
 7. **Does NOT help:** lowering `knn` (30). `pdist2(...,'Smallest',knn)` computes all `O(n1²)` distances
    regardless of `knn`; `knn` only affects the selection. Not a speed lever for the graph.
 
+8. **Split one giant site across workers — intra-site parallelism (code, high effort, usually
+   dominated).** The outer loop is one-site-one-worker (`parfor (iSite = 1:nSites, nWorkers)`,
+   irc.m:2599), so a single giant never gets more than one core no matter how wide the pool — lever 1's
+   blind spot. The giant's *kNN* half IS internally parallel: `knn_cpu_`'s query-block loop
+   (`for i1 = 1:nStep_knn:n1`, 26532) and `nearest_in_set_`'s assignment loop (2819) are embarrassingly
+   parallel over query blocks, so they could be spread across workers. **Blocker:** MATLAB runs an
+   inner `parfor` *serially* when already inside a `parfor`, so you cannot simply nest it — you must
+   restructure: detect giants, pull them out of the outer `parfor`, and process them one at a time with
+   the whole pool devoted to an inner block-`parfor` (or `spmd`/`parfeval`) over the kNN. This
+   parallelizes only the **kNN** half, not isosplit (iterative, not trivially parallel), so it does
+   nothing for a clustering-dominated giant. It is the CPU cousin of lever 3 and overlaps lever 4: with
+   a GPU, lever 3 gives thousands of lanes for far less restructuring; on CPU, lever 4 (kd-tree) buys
+   the `O(n1²)→O(n1 log n1)` asymptotic win with a one-line `knnsearch` swap. So lever 8's only unique
+   niche is a single kNN-dominated giant, **no** GPU, features too high-dimensional for a kd-tree to
+   help, and many idle cores — rare. Highest engineering cost of the eight, so it ranks last.
+
+### Comparison at a glance
+
+Ordered by recommended priority: shrink the giant's spike count first, schedule the bulk, then attack
+its kNN/clustering halves. "Attacks" = which factor of the giant's `clustering(n1) + O(n1²·nFet)` kNN
+cost the lever reduces. The **cap** is included as the baseline it is (the intended one-line fix); the
+rest are what remains when the cap is off.
+
+| Lever | Attacks | Effort | Win on one giant | Key limit / risk |
+|---|---|---|---|---|
+| **Cap** (`maxSpk_persite_clust`) | n1 for kNN **and** clustering | 1 line (config) | ~80 min → ~90 s | quality floor `m ≳ min_count/p_min`; the intended fix |
+| **2.** Upstream noise suppression | spike **count** n1 (removes the work) | config / `.prb` | giant disappears (n1 → ~median) | over-blank drops real units; per-recording tuning |
+| **1.** Right-size worker pool | scheduling (bulk only) | config + profile | non-giant bulk ~min(cores, RAM/site)× | **cannot bound one giant**; RAM per worker |
+| **3.** GPU per-site kNN (`cuda_knn_`) | kNN half | plumbing (path exists) | `O(n1²)` → GPU-seconds | nFet ≤ nC_max (36) else CPU; single-GPU contention under parfor |
+| **4.** kd-tree / approx kNN | kNN half | small code | `O(n1²)` → ~`O(n1 log n1)` | degrades as nFet grows; approx nudges rho/miKnn |
+| **5.** Cheaper `vcCluster` (kmeans) | clustering half | config | steep → linear in n1 | accuracy; leans on `post_merge_` |
+| **6.** Fewer features (`nPcPerChan`) | both halves (∝ nFet) | config | linear in nFet | feature-resolution loss |
+| **8.** Intra-site multi-worker | kNN half | **large code** | kNN ~×#workers on one site | nested-parfor blocker → restructure; no help to isosplit; dominated by 3/4 |
+| — Lower `knn` | — | — | **none** | `pdist2` computes all distances regardless |
+
+**Decision shortcut:** read the printed `t_clu` vs `t_knn` split (below) → if **kNN**-bound, use lever 3
+(GPU present) or lever 4 (no GPU); if **clustering**-bound, use lever 5. In all cases prefer lever 2 if
+the giants are artifact (they usually are), and keep lever 1 sized for the bulk. Reach for lever 8 only
+in its narrow niche above.
+
 **Diagnostic first:** `cluster_labels_persite_` already prints the summed `t_clu` vs `t_knn` split and
 the top-5 slowest sites (irc.m:2641-2650). Read that once — it says whether to attack the kNN
 (levers 3-4) or the clustering (lever 5), and which sites are the giants (lever 2).
@@ -166,6 +220,10 @@ the top-5 slowest sites (irc.m:2641-2650). Read that once — it says whether to
   `max(min_count, 2·nFet)`. **50 000** is the safe default; **~10–20 k** is acceptable for bounding
   noise giants if you accept losing sub-~0.2 % units on the largest sites.
 - With the cap **off**, the cheapest real wins are **upstream noise suppression** (so giants never
-  form) and **right-sizing the pool**; the biggest structural win is **GPU-ing the per-site kNN**
-  (kernel exists, needs index output). Parallelism alone cannot bound a single giant site — that is
-  exactly the gap the cap fills.
+  form) and **right-sizing the pool** for the non-giant bulk; the biggest structural win is
+  **GPU-ing the per-site kNN** — and an index-returning GPU kNN (`cuda_knn_` / `cuda_knn_index.ptx`)
+  **already exists** and is exercised elsewhere, so wiring `persite_knn_` to it is mostly plumbing, not
+  kernel work. The outer loop is one-site-one-worker, so pool width alone cannot bound a single giant
+  (splitting one site across workers is possible but high-effort and dominated by the GPU/kd-tree
+  levers) — bounding that giant is exactly the gap the cap fills. See §4's comparison table for the
+  head-to-head.
