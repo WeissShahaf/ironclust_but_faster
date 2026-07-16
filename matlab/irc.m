@@ -7329,7 +7329,7 @@ switch lower(P.vcFet_show)
         vcXLabel = sprintf('Site # (%%0.0f %s; upper: %s1; lower: %s2)', P.vcFet_show, P.vcFet_show, P.vcFet_show);
         vcYLabel = sprintf('Site # (%%0.0f %s)', P.vcFet_show);    
 end
-vcTitle = '[H]elp; [S]plit; [B]ackground; (Sft)[Up/Down]:Scale; [Left/Right]:Sites; [M]erge; [F]eature';
+vcTitle = '[Q]render(toggle); [H]elp; [S]plit; [B]ackground; (Sft)[Up/Down]:Scale; [Left/Right]:Sites; [M]erge; [F]eature';
 
 %----------------
 % display
@@ -7343,6 +7343,7 @@ if isempty(S_fig)
     set([S_fig.hPlot0, S_fig.hPlot1, S_fig.hPlot2], cell_plot{:}); %common style
     S_fig.viSites_show = []; %so that it can update
     S_fig.vcFet_show = 'vpp';
+    S_fig.fRender = 0; % [Q] projection rendering toggle; default OFF (do not render)
     % plot boundary
     plotTable_([0, nSites], '-', 'Color', [.5 .5 .5]); %plot in one scoop
     plotDiag_([0, nSites], '-', 'Color', [0 0 0], 'LineWidth', 1.5); %plot in one scoop
@@ -7350,6 +7351,21 @@ if isempty(S_fig)
     set(hFig, 'KeyPressFcn', @keyPressFcn_FigProj_);
     S_fig.cvhHide_mouse = mouse_hide_(hFig, S_fig.hPlot0, S_fig);
     set_fig_(hFig, S_fig);
+end
+
+% [Q] projection rendering toggle (default OFF). The figure/axes/keypress are set up above,
+% so [Q] still works to turn it on; skip the expensive feature projection (fet2proj_) +
+% scatter (plot_proj_) when rendering is off. Clear any stale scatter and hint in the title.
+if ~get_set_(S_fig, 'fRender', 0)
+    try
+        update_plot_(S_fig.hPlot0, nan, nan);
+        update_plot_(S_fig.hPlot1, nan, nan);
+        update_plot_(S_fig.hPlot2, nan, nan);
+    catch
+    end
+    title_(S_fig.hAx, 'Projection rendering OFF - press [Q] to render');
+    set(hFig, 'UserData', S_fig);
+    return;
 end
 % get features for x0,y0,S_plot0 in one go
 %[mrMin, mrMax, vi0, vi1, vi2] = fet2proj_(S0, P.viSites_show);
@@ -7383,6 +7399,7 @@ vcFet_show = P.vcFet_show;
 S_fig = struct_merge_(S_fig, ...
     makeStruct_(vcTitle, iClu1, iClu2, viSites_show, vcXLabel, vcYLabel, vcFet_show));
 S_fig.csHelp = { ...
+    '[Q] toggle projection rendering on/off (default OFF)', ...
     '[D]raw polygon', ...
     '[S]plit cluster', ...
     '(shift)+Up/Down: change scale', ...
@@ -8873,6 +8890,22 @@ switch lower(event.Key)
         
     case 'b' %background spikes
         toggleVisible_(S_fig.hPlot0);
+
+    case 'q' % [Q] toggle projection rendering on/off (default OFF); avoids expensive redraws
+        S_fig.fRender = ~get_set_(S_fig, 'fRender', 0);
+        set(hFig, 'UserData', S_fig);
+        if S_fig.fRender
+            plot_FigProj_(S0); % render now (and on later selections until toggled off)
+        else
+            update_plot2_proj_();
+            try
+                update_plot_(S_fig.hPlot0, nan, nan);
+                update_plot_(S_fig.hPlot1, nan, nan);
+                update_plot_(S_fig.hPlot2, nan, nan);
+            catch
+            end
+            title_(S_fig.hAx, 'Projection rendering OFF - press [Q] to render');
+        end
 
     case 'h' %help
         msgbox_(S_fig.csHelp, 1);
