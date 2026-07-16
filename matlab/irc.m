@@ -9105,9 +9105,16 @@ hFig_wait = figure_wait_(1);
 
 iClu_del = S0.iCluCopy;
 % hMsg = msgbox_open_('Deleting...');
-S0.S_clu = delete_clu_(S0.S_clu, S0.iCluCopy);
+[S0.S_clu, fOk] = delete_clu_(S0.S_clu, S0.iCluCopy);
+if ~fOk
+    % delete_clu_ rolled back (see its message); do NOT redraw as deleted or write a log
+    % entry. Close the wait cursor and return with no change.
+    fprintf(2, 'ui_delete_: delete of Clu %d aborted; no change.\n', iClu_del);
+    figure_wait_(0, hFig_wait);
+    return;
+end
 set(0, 'UserData', S0);
-plot_FigWav_(S0); %redraw plot 
+plot_FigWav_(S0); %redraw plot
 % S0.S_clu.mrWavCor = wavCor_delete_(S0.iCluCopy); 
 FigWavCor_update_(S0);
 S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
@@ -9137,8 +9144,15 @@ end %func
 
 %--------------------------------------------------------------------------
 % 10/27/17 JJJ: Delete multiple clusters
-function S_clu = delete_clu_(S_clu, viClu_delete)
+function [S_clu, fOk] = delete_clu_(S_clu, viClu_delete)
 % sets the cluster to zero
+% fOk (optional 2nd output): false if the delete was ABORTED (rolled back, S_clu returned
+% unchanged), true if it applied. Callers that shift pending-queue indices or append a log
+% entry MUST gate that bookkeeping on ~fOk, or the log/queue desync from reality on an abort
+% (see execute_pending_and_update_ / ui_delete_ / delete_auto_). Backward-compatible: existing
+% single-output callers request only S_clu and are unaffected. fOk starts false so both
+% rollback returns below leave it false without touching them.
+fOk = false;
 nClu_prev = S_clu.nClu;
 viClu_keep = setdiff(1:nClu_prev, viClu_delete);
 
@@ -9205,6 +9219,7 @@ S_clu.nClu = nClu_new;
 if ~S_clu_valid_(S_clu)
     fprintf(2, 'delete_clu_: cluster arrays still inconsistent after deleting (continuing)\n');
 end
+fOk = true; % reached only when neither rollback return fired above
 end %func
 
 
@@ -9313,7 +9328,16 @@ end
 hFig_wait = figure_wait_(1);
 iCluLog2 = S0.iCluPaste; % save for log before clearing
 iClu_deleted = max(S0.iCluCopy, S0.iCluPaste); % higher index gets deleted
-S0.S_clu = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
+[S0.S_clu, fOk] = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
+if ~fOk
+    % merge_clu_ rolled back (see its message); do NOT touch the overlays, pending queue,
+    % or log. Return before the bookkeeping below and close the wait cursor. iCluPaste is
+    % left valid so the user can retry or pick a different target.
+    fprintf(2, 'ui_merge_: merge aborted (see above); no change made.\n');
+    figure_wait_(0, hFig_wait);
+    set(0, 'UserData', S0);
+    return;
+end
 S0.iCluCopy = min(S0.iCluCopy, iCluLog2);
 S0.iCluPaste = [];
 % Hide paste overlay and update copy overlay BEFORE redraw to avoid mismatch
@@ -9341,7 +9365,13 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S_clu = merge_clu_(S_clu, iClu1, iClu2, P)
+function [S_clu, fOk] = merge_clu_(S_clu, iClu1, iClu2, P)
+% fOk (optional 2nd output): false if the merge was ABORTED and rolled back (S_clu
+% unchanged), true if it applied. Callers doing overlay/index/log bookkeeping MUST gate on
+% ~fOk (see ui_merge_). Backward-compatible: single-output callers are unaffected. fOk starts
+% false so the rollback return leaves it false. (Note: the assert_ below still THROWS on an
+% invalid result -- that is a separate, pre-existing failure mode, not signalled via fOk.)
+fOk = false;
 if iClu1>iClu2, [iClu1, iClu2] = swap_(iClu1, iClu2); end
 
 % ATOMICITY: a merge is two steps -- merge_clu_pair_ moves iClu2's spikes into iClu1, then
@@ -9372,6 +9402,7 @@ end
 % S_clu = S_clu_remove_empty_(S_clu);
 assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after merging');
 fprintf('%s [W] merging Clu %d and %d\n', datestr(now, 'HH:MM:SS'), iClu1, iClu2);
+fOk = true; % reached only when the rollback return above did not fire
 end %func
 
 
@@ -9601,10 +9632,19 @@ csLog = {}; % collect log entries
 viDelete = sort(S0.viDelete_pending, 'descend');
 for iDel = 1:numel(viDelete)
     iClu = viDelete(iDel);
-    fprintf('  Deleting Clu %d\n', iClu);
-    csLog{end+1} = sprintf('delete %d', iClu);
 
-    S0.S_clu = delete_clu_(S0.S_clu, iClu);
+    % delete_clu_ rolls back (returns fOk=false, S_clu unchanged) rather than commit a
+    % viClu/cviSpk_clu desync. On an abort, skip BOTH the log entry and the index shift:
+    % logging a delete that did not happen and shifting the pending queue as if a cluster
+    % were removed would desync the log/queue from the actual cluster set. (Previously the
+    % csLog append sat BEFORE the delete -- the phantom-log source.)
+    [S0.S_clu, fOk] = delete_clu_(S0.S_clu, iClu);
+    if ~fOk
+        fprintf(2, '  execute_pending_: delete of Clu %d aborted; skipping its log and index shift.\n', iClu);
+        continue;
+    end
+    fprintf('  Deleting Clu %d\n', iClu);
+    csLog{end+1} = sprintf('delete %d', iClu); % log only on success
 
     % Adjust cluster indices in pending merge groups
     S0.cviMerge_pending = adjust_pending_indices_(S0.cviMerge_pending, iClu);
@@ -9628,14 +9668,31 @@ for iGroup = 1:numel(S0.cviMerge_pending)
     vcGroupStr = vcGroupStr(1:end-1);
     fprintf('  Merging group [%s] -> Clu %d\n', vcGroupStr, iClu_target);
 
+    % ATOMIC GROUP: a group merge is one user action, but it is applied as a sequence of
+    % merge_clu_pair_ + delete_clu_ steps. merge_clu_pair_ mutates BEFORE delete_clu_, so a
+    % mid-group delete_clu_ abort would strand the group PARTIALLY merged. Snapshot the whole
+    % group up front and, on any sub-merge abort, restore it and log nothing for the group --
+    % all-or-nothing. Log entries are staged and committed only on full-group success (the
+    % previous per-step csLog append logged merges that could be rolled back).
+    S_clu_group_snap = S0.S_clu; % snapshot the whole group
+    csLog_group = {};            % stage this group's log entries
+    fGroupOk = true;
+
     % Merge all clusters in group into target (from highest to lowest)
     for j = numel(viClu_group):-1:2
         iClu_source = viClu_group(j);
-        csLog{end+1} = sprintf('merge %d %d', iClu_target, iClu_source);
 
         % Do the merge
         S0.S_clu = merge_clu_pair_(S0.S_clu, iClu_target, iClu_source);
-        S0.S_clu = delete_clu_(S0.S_clu, iClu_source);
+        [S0.S_clu, fOk] = delete_clu_(S0.S_clu, iClu_source);
+        if ~fOk
+            S0.S_clu = S_clu_group_snap; % undo the entire group
+            fprintf(2, '  execute_pending_: merge group -> Clu %d aborted at source %d; rolled back, not logged.\n', ...
+                iClu_target, iClu_source);
+            fGroupOk = false;
+            break;
+        end
+        csLog_group{end+1} = sprintf('merge %d %d', iClu_target, iClu_source); % stage, don't commit
 
         % Adjust remaining indices in this group and other groups
         for k = 1:numel(viClu_group)
@@ -9648,7 +9705,10 @@ for iGroup = 1:numel(S0.cviMerge_pending)
         end
     end
 
-    viClu_affected = [viClu_affected, iClu_target];
+    if fGroupOk
+        csLog = [csLog, csLog_group];              % commit the group's log only on full success
+        viClu_affected = [viClu_affected, iClu_target];
+    end
 end
 
 % Step 3: Batch recomputation for all affected clusters
@@ -10418,6 +10478,10 @@ S_clu.viClu(vlRemap) = viOld2New(S_clu.viClu(vlRemap));
 S_clu = S_clu_select_(S_clu, viMap_clu);
 S_clu.mrWavCor = set_diag_(S_clu.mrWavCor, S_clu_self_corr_(S_clu, [], S0));
 set0_(S_clu);
+% The [O] path writes straight to disk via save0_() below, bypassing S_clu_commit_ where
+% S_clu_assert_synced_ normally runs. Run the detector here too: this is the exact path the
+% original CID-01 desync lived on. Warn-only, never gates.
+S_clu_assert_synced_(S_clu, 'reorder_clu_by_coords_');
 S0 = gui_update_();
 save0_();
 
@@ -10653,21 +10717,25 @@ if ~islogical(vlIn)
     vlIn = false(nSpk1, 1);
     vlIn(viIn_) = true;
 else
-    % Ensure vlIn matches the actual spike count
+    % Ensure vlIn matches the actual spike count. A mismatch means the caller built this mask
+    % against a DIFFERENT (or differently-ordered) spike list than split_clu_ re-derives via
+    % get_clu_spk_confirmed_. Silently truncating/zero-padding (the previous behavior) would
+    % misapply the mask to the wrong spikes -- splitting a different population than the user
+    % drew. Refuse loudly instead. Callers that hold absolute spike ids should use
+    % split_clu_by_id_, which makes numel(vlIn)==numel(viSpk1) true by construction. (X3.)
     nVlIn = numel(vlIn);
     if nVlIn ~= nSpk1
-        fprintf(2, 'split_clu_: vlIn length (%d) != nSpk1 (%d), adjusting...\n', nVlIn, nSpk1);
-        if nVlIn > nSpk1
-            vlIn = vlIn(1:nSpk1);
-        else
-            vlIn_new = false(nSpk1, 1);
-            vlIn_new(1:nVlIn) = vlIn;
-            vlIn = vlIn_new;
-        end
+        fprintf(2, ['split_clu_: vlIn length (%d) != nSpk1 (%d). The selection mask does not ' ...
+            'match this cluster''s spike list; refusing to split rather than cut the wrong ' ...
+            'spikes. Use split_clu_by_id_ for absolute-id selections.\n'], nVlIn, nSpk1);
+        msgbox_(sprintf('Split aborted: selection mask (%d) does not match cluster spikes (%d).', nVlIn, nSpk1), 1);
+        close_(hMsg);
+        figure_wait_(0, hFig_wait);
+        return;
     end
 end
 
-% Final safety check
+% Final safety check (defensive; the branches above now guarantee numel(vlIn)==nSpk1 or return)
 if numel(vlIn) ~= nSpk1
     msgbox_(sprintf('Split error: size mismatch (vlIn=%d, spikes=%d)', numel(vlIn), nSpk1), 1);
     close_(hMsg);
@@ -13172,6 +13240,18 @@ catch
     disperr_();
 end
 if isfield(S0, 'S0'), S0 = rmfield(S0, 'S0'); end % Remove recursive saving
+% Load-time desync detection (CID-12): load0_ historically validated nothing, so a
+% viClu/cviSpk_clu desync present on disk reopened silently and was only surfaced when the
+% user next committed an operation. Run the cheap, warn-only sync check here so a corrupted
+% file announces itself at open time. Never gates; gated internally by fCheck_clu_sync
+% (default 1) and wrapped so it can never break a load.
+if isstruct(S0) && isfield(S0, 'S_clu') && ~isempty(S0.S_clu)
+    if S_clu_assert_synced_(S0.S_clu, ['load: ' vcFile_mat]) > 0
+        fprintf(2, ['\tThis file was saved with a viClu/cviSpk_clu desync. Curating it may ' ...
+            'compound the damage; re-sorting is the clean recovery. ' ...
+            'See logs/ISSUE_TRACKER_cluster_identity.md (CID-12).\n']);
+    end
+end
 end %func
 
 
@@ -19485,11 +19565,17 @@ if numel(viClu_delete) >= S_clu.nClu, msgbox_('Cannot delete all clusters.'); re
 
 % Auto delete
 hFig_wait = figure_wait_(1);
-S_clu = delete_clu_(S_clu, viClu_delete);
+% delete_auto_ deletes the whole viClu_delete vector in ONE atomic delete_clu_ call, so an
+% abort means nothing was removed. Gate the "Deleted N clusters" message and the log on fOk
+% -- otherwise the msgbox would claim a deletion that was rolled back.
+[S_clu, fOk] = delete_clu_(S_clu, viClu_delete);
 set0_(S_clu);
 S0 = gui_update_();
 figure_wait_(0, hFig_wait);
-
+if ~fOk
+    msgbox_('Auto-delete aborted (cluster cache inconsistent); no clusters removed. See console.', 1);
+    return;
+end
 msgbox_(sprintf('Deleted %d clusters <%0.1f SNR or <%d spikes/unit.', numel(viClu_delete), snr_min_thresh, count_thresh));
 save_log_(sprintf('delete-auto <%0.1f SNR or <%d spikes/unit', snr_min_thresh, count_thresh), S0);
 end %func
@@ -19586,18 +19672,30 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S = struct_select_safe_(S, csNames, viKeep, iDimm)
+function S = struct_select_safe_(S, csNames, viKeep, iDimm, csCritical)
 % Per-field resilient wrapper around struct_select_. Resizes each field on its
 % own; a field that cannot be resized is skipped (with a warning) instead of
 % aborting the whole selection. This prevents a single malformed per-cluster
 % field from leaving the other fields (e.g. viSite_clu, mrWavCor) un-remapped,
 % which would desync them from nClu and crash later cluster operations.
+%
+% csCritical (optional): field names for which a resize failure must NOT be
+% swallowed. For an identity-bearing field like cviSpk_clu, silently skipping the
+% resize is exactly what turns a loud crash into a silent viClu/cviSpk_clu desync:
+% struct_select_ throws, this wrapper swallows it, and S_clu_select_'s length-
+% reconcile then pads the field to the right length with stale/empty content
+% (CID-11). Re-throw instead, so the caller either handles it (delete_clu_ rolls
+% back) or fails loudly rather than committing a half-applied remap.
 if nargin<4, iDimm = 1; end
+if nargin<5, csCritical = {}; end
 if ischar(csNames), csNames = {csNames}; end
 for i = 1:numel(csNames)
     try
         S = struct_select_(S, csNames(i), viKeep, iDimm);
     catch ME
+        if any(strcmp(csNames{i}, csCritical))
+            rethrow(ME); % identity-bearing field: fail loudly rather than silently desync
+        end
         fprintf(2, 'struct_select_safe_: skipped field "%s": %s\n', csNames{i}, ME.message);
     end
 end
@@ -19633,7 +19731,11 @@ viMatch_t = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^t\w*_clu$'), cs
 S_clu = struct_select_safe_(S_clu, csNames(viMatch_t), viKeep_clu, 3);
 
 viMatch_c = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^c\w*_clu$'), csNames, 'UniformOutput', false));
-S_clu = struct_select_safe_(S_clu, csNames(viMatch_c), viKeep_clu, 1);
+% cviSpk_clu is IDENTITY-bearing: mark it critical so a resize failure re-throws instead of
+% being skipped-and-padded into a silent desync (CID-11). delete_clu_'s try/catch turns this
+% re-throw into a clean rollback; the other callers run on consistent state where it never
+% fires (see logs/plan_cluster_identity_hardening_20260716.md P3b).
+S_clu = struct_select_safe_(S_clu, csNames(viMatch_c), viKeep_clu, 1, {'cviSpk_clu'});
 
 % Handle matrix fields (m*_clu)
 % mrWavCor: special remapping for [nClu x nClu] correlation matrix

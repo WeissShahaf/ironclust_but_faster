@@ -6,13 +6,23 @@
 
 ---
 
-## ⏭ STATUS — implementation DEFERRED to a new session
+## ✅ STATUS — P1, P2, P3a, P3b, X3 all DONE & verified
 
-**Nothing in this plan (P1, P2, P3a, P3b, X1–X4) is implemented yet.** The plan, the tracker, and
-the already-verified fixes it builds on are committed (`d954926`, local only — **not pushed**).
-Implementation was deliberately deferred; pick it up in a fresh session.
+**Completed (2026-07-16 implementation session):**
+- ✅ **P1** (load-time detection in `load0_`) — `verify_p1_p3a.m` 4/4.
+- ✅ **P3a** (sync check on the `[O]` path in `reorder_clu_by_coords_`) — `verify_p1_p3a.m` 4/4.
+- ✅ **P2-core + P2a–d** (explicit `fOk`, all four call-site groups) — `verify_p2.m` 4/4.
+- ✅ **P3b** (`cviSpk_clu` critical field) — `verify_p3b.m` 3/3.
+- ✅ **X3** (hard-fail `split_clu_` truncate/pad) — trace + `checkcode` (GUI-blocking, not headless).
+- ⏳ **X1, X2, X4** — deferred (independent; X4 is a `.prb` data fix, CID-14).
 
-**Resume here:**
+**Decisions (§9, user 2026-07-16):** explicit `fOk`; all four groups; implement P3b; hard-fail X3.
+
+Docs updated: `logs/changes_log20260716.md` (full record), `logs/ISSUE_TRACKER_cluster_identity.md`
+(CID‑06 coverage, CID‑07…10 marked committed in `d954926`, CID‑11 → fixed via P3b, timeline,
+assets). Verification fixtures in scratchpad: `verify_p1_p3a.m`, `verify_p2.m`, `verify_p3b.m`.
+
+**Historical resume notes (for reference; work is done):**
 1. Read §7 (ordering) and §9 (open decisions) first — §9 has **two decisions that must be
    confirmed with the user before any code is written**: (a) P2 mechanism — explicit `fOk` output
    vs `nClu`-delta; (b) P3b — accept the crash-vs-silent-corruption trade. Do **not** assume
@@ -385,6 +395,10 @@ this investigation established. No functions deleted; every code change is addit
 ---
 
 ## 9. Open decisions for the user
+
+> **RESOLVED 2026-07-16 (user):** (1) **explicit `fOk` output**; (2) **all four call-site groups
+> P2a–d**; (3) **implement P3b** (accept crash-vs-silent-corruption trade); (4) **hard-fail X3 now**.
+
 
 1. **P2 mechanism:** the plan uses an explicit `fOk` output from `delete_clu_`/`merge_clu_`
    (re-touches the two just-fixed functions, additively). OK, or prefer the `nClu`-delta form that

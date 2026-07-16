@@ -77,6 +77,13 @@ Merges and deletes are **queued, then applied together** — they are not applie
 - `[M]` queues a merge (`ui_merge_pending_`); `[D]`/Backspace/Delete queues a delete (`ui_delete_pending_`)
 - `[U]` applies all pending operations and refreshes the figures (`execute_pending_and_update_`)
 - `[Escape]` discards pending operations (`cancel_pending_operations_`)
+- **Abort propagation (P2, 2026-07-16):** `delete_clu_`/`merge_clu_` return a 2nd output `fOk`
+  (`false` when they roll back rather than commit a desync). All callers
+  (`execute_pending_and_update_`, `ui_merge_`, `ui_delete_`, `delete_auto_`) gate their
+  log/queue/overlay bookkeeping on `~fOk`, so an abort writes **no** phantom log entry, shifts
+  **no** queue index, and pops no "Deleted N clusters" lie. A group `[U]` merge is atomic — a
+  mid-group abort rolls back the **whole** group. On healthy input `fOk` is always `true`, so the
+  guards are dead and behavior is byte-identical.
 
 ### Cluster state: `viClu` is authoritative, `cviSpk_clu` is a cache
 - `S_clu.viClu` — per-**spike** cluster labels. **The source of truth.** Every cache rebuild
@@ -90,18 +97,28 @@ Merges and deletes are **queued, then applied together** — they are not applie
   (this was the `reorder_clu_by_coords_` bug; see `logs/changes_log20260715.md`).
 - `S_clu_valid_` checks array **lengths** only, never content — it will not catch a desync.
 - **The invariant to preserve:** `all(S_clu.viClu(S_clu.cviSpk_clu{i}) == i)` for every `i`.
-  `S_clu_assert_synced_` (called from `S_clu_commit_`, gated by `fCheck_clu_sync`, default 1)
-  checks it and **warns without gating** — gating would make `S_clu_commit_` revert, which is
-  the very silent-data-loss mode it exists to expose.
+  `S_clu_assert_synced_` (gated by `fCheck_clu_sync`, default 1) checks it and **warns without
+  gating** — gating would make `S_clu_commit_` revert, which is the very silent-data-loss mode it
+  exists to expose. It runs from `S_clu_commit_` **and** (added 2026-07-16, plan P1/P3a) from
+  `load0_` (a disk desync is announced at open time, not just on the next commit) and from
+  `reorder_clu_by_coords_` (the `[O]` path, which `save0_()`s directly and bypasses the commit
+  choke point — the exact path the original desync lived on).
 
 ### ⚠ Never trust a LENGTH check on `S_clu` — the lengths are actively falsified
 
-`S_clu_select_` ends with a **length-reconcile block** (irc.m:19669-19692) that force-fits
-every wrong-length `v*_clu` / `c*_clu` field to `nClu_new` — **padding `cviSpk_clu` with
-`{[]}`**. Combined with `struct_select_safe_` (19512), which skips a field it cannot resize
-and **returns normally without raising**, the result is: content stale, length correct, no
-exception. This is why `S_clu_valid_` is vacuous here, and it silently defeated a
-length-based guard in `delete_clu_` (caught only by a negative control).
+`S_clu_select_` ends with a **length-reconcile block** that force-fits every wrong-length
+`v*_clu` / `c*_clu` field to `nClu_new`. Historically, combined with `struct_select_safe_` —
+which skipped a field it could not resize and **returned normally without raising** — the result
+was: content stale, length correct, no exception. This is why `S_clu_valid_` is vacuous here, and
+it silently defeated a length-based guard in `delete_clu_` (caught only by a negative control).
+
+> **P3b (2026-07-16) closed this for the identity-bearing field.** `struct_select_safe_` now takes
+> a `csCritical` list; `S_clu_select_` marks **`cviSpk_clu` critical**, so a resize failure on it
+> **re-throws** instead of being skipped-and-padded. `delete_clu_`'s try/catch turns that into a
+> clean rollback; the four non-guarded callers (`S_clu_remove_empty_`, `S_clu_keep_`,
+> `clu_reorder_`, `reorder_clu_by_coords_`) would **crash** rather than silently desync — a
+> deliberate crash-vs-silent-corruption trade. **The reconcile block still falsifies the OTHER
+> fields' lengths**, so the rule below stands for everything except `cviSpk_clu`.
 
 **Any guard in this area must compare CONTENT** — e.g. the new cache must equal
 `S_clu_prev.cviSpk_clu(viClu_keep)`. See `delete_clu_` for the correct pattern.

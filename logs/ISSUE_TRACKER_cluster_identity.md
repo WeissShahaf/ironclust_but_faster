@@ -25,11 +25,11 @@ updated one and not the other, silently, and saved the result. The invariant tha
 | **CID‑04** | `get_clu_spk_confirmed_` fallback returns the wrong (cache) side | medium | ✅ | `87cd4f1` |
 | **CID‑05** | FigProj shows 50 random dots but splits all N | medium | ✅ | `87cd4f1` |
 | **CID‑06** | no desync detection anywhere (`S_clu_valid_` checks lengths only) | high | ✅ | `87cd4f1` |
-| **CID‑07** | `delete_clu_` — same desync bug; remaps `viClu` even when cache remap fails | critical | 🟡 | *(uncommitted)* |
-| **CID‑08** | `merge_clu_` — a `delete_clu_` abort leaves a half‑applied, falsely‑logged merge | medium | 🟡 | *(uncommitted)* |
-| **CID‑09** | `post_merge_wav_` early return — unassigned output + `mrWavCor` stripped | high (latent) | 🟡 | *(uncommitted)* |
-| **CID‑10** | parpool undersize‑reuse — stale small pool silently reused | low | 🟡 | *(uncommitted)* |
-| **CID‑11** | `struct_select_safe_` skips silently **and** the length‑reconcile block falsifies lengths | high (enabler) | 🔵 | — |
+| **CID‑07** | `delete_clu_` — same desync bug; remaps `viClu` even when cache remap fails | critical | ✅ | `d954926` |
+| **CID‑08** | `merge_clu_` — a `delete_clu_` abort leaves a half‑applied, falsely‑logged merge | medium | ✅ | `d954926` |
+| **CID‑09** | `post_merge_wav_` early return — unassigned output + `mrWavCor` stripped | high (latent) | ✅ | `d954926` |
+| **CID‑10** | parpool undersize‑reuse — stale small pool silently reused | low | ✅ | `d954926` |
+| **CID‑11** | `struct_select_safe_` skips silently **and** the length‑reconcile block falsifies lengths | high (enabler) | 🟡 | *(uncommitted, P3b)* |
 | **CID‑12** | corrupted `_jrc.mat` on disk — **not recoverable**, re‑sort required | data‑loss | 🔵 | `83776fc` (tool) |
 | **CID‑13** | `maxSpk_persite_clust = 20000` → 69.5% of spikes 1‑NN‑propagated, not clustered | advisory | 🔵 | — |
 | **CID‑14** | `P.viShank_site` all `1`s on a 4‑shank Neuropixels 2.0 probe | medium | 🔵 | *(in `.prb`)* |
@@ -99,8 +99,14 @@ symptom (7/10, see CID‑04).
   (default 1). Reports `nForeign` and `nMiss` **separately**. **Warns, never gates** — because
   `S_clu_commit_` reverts on `~valid`, so gating would reproduce the silent data loss.
 - **Field use:** flagged 4/4 deliberately‑corrupted fixtures; **0/547 on the fresh re‑sort** (Test B).
+- **Detection coverage extended (hardening, 2026‑07‑16, plan P1/P3a):** the detector originally ran
+  **only** at the `S_clu_commit_` choke point, so a corrupted file opened silently and the `[O]`
+  path (which `save0_()`s directly, bypassing commit) was never checked. Now also runs in **`load0_`**
+  (announces a disk desync at open time → points to CID‑12 recovery) and in
+  **`reorder_clu_by_coords_`** (the `[O]` path — the exact path CID‑01 lived on). Both warn‑only,
+  additive. Verified: `scratchpad/verify_p1_p3a.m` 4/4. See `logs/changes_log20260716.md`.
 
-### CID‑07 🟡 `delete_clu_` — same desync bug, now atomic
+### CID‑07 ✅ `delete_clu_` — same desync bug, now atomic
 - **Root cause:** remapped `viClu` **unconditionally** while its cache remap sat in a `try/catch`
   that only printed — and the catch **cannot fire**, because `S_clu_select_`→`struct_select_safe_`
   swallows a per‑field failure and returns normally (see CID‑11). `S_clu_valid_` (lengths) then
@@ -114,7 +120,7 @@ symptom (7/10, see CID‑04).
 - **Verified:** `scratchpad/verify_delete_clu.m` 7/7 — negative control reproduces the desync
   (2 clusters), fix leaves 0, rollback byte‑identical, happy path still deletes (5→4).
 
-### CID‑08 🟡 `merge_clu_` — half‑applied, falsely‑logged merge
+### CID‑08 ✅ `merge_clu_` — half‑applied, falsely‑logged merge
 - **Root cause:** `delete_clu_` is the back half of every merge. Its new abort would leave the
   merge half‑applied (spikes moved, source survives empty) while `ui_merge_clu_` calls
   `save_log_('merge i j')` **unconditionally** — logging a merge that didn't finish.
@@ -128,7 +134,7 @@ symptom (7/10, see CID‑04).
   547→546, **0 stale**; malformed cache fails loudly, caller byte‑identical. (155,204+367,046 →
   **511,712**, not 522,250: `S_clu_refrac_` correctly drops 10,538 ISI violators.)
 
-### CID‑09 🟡 `post_merge_wav_` early return — crash + cache destruction
+### CID‑09 ✅ `post_merge_wav_` early return — crash + cache destruction
 - **Root cause:** 4286 strips `mrWavCor`/`trWav_raw_clu`/`tmrWav_raw_clu`; 4287 returns early when
   `fSave_spkwav=0` — **before** the rebuild that restores them. Signature is `[S_clu, nClu_merge]`
   and `auto_merge_` requests **both** outputs with `fMerge=1`, so `nClu_merge` unassigned → *"Output
@@ -136,24 +142,31 @@ symptom (7/10, see CID‑04).
 - **Fix:** `nClu_merge = 0` on entry; move the early return **before** the `rmfield_` (true no‑op).
 - **Verified:** `scratchpad/verify_post_merge_wav.m` 6/6.
 
-### CID‑10 🟡 parpool undersize‑reuse
+### CID‑10 ✅ parpool undersize‑reuse
 - **Root cause:** `elseif hPool.NumWorkers > nWorkers` only **shrank** an oversized pool; a
   pre‑existing undersized pool was reused as‑is (observed: 3 workers when the profile allows 8 and
   `.prm` asks for 12).
 - **Fix:** `~= nWorkers` — resizes either direction and logs it. No‑op for a correctly‑sized pool.
 
-### CID‑11 🔵 `struct_select_safe_` silent skip + length‑reconcile falsifies lengths *(the enabler)*
+### CID‑11 🟡 `struct_select_safe_` silent skip + length‑reconcile falsifies lengths *(the enabler)*
 - **Two compounding mechanisms:**
-  1. `struct_select_safe_` (irc.m:19512) resizes each field independently and **skips a field it
+  1. `struct_select_safe_` resizes each field independently and **skips a field it
      can't resize with a console warning, returning normally** — no exception propagates.
-  2. `S_clu_select_`'s length‑reconcile block (irc.m:19669‑19692) then force‑fits any wrong‑length
+  2. `S_clu_select_`'s length‑reconcile block then force‑fits any wrong‑length
      `v*_clu`/`c*_clu` field to `nClu_new`, **padding `cviSpk_clu` with `{[]}`**.
 - **Consequence:** after a skip, the length is right and the **content is wrong**. This is why
   `S_clu_valid_` is vacuous and why a length‑based guard in `delete_clu_` **silently failed** —
   caught only by the negative control (see *Retractions*).
-- **Status:** deferred. Both sit on the sort path; the CID‑07 content guard blocks the damaging
-  case locally. Proposed: a critical‑field list that must never be skipped, and excluding
-  `cviSpk_clu` from the reconcile (or promoting its warning to a hard failure).
+- **Fix (hardening P3b, 2026‑07‑16):** `struct_select_safe_` gains an optional `csCritical` list;
+  a critical field that throws **re‑throws** instead of being skipped. `S_clu_select_`'s c‑group
+  call marks `cviSpk_clu` critical. `delete_clu_`'s try/catch turns the re‑throw into a clean
+  rollback; the four non‑guarded callers (`S_clu_remove_empty_`, `S_clu_keep_`, `clu_reorder_`,
+  `reorder_clu_by_coords_`) would now **crash** rather than silently corrupt — a deliberate
+  crash‑vs‑silent‑corruption trade (user‑approved), and the sweep shows they run on consistent
+  state where it never fires. Reconcile‑block mechanism (2) left intact; mechanism (1) is now
+  closed for the identity‑bearing field.
+- **Verified:** `scratchpad/verify_p3b.m` 3/3 — healthy unaffected, malformed re‑throws (pre‑P3b
+  returned padded), `delete_clu_` still rolls back byte‑identical. See `logs/changes_log20260716.md`.
 
 ### CID‑12 🔵 corrupted `_jrc.mat` on disk — NOT recoverable
 - **Measured** (old files): `_IRC_jrc.mat` 179/190 desynced; `_irc_all_jrc.mat` 504/544, 247 delete
@@ -196,6 +209,8 @@ symptom (7/10, see CID‑04).
 | 2026‑07‑14 | bug re‑reported (tiny‑unit balloon + depth jump); investigation opens |
 | 2026‑07‑15 | first diagnosis (positional mask) **refuted**; CID‑01 found & confirmed; `87cd4f1` ships CID‑01…06; measured the on‑disk corruption; recovery attempted and **refuted**; `83776fc` ships the investigation + `repair_clu_sync.m` |
 | 2026‑07‑16 | CID‑07…10 fixed & verified; clustering‑method audit (CID‑13 measured); this tracker created. Re‑sort of `_irc_all.prm` completed clean (Test B, 0/547) |
+| 2026‑07‑16 | hardening pass begins (plan `plan_cluster_identity_hardening_20260716.md`): **P1** load‑time detection + **P3a** `[O]`‑path detection landed (extend CID‑06), verified 4/4; P2/P3b pending user decisions |
+| 2026‑07‑16 | hardening pass completes: **P2** abort‑propagation (explicit `fOk`, all 4 call‑site groups; `verify_p2.m` 4/4), **P3b** `cviSpk_clu` critical field (closes CID‑11; `verify_p3b.m` 3/3), **X3** `split_clu_` truncate/pad hard‑fail. CID‑07…10 marked committed (`d954926`). All uncommitted at time of writing |
 
 ---
 
@@ -230,6 +245,9 @@ the harness with a negative control before trusting a pass.
 | `verify_post_merge_wav.m` | CID‑09 | 6/6 |
 | `check_cap_impact.m` | CID‑13 | 69.5% propagated |
 | `which_side_authoritative.m`, `prove_shift.m` | CID‑12 evidence | — |
+| `verify_p1_p3a.m` | P1 (load0_) + P3a ([O]) detection | 4/4 |
+| `verify_p2.m` | P2 (`delete_clu_`/`merge_clu_` `fOk` abort contract) | 4/4 |
+| `verify_p3b.m` | P3b (`cviSpk_clu` critical field re‑throw) | 3/3 |
 
 ---
 
