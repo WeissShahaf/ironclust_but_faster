@@ -89,6 +89,45 @@ Merges and deletes are **queued, then applied together** — they are not applie
   correct pattern. Omitting this silently corrupts cluster identity and `save0_()` persists it
   (this was the `reorder_clu_by_coords_` bug; see `logs/changes_log20260715.md`).
 - `S_clu_valid_` checks array **lengths** only, never content — it will not catch a desync.
+- **The invariant to preserve:** `all(S_clu.viClu(S_clu.cviSpk_clu{i}) == i)` for every `i`.
+  `S_clu_assert_synced_` (called from `S_clu_commit_`, gated by `fCheck_clu_sync`, default 1)
+  checks it and **warns without gating** — gating would make `S_clu_commit_` revert, which is
+  the very silent-data-loss mode it exists to expose.
+
+### ⚠ Never trust a LENGTH check on `S_clu` — the lengths are actively falsified
+
+`S_clu_select_` ends with a **length-reconcile block** (irc.m:19669-19692) that force-fits
+every wrong-length `v*_clu` / `c*_clu` field to `nClu_new` — **padding `cviSpk_clu` with
+`{[]}`**. Combined with `struct_select_safe_` (19512), which skips a field it cannot resize
+and **returns normally without raising**, the result is: content stale, length correct, no
+exception. This is why `S_clu_valid_` is vacuous here, and it silently defeated a
+length-based guard in `delete_clu_` (caught only by a negative control).
+
+**Any guard in this area must compare CONTENT** — e.g. the new cache must equal
+`S_clu_prev.cviSpk_clu(viClu_keep)`. See `delete_clu_` for the correct pattern.
+
+> **`delete_clu_` (irc.m:9140) — FIXED 2026-07-15, and it is the reference pattern.** It used
+> to remap `viClu` unconditionally while its cache remap sat in a `try/catch` that only
+> printed — and the catch **could not fire** (see above). It now snapshots `S_clu`, verifies
+> the cache was *actually permuted* (content, not length), and **rolls back** rather than
+> commit a half-applied remap. Note `delete_clu_` is also the back half of every merge
+> (`merge_clu_`, irc.m:9314), so an abort leaves the merge half-applied — the source survives
+> as an *empty* cluster; `merge_clu_` detects and reports this. Evidence the bug was real:
+> 7,172 deleted spikes were found inside live cache entries.
+>
+> **Still true regardless of the fix:** `delete_clu_` picks victims via
+> `ismember(viClu, viClu_delete)`. On an *already*-desynced file the user deletes what the GUI
+> shows (the **cache's** cluster) while the code marks negative whatever **`viClu`** says —
+> so each delete compounds the damage. The fix prevents *creating* a desync; it cannot make a
+> delete correct on a file that is already desynced. Heed `S_clu_assert_synced_`'s warning.
+
+> **Corrupted `_jrc.mat` files are NOT repairable.** Do not attempt a relabel-from-cache
+> recovery: cache and `viClu` are *different partitions*, not the same one relabelled (52/190
+> cache entries span >1 label). Do not trust a "which side is authoritative" check —
+> `vnSpk_clu`/`viSite_clu`/`vrPosY_clu` all **derive from the cache** (irc.m:7401, 7407,
+> `S_clu_subsample_spk_`:11652), so they agree with it by construction and such a check
+> **cannot fail**. See `logs/issue_viclu_desync_20260715.md` §7. Re-sort instead — the sort
+> pipeline is clean (every path ends in `S_clu_refresh_`); this is a GUI-curation artifact.
 
 > **Stale docs — do not trust:** `MERGE_OPTIMIZATIONS.md`, `OPTIMIZATION_SUMMARY.md`,
 > `PROFILER_ANALYSIS.md`, `PERFORMANCE_AUDIT.md`, `GUI_PERFORMANCE_OPTIMIZATIONS.md`, and

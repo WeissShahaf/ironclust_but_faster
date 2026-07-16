@@ -1,5 +1,8 @@
 # Investigation: manual-curation split produces wrong clusters
 
+> **Tracker:** this is the raw investigation log. For status of every issue it uncovered, see
+> [`logs/ISSUE_TRACKER_cluster_identity.md`](ISSUE_TRACKER_cluster_identity.md).
+
 ---
 
 # ★ THE ANSWER
@@ -219,56 +222,49 @@ That is a reasonable argument. It is not proof, and it collapses anyway for the 
 cache and `viClu` describe **different partitions** rather than the same one relabelled — see
 the retraction block above, and the `cache{3} → viClu labels [25 26]` evidence in §3.2.
 
-### The repair
+### ⛔ The repair — DOES NOT WORK. Retained for the record; do NOT run it.
 
-**Work on a copy.** Rebuild `viClu` from the cache, preserving deleted clusters:
+> **This procedure is REFUTED. Do not follow it on real data.** It was written before the
+> `repair_clu_sync.m` dry-run and the purity measurement, both of which killed it (see the
+> `⛔ RETRACTED` blocks at the top of §3 and the `★ PURITY` result). The relabel-from-cache
+> below assumes cache and `viClu` are the *same partition relabelled*; they are **different
+> partitions** (52/190 cache entries span >1 label; 557k spikes claimed by >1 cluster; 413k
+> orphaned; 7,172 deletions resurrected). Running it corrupts the file further. **Re-sort is the
+> only recovery.** The code is kept verbatim only so this record shows exactly what was tried.
+
+~~**Work on a copy.** Rebuild `viClu` from the cache, preserving deleted clusters:~~
 
 ```matlab
+% ⛔ DO NOT RUN — refuted; produces overlaps/orphans/resurrections. Kept for the record only.
 vcSrc = 'yourfile_jrc.mat';  vcDst = 'yourfile_REPAIRED_jrc.mat';
 S0 = load(vcSrc);  S = S0.S_clu;
 n = min(double(S.nClu), numel(S.cviSpk_clu));
 
-% 1. Clear only the POSITIVE labels. Negatives are deleted clusters (keep them);
-%    they hold no cache entry, so the rebuild below will not resurrect them.
+% 1. Clear only the POSITIVE labels. Negatives are deleted clusters (keep them).
 S.viClu(S.viClu > 0) = 0;
 
-% 2. Relabel from the cache -- the authoritative side, per the table above.
+% 2. Relabel from the cache.  <-- THE FLAW: the cache is not a partition, so this
+%    last-writer-wins loop overlaps and orphans spikes. It cannot reconcile the two sides.
 for i = 1:n
     v = S.cviSpk_clu{i};
     if ~isempty(v), S.viClu(v) = int32(i); end
 end
 
-% 3. Verify: MUST report 0 stale clusters.
+% 3. Verify — and note this check is near-vacuous here: it compares viClu against the very
+%    cache step 2 forced it to match. On the observed files it still reports >0 (overlaps).
 S0.S_clu = S;
 irc('call','S_clu_assert_synced_',{S0.S_clu,'after-repair'})
 
-% 4. Save only if step 3 reported 0.
+% 4. (never reached in practice — step 3 does not report 0 on the observed files)
 save(vcDst, '-struct', 'S0', '-v7.3');
 ```
 
-Do **not** run `S_clu_refresh_` as the repair: it rebuilds the cache *from* `viClu` — the wrong
-direction here — and would lock in the corruption irreversibly.
+Also do **not** run `S_clu_refresh_` as a repair: it rebuilds the cache *from* `viClu` — the
+opposite direction — and would lock in the corruption irreversibly.
 
-**Caveats, stated honestly:**
-- **Work on a copy.** This rewrites `S_clu`.
-- Any cluster **split or merged after** the corruption had its cache overwritten from the wrong
-  labels via `S_clu_update_`. Those specific clusters are **not** recoverable, and the repair
-  cannot identify them. Test C (log bisect) is the only way to bound how many.
-- `vrPosY_clu` agreement is 85.6% / 94.5%, not 100% — so a minority of clusters are already
-  mixed. Expect some casualties.
-- **Validate with `S_clu_assert_synced_` (step 3). If it does not report 0, do not save.**
-- **Stop curating on the unfixed code until Test A is run** — each further delete may widen the
-  damage.
-
-**Caveats, stated honestly:**
-- **Work on a copy.** Every repair below rewrites `S_clu`.
-- Deleted clusters (`viClu < 0`) carry no cache entry; the repair must not resurrect them.
-- Any cluster **split or merged after** the corruption had its cache overwritten from the wrong
-  labels — those specific clusters are **not** recoverable, and the repair cannot tell which.
-  Test C is the only way to bound this.
-- **Validate after repair:** `S_clu_assert_synced_` must report 0.
-- **Do not curate further on the current code until Test A is run** — every additional delete
-  may widen the desync.
+**Why it fails, in one line:** the cache is not a partition (it overlaps and has gaps), so no
+relabelling of `viClu` can equal it. The definitive test was `repair_clu_sync.m`, which refuses
+to write with five blocking reasons. See CID-12 in the tracker.
 
 ---
 
@@ -802,13 +798,19 @@ the least exercised.
 to `0`. Find what writes them and whether a refresh is being skipped. This may be a second,
 separate defect, and 36.96% unassigned spikes in the larger file is worth explaining too.
 
-### 8.4 Repair vs re-sort (supersedes the earlier "just re-sort" advice)
-The existing files are **confirmed corrupted** (§3.2) — that is now an observation, not a
-guess. But because the cache is *internally coherent* (each entry is exactly one cluster's
-spikes, only misfiled), a **repair may be possible without re-sorting**: recover the
-permutation σ by matching `cache{i}` against `find(viClu==j)`, then either remap `viClu` or
-reorder the cache. Clusters already split/merged post-corruption are the exception. Worth
-costing before discarding two months of curation.
+### 8.4 ⛔ Repair vs re-sort — REPAIR REFUTED, RE-SORT is the recovery
+> **This section's original claim ("a repair may be possible without re-sorting; recover the
+> permutation σ") is RETRACTED.** It assumed the cache was internally coherent (each entry
+> exactly one cluster's spikes). Later measurement disproved that: 52/190 cache entries span
+> **multiple** `viClu` labels, 557k spikes are claimed by >1 cluster, 413k are orphaned. There
+> is no σ — the two sides are different partitions, not the same one relabelled. See the
+> `★ PURITY` result in §3, the `⛔` repair block above, and CID-12. **Re-sort is the only
+> recovery** (the sort pipeline is clean: fresh re-sort measured 0/547 stale).
+
+*(Original text, retained for the record:)* ~~The existing files are confirmed corrupted (§3.2).
+But because the cache is internally coherent, a repair may be possible without re-sorting:
+recover the permutation σ by matching `cache{i}` against `find(viClu==j)`. Clusters already
+split/merged post-corruption are the exception.~~
 
 ### 8.5 Cheap and correct regardless of the above
 - `get_clu_spk_confirmed_`'s guard cannot detect an under-count by construction (§3.1).

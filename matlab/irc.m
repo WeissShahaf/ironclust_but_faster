@@ -2562,12 +2562,16 @@ nWorkers = min(nWorkers, nWorkersMax);
 progress_persite_('init', nSites);
 if fParfor
     try
-        % reuse an existing pool when possible; otherwise size one to <= nWorkers
+        % reuse an existing pool only if it is already the right size; otherwise resize it.
+        % NOTE: this used to resize only when hPool.NumWorkers > nWorkers, so a pre-existing
+        % UNDER-sized pool (e.g. a stale 3-worker pool left by an earlier run) was silently
+        % reused and the whole per-site loop ran at a fraction of the requested width.
         hPool = gcp('nocreate');
         if isempty(hPool)
             hPool = parpool('local', nWorkers);
-        elseif hPool.NumWorkers > nWorkers
-            delete(hPool);                       % shrink an over-sized pool to the cap
+        elseif hPool.NumWorkers ~= nWorkers
+            fprintf('\tresizing existing pool: %d -> %d workers\n', hPool.NumWorkers, nWorkers);
+            delete(hPool);                       % resize an over- OR under-sized pool
             hPool = parpool('local', nWorkers);
         end
         nWorkers = hPool.NumWorkers;
@@ -4283,8 +4287,18 @@ end % func
 function [S_clu, nClu_merge] = post_merge_wav_(S_clu, fMerge, P)
 fRemove_duplicate = get_set_(P, 'fRemove_duplicate', 1);
 nClu_pre = S_clu.nClu;
-S_clu = rmfield_(S_clu, 'trWav_raw_clu', 'tmrWav_raw_clu', 'mrWavCor');
+% nClu_merge must be assigned on EVERY path: the caller in auto_merge_ requests both
+% outputs, but the early return below (fSave_spkwav=0) and the fMerge==0 fall-through
+% both used to leave it unset -> "Output argument 'nClu_merge' is not assigned".
+nClu_merge = 0;
+
+% Bail out BEFORE invalidating the waveform caches. The rmfield_ below exists only to
+% force the rebuild at the bottom of this function (S_clu_wav_ / S_clu_wavcor_); on this
+% early return there is no rebuild, so stripping mrWavCor / trWav_raw_clu / tmrWav_raw_clu
+% first would leave S_clu permanently without them. Returning before the rmfield_ makes
+% this path a true no-op, which is what "cannot merge without saved waveforms" should be.
 if ~get_set_(P, 'fSave_spkwav', 1), return; end
+S_clu = rmfield_(S_clu, 'trWav_raw_clu', 'tmrWav_raw_clu', 'mrWavCor');
 
 mrDist_site = pdist(P.mrSiteXY); 
 merge_thresh = min(mrDist_site(mrDist_site>0));
@@ -9127,10 +9141,52 @@ function S_clu = delete_clu_(S_clu, viClu_delete)
 % sets the cluster to zero
 nClu_prev = S_clu.nClu;
 viClu_keep = setdiff(1:nClu_prev, viClu_delete);
+
+% ATOMICITY: viClu is remapped UNCONDITIONALLY below (see the S_clu_select_ CONTRACT
+% note). If the per-cluster remap above it only partly applied, viClu and cviSpk_clu end
+% up describing DIFFERENT clusters -- a silent, saved desync that corrupts every later
+% split/merge/delete and is NOT repairable after the fact. Snapshot first and roll back
+% rather than commit a half-applied remap.
+% See logs/issue_viclu_desync_20260715.md.
+S_clu_prev = S_clu;
 try
     S_clu = S_clu_select_(S_clu, viClu_keep); % remap all
-catch
-    fprintf(2, 'delete_clu_: error selecting');
+catch ME
+    S_clu = S_clu_prev; % roll back; leave viClu alone
+    fprintf(2, 'delete_clu_: S_clu_select_ failed (%s)\n', ME.message);
+    fprintf(2, '\tdelete ABORTED, no change made. Clusters are unchanged and consistent.\n');
+    return;
+end
+
+% The catch above is NOT sufficient on its own, and neither is a length check:
+%   1. S_clu_select_ delegates to struct_select_safe_, which SKIPS a field it cannot
+%      resize and returns NORMALLY -- no exception reaches the catch above.
+%   2. S_clu_select_ then force-"reconciles" any wrong-length v*_clu / c*_clu field by
+%      truncating or PADDING it (cviSpk_clu is padded with {[]}). So after a skip the
+%      length is right and the CONTENT is wrong -- the same blind spot that makes
+%      S_clu_valid_ useless here. Verified by scratchpad/verify_delete_clu.m: a length
+%      check does not fire on this path.
+% Verify the cache was ACTUALLY permuted: the new cache must equal the old cache indexed
+% by viClu_keep. Anything else means viClu is about to be remapped against a stale cache.
+if isfield(S_clu, 'cviSpk_clu')
+    fCache_ok = false;
+    try
+        if ~isempty(viClu_keep) && numel(S_clu_prev.cviSpk_clu) >= max(viClu_keep)
+            fCache_ok = isequal(reshape(S_clu.cviSpk_clu, [], 1), ...
+                                reshape(S_clu_prev.cviSpk_clu(viClu_keep), [], 1));
+        elseif isempty(viClu_keep)
+            fCache_ok = isempty(S_clu.cviSpk_clu); % deleting every cluster
+        end
+    catch
+        fCache_ok = false;
+    end
+    if ~fCache_ok
+        fprintf(2, 'delete_clu_: cviSpk_clu was NOT correctly remapped to the kept clusters.\n');
+        fprintf(2, '\tSee any struct_select_safe_ / "reconciled length" warnings above.\n');
+        fprintf(2, '\tdelete ABORTED, no change made, to avoid a silent viClu/cviSpk_clu desync.\n');
+        S_clu = S_clu_prev; % roll back
+        return;
+    end
 end
 
 iClu_del = min(S_clu.viClu) - 1;
@@ -9288,10 +9344,31 @@ end %func
 function S_clu = merge_clu_(S_clu, iClu1, iClu2, P)
 if iClu1>iClu2, [iClu1, iClu2] = swap_(iClu1, iClu2); end
 
+% ATOMICITY: a merge is two steps -- merge_clu_pair_ moves iClu2's spikes into iClu1, then
+% delete_clu_ removes the emptied iClu2. delete_clu_ now ABORTS (leaving S_clu untouched)
+% rather than commit a remap that would desync viClu from cviSpk_clu, which would strand
+% this merge half-applied: spikes moved, but iClu2 still present as an empty cluster --
+% and the caller (ui_merge_clu_) calls save_log_('merge %d %d') UNCONDITIONALLY, so the
+% log would record a merge that did not fully happen. Snapshot and roll the WHOLE merge
+% back, so the operation either completes or leaves nothing behind.
+% See logs/issue_viclu_desync_20260715.md.
+S_clu_prev = S_clu;
+
 S_clu = merge_clu_pair_(S_clu, iClu1, iClu2);
 S_clu = S_clu_refrac_(S_clu, P, iClu1); % remove refrac
 S_clu = S_clu_update_(S_clu, iClu1, P);
+nClu_pre_delete = S_clu.nClu;
 S_clu = delete_clu_(S_clu, iClu2);
+% delete_clu_ removes exactly one cluster on success, so an unchanged nClu means it
+% aborted. S_clu_valid_ below only checks lengths and passes either way, so it cannot
+% stand in for this.
+if S_clu.nClu == nClu_pre_delete
+    S_clu = S_clu_prev; % roll back the entire merge
+    fprintf(2, ['merge_clu_: could not remove Clu %d (see delete_clu_ above).\n' ...
+        '\tMERGE ABORTED and rolled back -- Clu %d and Clu %d are unchanged. ' ...
+        'No spikes were lost.\n'], iClu2, iClu1, iClu2);
+    return;
+end
 % S_clu = S_clu_remove_empty_(S_clu);
 assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after merging');
 fprintf('%s [W] merging Clu %d and %d\n', datestr(now, 'HH:MM:SS'), iClu1, iClu2);

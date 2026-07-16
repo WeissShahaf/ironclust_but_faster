@@ -1,5 +1,8 @@
 # Changes Log - July 15, 2026
 
+> **Tracker:** all issues in this log are indexed with status in
+> [`logs/ISSUE_TRACKER_cluster_identity.md`](ISSUE_TRACKER_cluster_identity.md) (CID‑01 … CID‑15).
+
 ## Summary
 
 Bug report from manual curation: (A) splitting a unit that should have very few spikes
@@ -346,3 +349,229 @@ unrelated implementation (`ui_merge_pending_` / `execute_pending_and_update_`).
 **`CLAUDE.md`'s "Cluster Merging (from MERGE_OPTIMIZATIONS.md)" section inherits this
 inaccuracy** and is auto-loaded into every session, so it actively misleads. Recommend
 correcting or removing both. Not touched in this pass.
+
+---
+
+# Addendum — later on 2026-07-15 (commit `83776fc`)
+
+Work after `87cd4f1`: measuring the corruption on the real files, attempting recovery, and
+**retracting two claims made earlier in this same log**. See
+`logs/issue_viclu_desync_20260715.md` for the consolidated issue report.
+
+## Added: `matlab/repair_clu_sync.m`
+
+Dry-run-by-default diagnostic + repair for a desynced `_jrc.mat`. **Its repair path does not
+work on the observed data and correctly refuses to write** (5 blocking reasons). Retained for
+its diagnostics. Never overwrites its input.
+
+## ⛔ RETRACTION 1 — "the cache is authoritative" was an ARTIFACT, not a measurement
+
+An earlier conclusion — *`viSite_clu`/`vnSpk_clu`/`vrPosY_clu` agree with the cache at ~100%,
+therefore the cache is the authoritative side* — is **withdrawn**. Every field compared
+**derives from the cache**:
+
+| Field | Derived from | Where |
+|---|---|---|
+| `vnSpk_clu` | `cviSpk_clu` | irc.m:7401 — `cellfun(@numel, cviSpk_clu)` |
+| `viSite_clu` | `cviSpk_clu` | irc.m:7407 — `mode(viSite_spk(cviSpk_clu{i}))` |
+| `vrPosY_clu` | `cviSpk_clu` | `S_clu_position_`:17620 → `S_clu_subsample_spk_`:11652 |
+
+`S_clu_select_` permutes the cache **and its derivatives together**, so they agree **by
+construction** — whether the cache is pristine or garbage. **Proof: the check reports
+`188/188 (100.0%)` on a file whose cache has 557,123 overlapping spikes and one entry spanning
+14 labels.** A check that cannot fail never meant anything.
+
+The `vrPosY_clu` shortfall (85.6%/94.5%) was **sampling noise**, not a mixed-state signal:
+`S_clu_subsample_spk_` filters to centre-site spikes (11655), takes a mid-time window (11661),
+then subsamples to 1000 (11663) — the test compared that against the full-set median at <5 µm.
+
+## ⛔ RETRACTION 2 — "the curation is recoverable, do not re-sort" is WRONG
+
+**The affected `_jrc.mat` files cannot be repaired.** The σ-recovery model assumed cache and
+`viClu` encode the *same partition under different labels*. The one **non-circular** check
+refutes it:
+
+| purity (`_IRC_jrc.mat`) | |
+|---|---|
+| cache entries spanning exactly 1 `viClu` label | 138 / 190 |
+| **spanning >1 label** | **52** (max **14** labels in one entry) |
+
+Different partitions → **σ does not exist**. Dry-run confirms: 557,123 spikes claimed by >1
+cluster, 413,533 orphaned, 7,172 deletions resurrected. **Re-sorting is the correct path.**
+
+Cause: the damage **compounded** — each post-corruption split called `S_clu_update_`, writing
+foreign spike sets over entries other clusters owned. Cumulative and order-dependent, so no
+single global transform inverts it.
+
+## ★ New evidence: 7,172 DELETED spikes sit inside live cache entries
+
+A pure permutation cannot produce this — `[O]` moves which *slot* holds an entry, it never
+injects deleted spikes into a live one. This implicates **`delete_clu_` (irc.m:9126-9152)**,
+which remains **UNFIXED** and is now the top-priority item.
+
+The `try/catch` at 9130 **cannot catch the failure**: `S_clu_select_` delegates to
+`struct_select_safe_` (19512-19527), which swallows a per-field failure with a console warning
+and **returns normally**. So `cviSpk_clu` can be left stale with no exception raised, after
+which line 9145 remaps `viClu` unconditionally and 9149's `S_clu_valid_` (lengths only) passes.
+Three layers of error handling; the failure walks through all three.
+
+Worse, 9138 selects victims via `ismember(S_clu.viClu, viClu_delete)`. On an already-desynced
+file the user deletes **what the GUI shows** (the cache's cluster) while the code marks negative
+**whatever `viClu` says** — so **every delete compounds the damage into a new cluster.**
+
+**Do not curate further until `delete_clu_` is fixed.** Proposed rollback-on-failure patch in
+the issue report §6. Not applied yet — a sort was running against `irc.m`, and editing it
+mid-run risks a reload mid-execution.
+
+## Corrections to earlier claims in this log
+
+- **`viClu_prematch` is NOT a defect.** Set at irc.m:4171 and read at 4173 — transient, always
+  fresh at use. It is ~68 MB of per-spike dead weight persisted into every `_jrc.mat`; cleanup
+  only, not corruption.
+- **`post_merge_wav_` early return** — reported earlier as misplaced relative to
+  `rmfield_(...'mrWavCor')`. **Unverified. Re-check before acting.**
+
+---
+
+# Addendum 2 — code fixes for the remaining open items (2026-07-15, later)
+
+Three `irc.m` fixes, each verified with a negative control. Full write-up:
+`logs/issue_viclu_desync_20260715.md`.
+
+## 1. `delete_clu_` (irc.m:9140) — the same desync bug as `[O]`, now FIXED
+
+Was: remapped `viClu` **unconditionally** while its cache remap sat in a `try/catch` that only
+printed. Now: snapshots `S_clu`, verifies the cache was actually permuted, **rolls back**
+rather than commit a half-applied remap.
+
+### ★ The landmine this uncovered — a LENGTH check cannot detect the failure
+
+The first attempt guarded on `numel(cviSpk_clu) == numel(viClu_keep)`. **It did not fire, and
+only the negative control caught it.** `S_clu_select_` ends with a **length-reconcile block**
+(irc.m:19669-19692) that force-fits wrong-length `v*_clu`/`c*_clu` fields to `nClu_new`,
+**padding `cviSpk_clu` with `{[]}`**:
+
+```
+struct_select_safe_: skipped field "cviSpk_clu": Index exceeds ...
+S_clu_select_: reconciled length of field "cviSpk_clu" to 4
+  -> numel(cviSpk_clu) = 4 (expected 4)   <-- a length check PASSES
+  -> DESYNCED clusters : 2                <-- while the content is wrong
+```
+
+**This is the same blind spot that makes `S_clu_valid_` vacuous.** The shipped guard therefore
+compares **content**: the new cache must equal `S_clu_prev.cviSpk_clu(viClu_keep)`.
+**Lengths in `S_clu` are actively falsified, not merely unchecked.**
+
+### Caller impact — `merge_clu_` (irc.m:9344)
+
+`delete_clu_` is the back half of every merge (`merge_clu_pair_` moves the spikes, then
+`delete_clu_` removes the emptied source). An abort would leave the merge **half-applied**
+while `ui_merge_clu_` calls `save_log_('merge %d %d')` **unconditionally** (irc.m:9334) —
+logging a merge that did not happen. `merge_clu_` now snapshots and rolls the **whole merge**
+back.
+
+**⚠ Scope, stated honestly: this rollback is defence-in-depth and is probably UNREACHABLE.**
+Tested on the real 547-cluster file: a cache malformed enough to fail `S_clu_select_` also
+fails `S_clu_wav_` **first** (it indexes `cviSpk_clu{iClu}` for `iClu = 1..nClu`), so
+`merge_clu_` throws before reaching `delete_clu_` — and **that throw is already safe**, since
+MATLAB value semantics mean the caller's `S0.S_clu = merge_clu_(...)` assignment never runs,
+nor does `save_log_`. The reachable, load-bearing guard is the one in **`delete_clu_`**, which
+is called directly (9094, 9530, 19411) with nothing in front of it to throw first. Kept in
+`merge_clu_` because `delete_clu_`'s abort returns *normally* rather than throwing, so it is
+the only protection if the upstream ever becomes tolerant of a short cache.
+**Cost:** one transient `S_clu` copy per merge (~250-500 MB at 17.6M spikes).
+
+**Verified on REAL data 5/5** (`scratchpad/verify_merge_clu_real.m`, read-only): real merge
+547→546 with **0 stale** per `S_clu_assert_synced_`; malformed cache fails loudly with caller
+state byte-identical. Note 155,204+367,046 → **511,712** not 522,250 is *correct*:
+`S_clu_refrac_` drops 10,538 ISI violators (2.02%). The first version of that test asserted an
+exact sum and failed — the test was wrong, not the code.
+
+**Verified 7/7** (`scratchpad/verify_delete_clu.m`): negative control reproduces the desync
+(2 clusters) → fix leaves 0; rollback is byte-identical on `viClu` and `nClu`; happy path still
+deletes (nClu 5→4), renumbers survivors 1..4, no desync.
+
+## 2. `post_merge_wav_` (irc.m:4283) — CONFIRMED (was "unverified") and FIXED
+
+The earlier report was right, and worse than described. 4286 stripped
+`mrWavCor`/`trWav_raw_clu`/`tmrWav_raw_clu`; 4287 then returned early on `fSave_spkwav=0` —
+**before** the rebuild that restores them.
+
+1. **Latent crash:** signature is `[S_clu, nClu_merge]` and `auto_merge_` (irc.m:19440)
+   requests **both** outputs with `fMerge=1`. The early return — and the `fMerge==0`
+   fall-through — left `nClu_merge` **unassigned** → *"Output argument not assigned"*. Dormant
+   only because this user runs `fSave_spkwav=1`.
+2. **Cache destruction:** `mrWavCor` removed and never rebuilt.
+
+Fix: `nClu_merge = 0` on entry; early return moved **before** the `rmfield_` so the bail-out is
+a true no-op. **Verified 6/6** (`scratchpad/verify_post_merge_wav.m`).
+
+## 3. parpool undersize-reuse (irc.m:2569) — FIXED
+
+Was `elseif hPool.NumWorkers > nWorkers` — only ever **shrank** an oversized pool, so a stale
+**undersized** pool was silently reused and the per-site loop ran narrow (observed: 3 workers
+while the profile permits 8 and `.prm` requests 12). Now `~= nWorkers`: resizes either
+direction and logs it. A correctly-sized pool is untouched, so it cannot disturb a run already
+at the right width.
+
+---
+
+# Audit — do the fork's new clustering methods mishandle data? (2026-07-16)
+
+**Verdict: no data-handling BUG found. But one setting is doing far more than it looks.**
+
+## Checked and CLEAN
+
+| Area | Finding |
+|---|---|
+| **global label offsets** (`cluster_labels_persite_`, irc.m:2620-2634) | **correct.** `viOffset = cumsum([0; vnLabel])` is safe *because* `cluster_site_` returns `nLabel = max(viLabel)` (irc.m:2695), **not** the unique count. Gappy labels (`[1 2 5]`) therefore reserve up to 5, so the next site cannot collide. Ids 3-4 are merely empty and get pruned. |
+| **label contiguity** (`S_clu_from_labels_`, irc.m:2437-2441) | **safety net.** Remaps positive labels to 1..nClu via `unique`, so the gaps the max-based offsets create can't misalign `icl` with cluster numbers. `icl` is computed *after* the remap, so `icl(icl>0)` (2477) is the identity — no shrink/misalign. |
+| **capped path propagation** (`cluster_site_capped_`, irc.m:2786-2803) | **indexes consistently.** `viLabel = viLabelSub(viNN)`, `miKnn1 = miKnnSub(:,viNN)`, `vrRho1 = vrRhoSub(viNN)`. Error fallback correctly resets `nLabel = 1` so no label gap is created. Subsample is RNG-seeded per site → identical under serial and parfor. |
+| **parfor** | sliced outputs only; on failure the serial retry recomputes **all** sites, so no partial state survives. |
+| **empirical** | **Test B: `S_clu_assert_synced_` = 0 / 547 stale on the fresh sort.** The clustering path produces a synced `S_clu`. |
+
+## ★ MEASURED: `maxSpk_persite_clust = 20000` means most spikes were never clustered
+
+Not a bug — documented behaviour of the per-site cap — but the magnitude is easy to miss.
+Measured on this run (`scratchpad/check_cap_impact.m`):
+
+| | |
+|---|---|
+| sites over the cap | **192 / 384 (50%)** — holding **91.3%** of all spikes |
+| spikes **clustered** by ISO-SPLIT | 5,370,893 (**30.5%**) |
+| spikes **1-NN propagated** | 12,245,613 (**69.5%**) |
+| on capped sites, fraction clustered | median **38.5%**, **min 3.4%** |
+| per-site counts | median 20,132 · mean 45,876 · p90 111,409 · **max 586,951** |
+
+So ~70% of labels come from `nearest_in_set_` — copied from the nearest member of a 20k
+random subsample — not from the clustering itself. On the busiest site (586,951 spikes) only
+**3.4%** was clustered.
+
+**Consequence: a unit is only resolvable if it has enough spikes IN THE SUBSAMPLE.** At 3.4%
+sampling, a unit needs ~30x more spikes than `min_count` on that site to contribute
+`min_count` points to the subsample; below that it is not found and its spikes are 1-NN'd into
+whichever cluster is nearest. **Small units on busy sites are the ones at risk** — which is
+worth noting given the original report concerned units "that should have very few spikes".
+
+`default.prm`'s own comment recommends **50000-100000** to enable the cap; this run used
+**20000**. Raising it trades sort time for recall of small units. Not changed — it is a
+parameter choice, not a defect.
+
+## Still open
+
+- `struct_select_safe_` (19512) critical-field list, and excluding `cviSpk_clu` from the
+  length-reconcile block (19669-19692). **Not changed:** both are on the sort path, and the
+  `delete_clu_` content guard already blocks the damaging case locally.
+- `P.viShank_site` all `1`s on a 4-shank Neuropixels 2.0 probe — belongs in the `.prb`.
+- The fixes prevent *creating* a desync. They cannot make a delete correct on a file that is
+  **already** desynced (`delete_clu_` still picks victims via `ismember(viClu, ...)`).
+- `maxSpk_persite_clust = 20000` — a parameter choice, not a defect, but it left 69.5% of
+  spikes 1-NN propagated rather than clustered (see the audit above).
+
+## Environment note (not a code change)
+
+Three stale entries — `D:\github\ironclustSW\{docker,img,matlab} - Copy` — were removed from
+`C:\Program Files\MATLAB\R2023b\toolbox\local\pathdef.m` via `savepath`. They were already
+being pruned at startup (hence the warnings) but a restored `matlab - Copy` would have
+**shadowed the fixed `irc.m`**. Verified: `which('irc')` → `D:\github\ironclustSW\matlab\irc.m`.
+Backup: `scratchpad/pathdef.m.backup`.
