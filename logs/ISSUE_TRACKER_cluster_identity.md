@@ -32,8 +32,8 @@ updated one and not the other, silently, and saved the result. The invariant tha
 | **CID‑11** | `struct_select_safe_` skips silently **and** the length‑reconcile block falsifies lengths | high (enabler) | 🟡 | *(uncommitted, P3b)* |
 | **CID‑12** | corrupted `_jrc.mat` on disk — **not recoverable**, re‑sort required | data‑loss | 🔵 | `83776fc` (tool) |
 | **CID‑13** | `maxSpk_persite_clust = 20000` → 69.5% of spikes 1‑NN‑propagated, not clustered | advisory | 🔵 | — |
-| **CID‑14** | `P.viShank_site` all `1`s on a 4‑shank Neuropixels 2.0 probe | medium | 🔵 | *(in `.prb`)* |
-| **CID‑15** | `viClu_prematch` — 68 MB per‑spike copy persisted for no reason | trivial | ⚪ | — |
+| **CID‑14** | `P.viShank_site` all `1`s on a 4‑shank Neuropixels 2.0 probe | medium | ✅ | *(generator, ext repo)* |
+| **CID‑15** | `viClu_prematch` — 68 MB per‑spike copy persisted for no reason | trivial | 🟡 | *(uncommitted, X1)* |
 
 **Prior related work (context, pre‑saga):** `ea6a8dc` GUI Merge‑auto sign bug (6/26) ·
 `0f2ab3f` post‑merge/per‑site empty‑cluster hardening (6/26) · `97b69f8` per‑site cap
@@ -188,14 +188,24 @@ symptom (7/10, see CID‑04).
   found if it lands enough spikes in the 20k subsample. Connects to the original "very few spikes"
   report. `default.prm` recommends **50000–100000**; this run used 20000. Parameter choice.
 
-### CID‑14 🔵 `P.viShank_site` all `1`s on a 4‑shank probe
-- Neuropixels 2.0 is 4 shanks × 2 columns, but the probe declares a single shank. Affects `[O]`'s
-  sort order among other things. Belongs in `IRC_all.prb` / `IRC.prb`, not `irc.m`.
+### CID‑14 ✅ `P.viShank_site` all `1`s on a 4‑shank probe — fixed in the generator (X4, 2026‑07‑16)
+- Neuropixels 2.0 (`NP2013 → np2_4s`) is 4 shanks × 2 columns, but the probe declared a single
+  shank. IronClust defaults `viShank_site` to all `1`s when the `.prb` has no `shank` field
+  (`load_prb_`, irc.m:2038), collapsing the drift‑view per‑shank filter and `[O]` sort semantics.
+- **Root cause:** the `.prb` generator `SGLXMetaToCoords_PAG.py` (`writePRBFile`) omitted the
+  `shank` field, though the sibling Kilosort export wrote `kcoords = shankInd + 1` from the same
+  `.ap.meta` `snsGeomMap`.
+- **Fix (external repo, per user's "do not edit existing `.prb` files"):** `writePRBFile` now emits a
+  1‑based `shank` array trimmed by the same `remove_idx`. Verified end‑to‑end (generator → IronClust
+  `load_prb_`): full probe → `{1,2,3,4}` (96 each); afm17313 "join_tips" PAG subset → `{1,4}`
+  (200+14), matching meta `shankInd+1`. Existing `.prb` files untouched (regenerate to apply). See
+  `logs/changes_log20260716.md` X4. Sibling generators still carry the same omission.
 
-### CID‑15 ⚪ `viClu_prematch` — not a bug
-- Set at irc.m:4171 and read at 4173 — transient, always fresh at use. **Earlier flagged as a
-  defect; retracted.** It is a per‑spike copy (~68 MB) persisted into every `_jrc.mat` for no
-  reason. Cleanup only.
+### CID‑15 🟡 `viClu_prematch` — cleaned up (X1, 2026‑07‑16)
+- Set/read on adjacent lines — transient, always fresh at use. Not a correctness bug, but it was a
+  per‑spike copy (~68 MB) persisted into every `_jrc.mat` for no reason.
+- **Fix (X1):** made it a **local** variable in the template‑match step instead of an `S_clu` field,
+  so it never reaches the save path. `frac_changed` byte‑identical. `checkcode` clean; uncommitted.
 
 ---
 

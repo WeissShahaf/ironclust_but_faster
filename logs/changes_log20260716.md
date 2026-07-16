@@ -187,6 +187,73 @@ spikes.
 | P3b | done | `struct_select_safe_`, `S_clu_select_` | `verify_p3b.m` 3/3 |
 | X3 | done | `split_clu_` | trace + `checkcode` |
 
-No functions deleted; all changes additive or fail-loud, per `CLAUDE.md`. Deferred (independent):
-X1 (`viClu_prematch` dead weight, CID-15), X2 (PSTH split routing), X4 (probe shanks, CID-14 — a
-`.prb` data fix). Detection/abort-handling gaps from the plan are now closed.
+No functions deleted; all changes additive or fail-loud, per `CLAUDE.md`. Detection/abort-handling
+gaps from the plan are now closed.
+
+## X1 — stop persisting `viClu_prematch` (CID-15) — DONE
+
+**Problem.** In the template-matching step (`irc.m`), `S_clu.viClu_prematch = S_clu.viClu` snapshotted
+the labels only to compute the reassigned fraction on the very next line — but the field rode along on
+`S_clu` into every saved `_jrc.mat` (~68 MB per-spike `int32` copy) and was never read again anywhere
+(confirmed by a repo-wide grep: only these two adjacent lines touch it).
+
+**Change.** Make it a **local** variable instead of an `S_clu` field:
+
+```matlab
+viClu_prematch = S_clu.viClu;              % local; not stored on S_clu (was ~68 MB persisted for nothing)
+S_clu.viClu(viSpk_out) = viClu_spkout;
+frac_changed = mean(viClu_prematch ~= S_clu.viClu);
+```
+
+`frac_changed` is byte-identical; the field simply never reaches the save path. Existing files that
+already baked it in are not rewritten by this — going-forward saves just won't create it, and re-sorts
+regenerate `S_clu` without it. `checkcode` parse-clean.
+
+## X4 — declare shanks on the Neuropixels 2.0 probe (CID-14) — DONE (in the generator, not `irc.m`)
+
+**Root cause (found via the user's pipeline).** IronClust defaults `P.viShank_site` to all `1`s when the
+`.prb` declares no `shank` field (`load_prb_`, irc.m:2038). The `.prb` files were produced by
+`SGLXMetaToCoords_PAG.py`'s `writePRBFile`, which wrote `geometry`/`channels`/`pad`/`remove_idx` but
+**omitted `shank`** — even though the sibling Kilosort export in the same module correctly writes
+`kcoords = shankInd + 1`. So a 4-shank NP2.0 (`NP2013 → np2_4s`) was seen by IronClust as single-shank,
+collapsing the drift-view per-shank background filter and plotting units from different shanks (up to
+~750 µm apart in X) on top of each other (Symptom-B *appearance*).
+
+**Fix (root cause, not the data files).** Per the user's instruction *not* to edit existing `.prb`
+files, the fix went into the generator
+`C:\ProgramData\uv_projects\Project_hierarchy_SW\preprocessing\SGLXMetaToCoords_PAG.py`
+(a **separate git repo**, external to IronClust): `writePRBFile` now also emits a **1-based `shank`**
+array (`shankInd + 1`, the authoritative value from the `.ap.meta` `snsGeomMap` — same source as the
+Kilosort `kcoords`) and trims it with the same `remove_idx` as `channels`/`geometry`. Future `.prb`
+files carry shanks; existing files are untouched (regenerate via `check_probe_histology.py` to apply).
+
+**Verified end-to-end (writes to scratchpad only, no existing `.prb` touched):**
+- Full probe (afm18349 260317, `NP2013`, all 384 ch) → IronClust `viShank_site` = `{1,2,3,4}`, 96 each.
+- PAG-filtered non-contiguous case (afm17313, "join_tips" imro, 214 of 384 ch) → `viShank_site` =
+  `{1,4}` (200 + 14), matching the meta `shankInd+1` exactly. This case is why the authoritative
+  meta-based shank matters — a geometry X-pitch heuristic can't reliably label a non-contiguous subset.
+
+**Note (afm17313, "inspect and report"):** it is a genuine 4-shank `NP2013`, but the recording's custom
+`first_with_cuneform_join_tips.imro` + PAG filtering keeps electrodes on shanks **1 and 4 only** (not a
+different probe). The fixed generator now labels it correctly from the meta.
+
+## Net summary (updated)
+
+| Item | Status | Where | Verified |
+|---|---|---|---|
+| P1 | done | `irc.m` `load0_` | `verify_p1_p3a.m` 4/4 |
+| P3a | done | `irc.m` `reorder_clu_by_coords_` | `verify_p1_p3a.m` 4/4 |
+| P2-core + P2a–d | done | `irc.m` delete/merge + 4 callers | `verify_p2.m` 4/4 |
+| P3b | done | `irc.m` `struct_select_safe_`, `S_clu_select_` | `verify_p3b.m` 3/3 |
+| X3 | done | `irc.m` `split_clu_` | trace + `checkcode` |
+| X1 | done | `irc.m` template-match step | `checkcode` (grep: field unread) |
+| X4 | done | `SGLXMetaToCoords_PAG.py` (external repo) | end-to-end: generator → IronClust load, 2 cases |
+
+Still deferred (independent): X2 (PSTH split routing). The other Python/MATLAB `SGLXMetaToCoords*`
+generators (`.py` and the two in `D:\sorters`) share the same `shank` omission — not yet fixed.
+
+**New standalone generators (external repo, per user request).** Added `SGLXMetaToProbeFiles.py`
+and `SGLXMetaToProbeFiles.m` in `…/preprocessing/` — self-contained NP-meta extractors that write a
+**full-probe** (all sites, all shanks) IRC `.prb` *with* the `shank` field plus a Kilosort channel
+map (`kcoords = shankInd+1`), no PAG filtering. Verified end-to-end: the two produce **byte-identical**
+`.prb` bodies; IronClust `load_prb_` reads both as `{1,2,3,4}` (96/shank); their KS maps match.

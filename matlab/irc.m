@@ -4172,9 +4172,14 @@ for iSite = 1:nSites
     viClu_spkout(vii_spkout1) = viClu_in1(viMin1);
     fprintf('.');
 end
-S_clu.viClu_prematch = S_clu.viClu;
+% Keep the pre-match labels in a LOCAL only. This snapshot is used solely to report the
+% reassigned fraction on the next line; storing it on S_clu (as before) persisted a ~68 MB
+% per-spike int32 copy into every _jrc.mat for nothing, and it is never read again anywhere.
+% (X1 / CID-15. Its name ends in '_prematch', not '_clu', so S_clu_select_ never reindexed it,
+% which is also why it was safe to leave stale for so long.)
+viClu_prematch = S_clu.viClu;
 S_clu.viClu(viSpk_out) = viClu_spkout;
-frac_changed = mean(S_clu.viClu_prematch ~= S_clu.viClu);
+frac_changed = mean(viClu_prematch ~= S_clu.viClu);
 fprintf('\n\tReassigned %0.1f%% spikes, took %0.1fs\n', frac_changed*100, toc(t1));
 
 % merge the templates
