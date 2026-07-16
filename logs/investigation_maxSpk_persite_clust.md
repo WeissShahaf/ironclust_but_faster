@@ -58,17 +58,65 @@ off, this is the real runtime lever — bigger than any kNN-backend choice.
 |---|---|---|---|---|
 | drift-knn | 54.6 s | 265 | 1,101,547 | 96 % |
 | hdbscan | 150.4 s (serial 52.7 s) | 84 | 131,742 | 12 % |
-| isosplit6 | 157.1 s | 595 | 1,135,974 | 99 % |
+| isosplit5 | 157.1 s | 595 | 1,135,974 | 99 % |
 | classix | — | — | — | MEX → MATLAB access-violation crash; pure-MATLAB → timeout >15 min |
 
 Methods produce **fundamentally different partitions**, not merely different speeds: hdbscan is
-conservative (12 % of spikes → 84 units, rest labelled noise); drift-knn and isosplit6 cluster ~all
-spikes into hundreds of units. classix is currently unusable on this data.
+conservative (12 % of spikes → 84 units, rest labelled noise); drift-knn and isosplit5 cluster ~all
+spikes into hundreds of units. classix is currently unusable on this data. (The isosplit run is
+**isosplit5**: the `.prm` sets `isosplit_version=5`, which runs pure-MATLAB isosplit5 with no
+isosplit6/Python attempt — `vcCluster='isosplit6'` is merely a dispatch alias, irc.m:2906.)
 
-### Code note
-`persite_knn_` gained an **additive** `P.vcKnn_backend` switch (`'cpu'` default = unchanged exact
-path; `'gpu'`→`cuda_knn_`, `'kdtree'`→`knnsearch`) purely to run this comparison. Since neither
-alternative beats CPU here, it is a benchmarking hook, **not** a recommended production change.
+### Full-recording follow-up (Stage 2/3) — supersedes the per-site claims above
+
+Re-ran on the **full** recording (`tlim_load=[]` → **19,670,273 spikes**; busiest site 766 k) to test
+the GPU lever at the scale it was meant for, and swept the parfor fix. Harness:
+`scratchpad/bench_scale.m`, `bench_stage2.ps1`, `bench_stage34.ps1`.
+
+**GPU vs CPU per-site kNN, by size** (busiest site, `persite_knn_`, serial — reliable, no fallback):
+
+| per-site `n1` | GPU `cuda_knn_` | CPU `pdist2` | GPU vs CPU |
+|---|---|---|---|
+| 50 k | 2.80 s | 8.51 s | **3.0× faster** |
+| 100 k | 18.73 s | 40.78 s | 2.2× faster |
+| 200 k | 110.84 s | 172.43 s | 1.6× faster |
+| 400 k | 502.28 s | 558.83 s | 1.1× faster |
+
+So GPU **is** faster per-site for large `n1` — this **corrects the "GPU is slower / only pays off on
+one very large problem" bullet above**, which came from a small-site (300 s) regime + a buggy
+micro-bench fallback. But the advantage **shrinks with size and converges by ~400 k**; extrapolating, at
+the 766 k site GPU ≈ CPU. GPU's sweet spot is **mid-size sites (~50–150 k)**; on the many small sites it
+is slower (per-call overhead), which is why the 300 s aggregate was GPU-slower.
+
+**The structural killer for the cap regime:** with `maxSpk_persite_clust=100000`, every giant site runs
+`cluster_site_capped_`, whose cost is dominated by **`nearest_in_set_`** — a **CPU `pdist2`** that
+assigns all `n1` spikes to their nearest of the 100 k anchors — which `vcKnn_backend` does **not**
+accelerate (it only speeds `persite_knn_` on the 100 k subset). So on exactly the giant sites GPU was
+meant to help, the GPU kNN speeds only a fraction; the assignment stays on the CPU. (Full-recording
+`hdbscan` serial paced at **~2.3 h**, assignment-bound.)
+
+**fParfor sweep** (300 s, hdbscan/cpu, identical 84-cluster output):
+
+| mode | WALL |
+|---|---|
+| **serial (`fParfor=0`)** | **53.9 s** ← fastest |
+| parfor ×2 | 171.7 s |
+| parfor ×4 | 150.1 s |
+| parfor ×6 | 142.7 s |
+| parfor ×8 | 144.2 s |
+| parfor ×12 | 151.2 s |
+
+**No worker count beats serial** — every parfor setting is ~2.6–3.2× slower; adding workers never
+recovers the oversubscription.
+
+### Verdict + code note
+- **kNN backend → keep CPU `pdist2` (default).** GPU is a marginal, size-dependent win (mid-size sites
+  only), net-negative on small-site-heavy data, and **structurally diluted** on capped giants by the
+  CPU assignment step; kd-tree is strictly worse at `nFet=36`. The additive `P.vcKnn_backend` switch
+  added to `persite_knn_` for this comparison was **evaluated and reverted** (2026-07-16) — irc.m is
+  back to the CPU-only exact path.
+- **Parallelization → `fParfor=0`** for per-site label clustering (or cap per-worker BLAS threads): the
+  ~3× lever, larger than any kNN-backend choice.
 
 ---
 
