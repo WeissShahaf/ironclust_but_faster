@@ -1,8 +1,39 @@
 # Plan — cluster-identity hardening (detection + abort-handling)
 
 **Date:** 2026-07-16 · **Branch:** `rewind` · **Author:** re-evaluation pass
-**Depends on:** the fixes in `87cd4f1` + the uncommitted `delete_clu_`/`merge_clu_`/`post_merge_wav_`/parpool changes.
+**Depends on:** the fixes in `87cd4f1` and `d954926` (`delete_clu_`/`merge_clu_`/`post_merge_wav_`/parpool — all committed).
 **Tracker:** [`logs/ISSUE_TRACKER_cluster_identity.md`](ISSUE_TRACKER_cluster_identity.md)
+
+---
+
+## ⏭ STATUS — implementation DEFERRED to a new session
+
+**Nothing in this plan (P1, P2, P3a, P3b, X1–X4) is implemented yet.** The plan, the tracker, and
+the already-verified fixes it builds on are committed (`d954926`, local only — **not pushed**).
+Implementation was deliberately deferred; pick it up in a fresh session.
+
+**Resume here:**
+1. Read §7 (ordering) and §9 (open decisions) first — §9 has **two decisions that must be
+   confirmed with the user before any code is written**: (a) P2 mechanism — explicit `fOk` output
+   vs `nClu`-delta; (b) P3b — accept the crash-vs-silent-corruption trade. Do **not** assume
+   either; ask.
+2. Suggested first step (lowest risk): **P1** (load-time detection in `load0_`) + **P3a** (one-line
+   detector on the `[O]` path in `reorder_clu_by_coords_`). Both are additive, warn-only.
+3. **P2** is the only medium-risk change (edits the primary `[U]` handler,
+   `execute_pending_and_update_`); ship it only behind the negative control described in §3.
+4. **Line numbers are current as of `d954926`** (refreshed 2026-07-16) but will drift with any
+   further edit to `irc.m` — they are big single-file offsets, so re-`grep` each function name to
+   confirm before editing rather than trusting the number.
+5. **Verification fixtures were in this session's scratchpad and are NOT committed** — they must be
+   re-created. The key one: a 5-cluster synthetic `S_clu` whose `cviSpk_clu` is deliberately one
+   entry short of `nClu`, which forces `struct_select_` to throw inside `struct_select_safe_` and
+   makes `delete_clu_` abort — that is the negative control every P2 change is gated on. (This
+   session's versions: `verify_delete_clu.m`, `verify_merge_clu_real.m`, `verify_post_merge_wav.m`.)
+6. Every code change ships with a negative control that **fails without the change**, per the
+   standard this investigation established. No functions deleted; additive/fix-only per `CLAUDE.md`.
+
+**Do not re-litigate the diagnosis** — it is settled (`0/547` stale on the fresh sort; all 5
+`S_clu_select_` callers verified to remap `viClu`). This plan is hardening, not root-cause work.
 
 ---
 
@@ -108,7 +139,7 @@ forgotten site silently regresses) and non-obvious. Cleaner: `delete_clu_`/`merg
 - `delete_clu_`: `function [S_clu, fOk] = delete_clu_(...)` — set `fOk = false` at each of its two
   rollback `return`s, `fOk = true` at the normal end.
 - `merge_clu_`: `function [S_clu, fOk] = merge_clu_(...)` — `fOk = false` on its rollback branch
-  (irc.m:9366-9372), `true` otherwise.
+  (the `if S_clu.nClu == nClu_pre_delete` at irc.m:9365), `true` otherwise.
 
 This is **fully backward-compatible**: existing `S0.S_clu = delete_clu_(...)` callers request one
 output and are unaffected (MATLAB allows requesting fewer outputs). It adds no logic to the
@@ -363,3 +394,70 @@ this investigation established. No functions deleted; every code change is addit
 3. **P3b:** accept the crash-vs-silent-corruption trade for the four non-guarded `S_clu_select_`
    callers? (Recommended yes; they run on consistent state so it should never fire.)
 4. **X3:** make `split_clu_`'s silent truncate/pad hard-fail now, or leave it deferred?
+
+---
+
+## Appendix A — code map: where the bugs were, how they were fixed, what the code does now
+
+*(Folded-in diagram content. Line numbers current as of `d954926`; anchor on function names.)*
+
+### A.1 The mechanism (current, healthy state)
+
+```mermaid
+flowchart TD
+    subgraph truth["Source of truth"]
+        viClu["S_clu.viClu — per-SPIKE labels<br/>(authoritative; &lt;0 = deleted, 0 = unassigned)"]
+    end
+    subgraph derived["Derived cache (what the GUI shows)"]
+        cache["cviSpk_clu{i} — per-CLUSTER spike lists"]
+        sat["viSite_clu / vnSpk_clu / vrPosX/Y_clu / mrWavCor"]
+    end
+    viClu -->|"S_clu_refresh_ (rebuild)"| cache
+    cache --> sat
+    cache -->|"FigWav / FigTime / drift view read the cache"| gui["GUI display"]
+    viClu -->|"split/merge rebuild FROM viClu — S_clu_update_ (11906)"| cache
+
+    select["S_clu_select_ (19608)<br/>reindexes *_clu fields ONLY — cannot touch viClu"]
+    select -->|permutes| cache
+    select -->|permutes| sat
+    callers["5 callers: reorder_clu_by_coords_ (10380), delete_clu_ (9140),<br/>clu_reorder_ (10353), S_clu_remove_empty_, S_clu_keep_"]
+    callers --> select
+    callers -.->|"MUST also remap viClu with the same map — all 5 now do"| viClu
+
+    commit["S_clu_commit_ (19858)"] -->|"warns, never gates"| assert["S_clu_assert_synced_ (19787)<br/>DETECTION — checks the viClu/cache invariant"]
+```
+
+**One-line invariant:** `all(S_clu.viClu(S_clu.cviSpk_clu{i}) == i)` for every `i`. The bug class
+was callers permuting the cache via `S_clu_select_` without remapping `viClu`; the fix was to make
+every such caller remap `viClu`, plus rollback guards and a detector.
+
+### A.2 The bugs — location, defect, fix, current behavior
+
+| ID | Where (current) | The bug | The fix | What it does now |
+|---|---|---|---|---|
+| **CID-01** | `reorder_clu_by_coords_` — `[O]` key (10380; remap 10406-10418; `save0_` 10422) | Sorted clusters by position via `S_clu_select_` but never remapped `viClu`, then saved. Cache and `viClu` described different neurons. | Invert `viMap_clu` and remap `viClu` **before** `S_clu_select_`; refuse to reorder if `numel(viMap_clu) ≠ nClu`. | `[O]` renumbers cache + `viClu` in lockstep; a later split sees a consistent state. |
+| **CID-02** | `show_drift_view.m` `[S]` (separate file) | Polygon drawn on `gca` but data read from the `SelectedTab` axes → time-band selection across full depth. | `impoly_(hAx)`; explicit parent for `hSplit`; route through `split_clu_by_id_`. | Polygon and data share one axes; the cut matches what's drawn. |
+| **CID-03** | `split_clu_` (10626; alloc 10690) | `iClu2 = max(viClu)+1` could clobber a live index → `nClu` shrinks → `S_clu_valid_` fails → `S_clu_commit_` silently reverts the split. | `iClu2 = max(nClu, max(viClu)) + 1`. | New cluster always allocated past both bounds; split commits. |
+| **CID-04** | `get_clu_spk_confirmed_` (9873; fallback 9895-9913) | On total cache/`viClu` disagreement it returned the raw **cache** (the stale side). This is why `45b5333` didn't fix the symptom. | Fall back to `find(viClu==iClu1)` (authoritative), loudly; keep cache only if `viClu` has no spikes for it. | Splits operate on the authoritative population even on a desynced input. |
+| **CID-06** | `S_clu_assert_synced_` (19787), called from `S_clu_commit_` (19866) | No content check existed — `S_clu_valid_` compares lengths only, so a desync reached disk unseen. | New O(nSpk) check reporting `nForeign`/`nMiss` per cluster; **warns, never gates** (gating would make `S_clu_commit_` revert → silent loss). | Every committed op is checked; a desync is announced, not hidden. |
+| **CID-07** | `delete_clu_` (9140; guard 9151-9188) | Remapped `viClu` **unconditionally** while the cache remap sat in a `try/catch` that couldn't fire (`struct_select_safe_` skips + returns normally). Evidence: 7,172 deleted spikes inside live cache entries. | Snapshot `S_clu`; verify the cache was **actually permuted** (content, not length — the reconcile falsifies lengths); roll back on failure. | A failed cache remap aborts the delete cleanly instead of creating a desync. |
+| **CID-08** | `merge_clu_` (9344; rollback 9360-9372) | If its `delete_clu_` aborted, the merge was left half-applied and still logged as complete. | Snapshot at entry; roll the whole merge back if `nClu` didn't drop. | Merge is all-or-nothing. (Defence-in-depth; see §3 — the primary `[U]` path bypasses this function, which is what P2 addresses.) |
+| **CID-09** | `post_merge_wav_` (4287; `nClu_merge=0` at 4293; early return 4300) | Stripped `mrWavCor` then returned early with `nClu_merge` unassigned → crash on the 2-output `auto_merge_` caller; cache destroyed. | Assign `nClu_merge=0` on entry; move the early return **before** the `rmfield_`. | The `fSave_spkwav=0` path is a true no-op; no crash, cache intact. |
+| **CID-10** | parpool sizing (2572) | `elseif hPool.NumWorkers > nWorkers` only shrank an oversized pool; a stale undersized pool was reused → narrow run. | `~= nWorkers` — resize either direction, log it. | Pool matches the requested width; a correctly-sized pool is untouched. |
+| **CID-11** *(enabler, open)* | `struct_select_safe_` (19589) + reconcile block (19690-19718) | Skips a field it can't resize and returns normally; the reconcile then pads `cviSpk_clu` with `{[]}` — content stale, length correct. This is what turns a crash into silent corruption. | **Not yet fixed** — plan P3b makes `cviSpk_clu` a critical field. | Currently mitigated: all primary causes closed, and `delete_clu_`'s content guard catches it locally. |
+
+### A.3 What the code does now, end to end
+
+1. **Sort** builds `S_clu` and every path ends in `S_clu_refresh_`, so the on-disk result is
+   consistent (measured: `0/547` stale on the fresh re-sort).
+2. **Load** (`load0_`, 13153) does a bare `load` with **no validation** — so a desync on disk
+   survives reload silently. *(Gap → plan P1.)*
+3. **Curate.** A split/merge/delete pulls the target cluster's spikes from the authoritative side
+   (`get_clu_spk_confirmed_`), mutates `viClu`, and rebuilds the cache from it (`S_clu_update_`).
+   Identity-permuting helpers (`reorder`, `delete`, `clu_reorder`) remap `viClu` in lockstep;
+   `delete`/`merge` roll back rather than commit a half-applied remap.
+4. **Commit** (`S_clu_commit_`) runs `S_clu_assert_synced_`, which **warns** (never reverts) if the
+   invariant is broken. *(The `[O]` path bypasses commit → plan P3a; callers don't surface an
+   abort → plan P2.)*
+5. **Recovery of the already-corrupted files** is not possible by relabelling (CID-12); re-sort is
+   the path.
