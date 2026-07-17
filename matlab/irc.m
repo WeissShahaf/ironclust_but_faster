@@ -1740,7 +1740,7 @@ viSite = int32(viSite);
 viSpk = int64(viSpk);    % deal with longer recording
 
 [cviSpkA, cvrSpkA, cviSiteA] = deal(cell(nSites,1));
-%fParfor = get_set_(P, 'fParfor', 1);
+%fParfor = get_set_(P, 'fParfor', 0);
 fParfor = 0;
 if fParfor
     try
@@ -10476,8 +10476,10 @@ end %func
 
 %--------------------------------------------------------------------------
 function S0 = reorder_clu_by_coords_(S0)
-% Reorder clusters by spatial coordinates (x, then y)
-% Based on vrPosX_clu and vrPosY_clu from S_clu_position_
+% Reorder clusters by spatial coordinates.
+% On a probe with >1 real shank: shank, then Y (depth), then X.
+% Otherwise (single-shank / no shank info): the original X, then Y.
+% Based on vrPosX_clu and vrPosY_clu from S_clu_position_ (and viShank_site/viSite_clu).
 if nargin<1, S0 = get(0, 'UserData'); end
 [S_clu, P] = deal(S0.S_clu, S0.P);
 
@@ -10489,9 +10491,33 @@ if ~isfield(S_clu, 'vrPosY_clu') || isempty(S_clu.vrPosY_clu)
     S_clu = S_clu_position_(S_clu);
 end
 
-% Sort by X coordinate first, then Y coordinate
-mrPosXY_clu = [S_clu.vrPosX_clu(:), S_clu.vrPosY_clu(:)];
-[~, viMap_clu] = sortrows(mrPosXY_clu, [1, 2]);
+% Sort key: shank first (only when the probe declares >1 real shank), then Y (depth),
+% then X; otherwise fall back to the original X-then-Y order, verbatim. Reuse
+% isSingleShank_ (irc.m ~16090) - the same predicate the traces view uses (irc.m ~16064) -
+% rather than re-deriving from viShank_site.
+%  * Use S_clu.nClu directly: the local `nClu` alias is not assigned until below.
+%  * (:) on every key column is REQUIRED, not cosmetic: viShank_site(viSite_clu) inherits
+%    viShank_site's probe-dependent orientation, so without (:) the horzcat can dimension-
+%    mismatch when viShank_site is a row.
+%  * All three key vectors are length-guarded to nClu. viSite_clu tracks nClu tightly
+%    (rebuilt from viClu), but vrPos*_clu is recomputed only when EMPTY above, so it can be
+%    stale at length M ~= nClu. Without the position-length guard a stale position would
+%    pass viSite_clu's check and crash in the concat; with it, the state falls through to
+%    the else and is skipped gracefully by the numel(viMap_clu)~=nClu guard below.
+%  * Tie-break Y-then-X in the shank branch (depth first once shank segregates X); the
+%    fallback keeps its original X-then-Y. The priority swap is deliberate.
+viShank_site = get_(P, 'viShank_site');
+fShankSort_clu = ~isSingleShank_(P) ...
+    && isfield(S_clu, 'viSite_clu') && numel(S_clu.viSite_clu) == S_clu.nClu ...
+    && numel(S_clu.vrPosX_clu) == S_clu.nClu && numel(S_clu.vrPosY_clu) == S_clu.nClu ...
+    && all(S_clu.viSite_clu(:) >= 1 & S_clu.viSite_clu(:) <= numel(viShank_site));
+if fShankSort_clu
+    viShank_clu = viShank_site(S_clu.viSite_clu);   % shank of each cluster's peak site
+    [~, viMap_clu] = sortrows([viShank_clu(:), S_clu.vrPosY_clu(:), S_clu.vrPosX_clu(:)], [1, 2, 3]);
+else
+    mrPosXY_clu = [S_clu.vrPosX_clu(:), S_clu.vrPosY_clu(:)];
+    [~, viMap_clu] = sortrows(mrPosXY_clu, [1, 2]);
+end
 
 % Remap the per-spike labels (viClu) in lockstep with the per-cluster arrays that
 % S_clu_select_ reindexes below. viClu is a per-spike field and does not match
@@ -10523,7 +10549,11 @@ S_clu_assert_synced_(S_clu, 'reorder_clu_by_coords_');
 S0 = gui_update_();
 save0_();
 
-msgbox_(sprintf('Reordered %d clusters by coordinates (X, then Y)', S_clu.nClu));
+if fShankSort_clu
+    msgbox_(sprintf('Reordered %d clusters by coordinates (shank, then Y, then X)', S_clu.nClu));
+else
+    msgbox_(sprintf('Reordered %d clusters by coordinates (X, then Y)', S_clu.nClu));
+end
 end %func
 
 
