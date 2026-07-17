@@ -4206,6 +4206,11 @@ if 1
         fprintf('.');
     end %for
     mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+    % Cross-shank guard (defensive; non-default mode 2). No-op unless viSite_clu is
+    % nClu-aligned and the probe declares >1 shank.
+    if ~get_set_(P, 'fMerge_across_shank', 0)
+        mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+    end
     viMap_clu = int32(ml2map_(mlWavCor_clu));
     vlPos = S_clu.viClu > 0;
     S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -4477,6 +4482,12 @@ end
 % fprintf('\n\t%0.1fs\n', toc(t1));
 
 % Generate a map and merge clusters by translating index
+% Cross-shank guard: post_merge_wav4_ ran S_clu_refresh_ above, so S_clu.viSite_clu is
+% nClu-aligned and mlWavCor_clu is nClu x nClu -> shank_clu_ aligns. No-op when
+% fMerge_across_shank=1 / single-shank / shank_clu_ returns [].
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 S_clu = S_clu_map_index_(S_clu, viMap_clu);
 S_clu = S_clu_refresh_(S_clu);
@@ -9368,10 +9379,12 @@ iCluLog2 = S0.iCluPaste; % save for log before clearing
 iClu_deleted = max(S0.iCluCopy, S0.iCluPaste); % higher index gets deleted
 [S0.S_clu, fOk] = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
 if ~fOk
-    % merge_clu_ rolled back (see its message); do NOT touch the overlays, pending queue,
-    % or log. Return before the bookkeeping below and close the wait cursor. iCluPaste is
-    % left valid so the user can retry or pick a different target.
+    % merge_clu_ rolled back OR rejected the merge (cross-shank guard, or a delete_clu_
+    % desync abort); see its console message for the reason. Do NOT touch the overlays,
+    % pending queue, or log. Return before the bookkeeping below and close the wait cursor.
+    % iCluPaste is left valid so the user can retry or pick a different target.
     fprintf(2, 'ui_merge_: merge aborted (see above); no change made.\n');
+    msgbox_('Merge not applied (see console for reason). No change made.', 1);
     figure_wait_(0, hFig_wait);
     set(0, 'UserData', S0);
     return;
@@ -9411,6 +9424,20 @@ function [S_clu, fOk] = merge_clu_(S_clu, iClu1, iClu2, P)
 % invalid result -- that is a separate, pre-existing failure mode, not signalled via fOk.)
 fOk = false;
 if iClu1>iClu2, [iClu1, iClu2] = swap_(iClu1, iClu2); end
+
+% Cross-shank guard (Hook B): reject before ANY mutation. Covers the immediate merge paths
+% (Time/Proj/WavCor [m]) that bypass the pending queue. Returns with the default fOk=false
+% (already set above), so the sole caller ui_merge_ (irc.m ~9369) treats it exactly like a
+% rollback and makes no change. No-op when fMerge_across_shank=1 or shank_clu_ returns [].
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    viShank_clu = shank_clu_(S_clu, P);
+    if ~isempty(viShank_clu) && viShank_clu(iClu1) ~= viShank_clu(iClu2)
+        fprintf(2, ['merge_clu_: Clu %d (shank %d) and Clu %d (shank %d) are on different ' ...
+            'shanks; cross-shank merge rejected. No change made.\n'], ...
+            iClu1, viShank_clu(iClu1), iClu2, viShank_clu(iClu2));
+        return;
+    end
+end
 
 % ATOMICITY: a merge is two steps -- merge_clu_pair_ moves iClu2's spikes into iClu1, then
 % delete_clu_ removes the emptied iClu2. delete_clu_ now ABORTS (leaving S_clu untouched)
@@ -9587,6 +9614,21 @@ end
 iClu1 = S0.iCluCopy;
 iClu2 = S0.iCluPaste;
 
+% Cross-shank guard (Hook A): reject before anything enters the pending queue/log. This is
+% the only path where the check changes behavior -- a user could otherwise hand-queue two
+% clusters on physically different shanks (hundreds of um apart, never the same unit). No-op
+% when fMerge_across_shank=1 or shank_clu_ returns [] (single-shank / shank-less / bad
+% viSite_clu). Transitivity keeps every queued GROUP single-shank because add_pending_merge_
+% has this single caller, so a group can only ever grow by same-shank pairs.
+if ~get_set_(S0.P, 'fMerge_across_shank', 0)
+    viShank_clu = shank_clu_(S0.S_clu, S0.P);
+    if ~isempty(viShank_clu) && viShank_clu(iClu1) ~= viShank_clu(iClu2)
+        msgbox_(sprintf('Cannot merge across shanks (Clu %d shank %d, Clu %d shank %d).', ...
+            iClu1, viShank_clu(iClu1), iClu2, viShank_clu(iClu2)), 1);
+        return;
+    end
+end
+
 S0 = add_pending_merge_(iClu1, iClu2, S0);
 S0 = update_pending_markers_(S0);
 set(0, 'UserData', S0);
@@ -9719,6 +9761,27 @@ for iGroup = 1:numel(S0.cviMerge_pending)
     % Merge all clusters in group into target (from highest to lowest)
     for j = numel(viClu_group):-1:2
         iClu_source = viClu_group(j);
+
+        % Cross-shank backstop (Hook C): Hook A already keeps every queued group single-shank
+        % (add_pending_merge_ only grows a group via same-shank pairs), so this normally never
+        % fires -- it exists to catch a cross-shank pair that slipped in (e.g. the flag toggled
+        % between queueing and executing). Recompute shank_clu_ FRESH each iteration: the loop
+        % renumbers iClu_target/viClu_group in place after every delete below, so a snapshot
+        % taken before the loop would index the wrong clusters. Reuse the group rollback path.
+        if ~get_set_(P, 'fMerge_across_shank', 0)
+            viShank_clu = shank_clu_(S0.S_clu, P);
+            if ~isempty(viShank_clu) && viShank_clu(iClu_target) ~= viShank_clu(iClu_source)
+                S0.S_clu = S_clu_group_snap; % undo the entire group
+                fprintf(2, ['  execute_pending_: merge group -> Clu %d aborted at source %d; ' ...
+                    'cross-shank (shank %d vs %d), rolled back, not logged.\n'], ...
+                    iClu_target, iClu_source, viShank_clu(iClu_target), viShank_clu(iClu_source));
+                msgbox_(sprintf(['Cannot merge across shanks: Clu %d (shank %d) and Clu %d ' ...
+                    '(shank %d). Merge group rolled back.'], ...
+                    iClu_target, viShank_clu(iClu_target), iClu_source, viShank_clu(iClu_source)), 1);
+                fGroupOk = false;
+                break;
+            end
+        end
 
         % Do the merge
         S0.S_clu = merge_clu_pair_(S0.S_clu, iClu_target, iClu_source);
@@ -11571,7 +11634,29 @@ nClu = numel(setdiff(unique(S_clu.viClu), 0));
 
 mnKnn_clu = calc_dist_knn_clu(S_clu, P, run_mode);
 
-[viMap, viUniq_] = ml2map_(mnKnn_clu >= knn_merge_thresh);
+mlMerge_clu = mnKnn_clu >= knn_merge_thresh;
+% Cross-shank guard (the default DPC merge path -- the F1-relevant site). mnKnn_clu is
+% indexed by cluster LABEL 1..nClu (calc_dist_knn_clu builds it via viClu==iClu, size
+% numel(setdiff(unique(viClu),0))). This runs BEFORE S_clu_refresh_ in assign_clu_count_,
+% so S_clu.viSite_clu is NOT yet label-aligned -- shank_clu_ is the wrong source here.
+% Derive each label's peak-site shank from its center spike instead: S_clu.icl(i) is the
+% center of label i after assignCluster_, and viSite_spk(icl(i)) its peak site. Guard on
+% numel(icl)==size(mnKnn_clu,1); block_cross_shank_ additionally no-ops on any size
+% mismatch, so a misaligned derivation degrades to no protection, never a crash.
+if ~get_set_(P, 'fMerge_across_shank', 0) && ~isSingleShank_(P)
+    viShank_center = [];
+    viShank_site = get_(P, 'viShank_site');
+    viSite_spk = get0_('viSite_spk');
+    if ~isempty(viShank_site) && isfield(S_clu, 'icl') && ~isempty(S_clu.icl) ...
+            && numel(S_clu.icl) == size(mnKnn_clu, 1) && ~isempty(viSite_spk)
+        viSite_center = viSite_spk(S_clu.icl(:));
+        if all(viSite_center >= 1 & viSite_center <= numel(viShank_site))
+            viShank_center = reshape(viShank_site(viSite_center), 1, []);
+        end
+    end
+    mlMerge_clu = block_cross_shank_(mlMerge_clu, viShank_center);
+end
+[viMap, viUniq_] = ml2map_(mlMerge_clu);
 nClu_post = numel(viUniq_);
 viMap = viMap(:);
 fprintf('S_clu_peak_merge_: %d->%d cluster centers (knn_merge_thresh=%d)\n', ...
@@ -16125,6 +16210,64 @@ else
     flag = numel(unique(viShank_site)) == 1;
 end
 end
+
+
+%--------------------------------------------------------------------------
+function viShank_clu = shank_clu_(S_clu, P)
+% Per-cluster shank index (shank of each cluster's PEAK site). Returns [] to mean
+% "do not guard" whenever real usable shank data is absent -- this is what makes the
+% cross-shank merge guard a byte-identical no-op on single-shank / shank-less probes.
+%
+% Mirrors the defensive gating already in reorder_clu_by_coords_ (irc.m ~10510-10515);
+% [] is returned when ANY of these holds:
+%   * isSingleShank_(P) -- no shank field, empty viShank_site, or all values identical
+%     (e.g. the all-1s CID-14 case);
+%   * viShank_site empty, or S_clu missing viSite_clu / nClu;
+%   * viSite_clu wrong length (~= nClu), or any value out of [1, numel(viShank_site)].
+% The bound is numel(viShank_site) (NOT nSites) because viShank_site indexes by SITE.
+%
+% Row-normalized via reshape so a concatenating caller cannot hit the viShank_site-
+% orientation trap (see the (:) note at irc.m ~10499); block_cross_shank_ below relies
+% on it being a plain vector for the (:) ~= (:)' outer product.
+viShank_clu = [];
+if isSingleShank_(P), return; end
+viShank_site = get_(P, 'viShank_site');
+if isempty(viShank_site) || ~isfield(S_clu, 'viSite_clu') || ~isfield(S_clu, 'nClu')
+    return;
+end
+viSite_clu = S_clu.viSite_clu;
+if numel(viSite_clu) ~= S_clu.nClu, return; end
+if ~all(viSite_clu(:) >= 1 & viSite_clu(:) <= numel(viShank_site)), return; end
+viShank_clu = reshape(viShank_site(viSite_clu(:)), 1, []);
+end %func
+
+
+%--------------------------------------------------------------------------
+function ml = block_cross_shank_(ml, viShank_clu)
+% Zero out cross-shank entries of a cluster x cluster boolean merge-adjacency matrix so
+% the downstream ml2map_ collapse (irc.m ~4808) never joins clusters on different shanks.
+%
+% MUST stay symmetric: ml2map_ does mlConn = ml | ml' internally (irc.m ~4812), and the
+% source similarity matrices are populated in only ONE triangle (e.g.
+% waveform_similarity_clu_), so masking a single triangle would be silently undone by the
+% transpose-OR. The (:) ~= (:)' outer product is symmetric by construction.
+%
+% No-op (returns ml unchanged) when viShank_clu is [] -- the single-shank / shank-less /
+% guard-disabled path -- so the mask is a true no-op there. Strictly subtractive: it only
+% flips true->false, so ml2map_ collapses FEWER clusters (a still-valid surjective relabel
+% map); no viClu/cviSpk_clu desync is reachable by removing edges.
+%
+% Size fail-safe: if ml is not a square matrix whose side equals numel(viShank_clu), the
+% shank labels are not aligned with ml's cluster axis, so masking would be meaningless (or
+% error on the logical index). Return ml unchanged instead. This turns "the caller must
+% confirm ml is nClu x nClu" into a runtime guarantee -- a misaligned automated site
+% degrades to NO protection, never a crash or a wrong mask.
+if isempty(viShank_clu), return; end
+if ~ismatrix(ml) || size(ml,1) ~= size(ml,2) || numel(viShank_clu) ~= size(ml,1)
+    return;
+end
+ml(viShank_clu(:) ~= viShank_clu(:)') = false;
+end %func
 
 
 %--------------------------------------------------------------------------
@@ -31778,6 +31921,11 @@ end %for
 
 % merge
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32015,6 +32163,13 @@ if isempty(mrDist_clu)
 end
 nClu_pre = S_clu.nClu;
 mlWavCor_clu = mrDist_clu >= MERGE_THRESH;
+% Cross-shank guard (default post_merge_mode=1). mlWavCor_clu is nClu x nClu (mrDist_clu =
+% nan(S_clu.nClu)), so shank_clu_ aligns. Defensive: waveform_similarity_clu_ already only
+% populates same-site pairs, so cross-shank bits are ~never set -- this makes the guarantee
+% explicit. No-op when fMerge_across_shank=1 / single-shank / shank_clu_ returns [].
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32049,6 +32204,11 @@ mlWavCor_clu = mrSimilarity_clu >= get_set_(P, 'maxWavCor', .985) | mrCC_clu >= 
 nClu_pre = S_clu.nClu;
 
 % merge
+% Cross-shank guard (defensive; mode 15). No-op unless viSite_clu is nClu-aligned and the
+% probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32194,6 +32354,11 @@ for iClu1 = 1:S_clu.nClu
 %     fprintf('.');
 end %for
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32269,6 +32434,11 @@ for iClu1 = 1:nClu-1
 end 
 
 mlWavCor_clu = mrDist_clu >= get_set_(P, 'frac_knn_merge', .90);
+% Cross-shank guard (defensive; non-default mode 4). No-op unless viSite_clu is nClu-aligned
+% and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32732,6 +32902,11 @@ for iClu1 = 1:S_clu.nClu
 %     fprintf('.');
 end %for
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32834,6 +33009,11 @@ fprintf('\n\t\ttook %0.1fs\n', toc(t2));
 
 % merge waveforms
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -33163,6 +33343,11 @@ end %switch
 
 fprintf('post_merge_cc_\n'); t_merge = tic;
 nClu_pre = S_clu.nClu;
+% Cross-shank guard (defensive; mode 14 second correlogram stage -- NOT covered by the inner
+% templateMatch_post_ mask). No-op unless viSite_clu is nClu-aligned and >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number

@@ -8,11 +8,16 @@ remap + P3a sync detector — all committed).
 
 ---
 
-## STATUS — PLAN ONLY, no code written
+## STATUS — LANDED (`80a5901`, 2026-07-17)
 
-Nothing in `irc.m` has been changed. This document specifies the change, proves it cannot
-reintroduce the CID-01 desync, states the CID-14 dependency, and defines the verification.
-**Two open decisions in §8 must be confirmed before any code is written.**
+Implemented in `reorder_clu_by_coords_` and pushed. Reviewed (architecture + devil's-advocate),
+verified **5/5** by the synthetic negative control, and hardened beyond this draft — see
+`logs/changes_log20260717.md` §1 (`S_clu.nClu` used directly, position-length guard added,
+`isSingleShank_` reused). §8's open decisions were resolved: tie-break `[shank, Y, X]`; land the
+code dormant and treat CID-14 activation separately. **Activation on this recording is now done**
+(the baked `viShank_site` line was commented out of the `.prm`; `loadParam_` returns `[1 2 3 4]`),
+so `[O]` now orders by shank → depth. See `logs/changes_log20260717.md` §3 and the CID-14 tracker
+entry.
 
 ---
 

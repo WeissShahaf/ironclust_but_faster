@@ -200,6 +200,13 @@ symptom (7/10, see CID‑04).
   `load_prb_`): full probe → `{1,2,3,4}` (96 each); afm17313 "join_tips" PAG subset → `{1,4}`
   (200+14), matching meta `shankInd+1`. Existing `.prb` files untouched (regenerate to apply). See
   `logs/changes_log20260716.md` X4. Sibling generators still carry the same omission.
+- **⚠ Activation blocker (2026‑07‑17):** regenerating / pointing `probe_file` at a shank‑bearing
+  `.prb` is **not sufficient** on an existing `.prm`. `loadParam_` re‑reads the `.prb` (irc.m:1599)
+  then `struct_merge_(P0, P)` (irc.m:1603) lets the **`.prm`** win (irc.m:20848), so a baked
+  `viShank_site = [1,1,…]` line in the `.prm` overrides the probe on every load. **Fix:** comment
+  out / delete that `.prm` line so the `.prb` shanks survive the merge. Proven via
+  `irc('call','loadParam_',{prm})`: line present → `unique(viShank_site)=1`; removed → `[1 2 3 4]`×96.
+  This is what *activates* the shank‑aware `[O]` reorder (`80a5901`). See `logs/changes_log20260717.md` §3.
 
 ### CID‑15 ✅ `viClu_prematch` — cleaned up (X1, 2026‑07‑16)
 - Set/read on adjacent lines — transient, always fresh at use. Not a correctness bug, but it was a
