@@ -14,7 +14,8 @@
 - ✅ **P2-core + P2a–d** (explicit `fOk`, all four call-site groups) — `verify_p2.m` 4/4.
 - ✅ **P3b** (`cviSpk_clu` critical field) — `verify_p3b.m` 3/3.
 - ✅ **X3** (hard-fail `split_clu_` truncate/pad) — trace + `checkcode` (GUI-blocking, not headless).
-- ⏳ **X1, X2, X4** — deferred (independent; X4 is a `.prb` data fix, CID-14).
+- ✅ **X1** (drop persisted `viClu_prematch`, ~68 MB) — committed `525b8f5`.
+- ⏳ **X2, X4** — deferred (independent; X4 is a `.prb` data fix, CID-14).
 
 **Decisions (§9, user 2026-07-16):** explicit `fOk`; all four groups; implement P3b; hard-fail X3.
 
@@ -458,7 +459,7 @@ every such caller remap `viClu`, plus rollback guards and a detector.
 | **CID-08** | `merge_clu_` (9344; rollback 9360-9372) | If its `delete_clu_` aborted, the merge was left half-applied and still logged as complete. | Snapshot at entry; roll the whole merge back if `nClu` didn't drop. | Merge is all-or-nothing. (Defence-in-depth; see §3 — the primary `[U]` path bypasses this function, which is what P2 addresses.) |
 | **CID-09** | `post_merge_wav_` (4287; `nClu_merge=0` at 4293; early return 4300) | Stripped `mrWavCor` then returned early with `nClu_merge` unassigned → crash on the 2-output `auto_merge_` caller; cache destroyed. | Assign `nClu_merge=0` on entry; move the early return **before** the `rmfield_`. | The `fSave_spkwav=0` path is a true no-op; no crash, cache intact. |
 | **CID-10** | parpool sizing (2572) | `elseif hPool.NumWorkers > nWorkers` only shrank an oversized pool; a stale undersized pool was reused → narrow run. | `~= nWorkers` — resize either direction, log it. | Pool matches the requested width; a correctly-sized pool is untouched. |
-| **CID-11** *(enabler, open)* | `struct_select_safe_` (19589) + reconcile block (19690-19718) | Skips a field it can't resize and returns normally; the reconcile then pads `cviSpk_clu` with `{[]}` — content stale, length correct. This is what turns a crash into silent corruption. | **Not yet fixed** — plan P3b makes `cviSpk_clu` a critical field. | Currently mitigated: all primary causes closed, and `delete_clu_`'s content guard catches it locally. |
+| **CID-11** *(enabler)* | `struct_select_safe_` (19589) + reconcile block (19690-19718) | Skips a field it can't resize and returns normally; the reconcile then pads `cviSpk_clu` with `{[]}` — content stale, length correct. This is what turns a crash into silent corruption. | Fixed (P3b, `d372eac`): `cviSpk_clu` marked critical in `struct_select_safe_`; a resize failure re-throws instead of padding. | A critical-field resize failure re-throws; `delete_clu_` rolls back via its catch, the four non-guarded callers crash rather than desync. |
 
 ### A.3 What the code does now, end to end
 

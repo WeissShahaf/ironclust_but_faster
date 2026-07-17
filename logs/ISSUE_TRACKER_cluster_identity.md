@@ -29,11 +29,11 @@ updated one and not the other, silently, and saved the result. The invariant tha
 | **CID‑08** | `merge_clu_` — a `delete_clu_` abort leaves a half‑applied, falsely‑logged merge | medium | ✅ | `d954926` |
 | **CID‑09** | `post_merge_wav_` early return — unassigned output + `mrWavCor` stripped | high (latent) | ✅ | `d954926` |
 | **CID‑10** | parpool undersize‑reuse — stale small pool silently reused | low | ✅ | `d954926` |
-| **CID‑11** | `struct_select_safe_` skips silently **and** the length‑reconcile block falsifies lengths | high (enabler) | 🟡 | *(uncommitted, P3b)* |
+| **CID‑11** | `struct_select_safe_` skips silently **and** the length‑reconcile block falsifies lengths | high (enabler) | ✅ | `d372eac` |
 | **CID‑12** | corrupted `_jrc.mat` on disk — **not recoverable**, re‑sort required | data‑loss | 🔵 | `83776fc` (tool) |
 | **CID‑13** | `maxSpk_persite_clust = 20000` → 69.5% of spikes 1‑NN‑propagated, not clustered | advisory | 🔵 | — |
 | **CID‑14** | `P.viShank_site` all `1`s on a 4‑shank Neuropixels 2.0 probe | medium | ✅ | *(generator, ext repo)* |
-| **CID‑15** | `viClu_prematch` — 68 MB per‑spike copy persisted for no reason | trivial | 🟡 | *(uncommitted, X1)* |
+| **CID‑15** | `viClu_prematch` — 68 MB per‑spike copy persisted for no reason | trivial | ✅ | `525b8f5` |
 
 **Prior related work (context, pre‑saga):** `ea6a8dc` GUI Merge‑auto sign bug (6/26) ·
 `0f2ab3f` post‑merge/per‑site empty‑cluster hardening (6/26) · `97b69f8` per‑site cap
@@ -148,7 +148,7 @@ symptom (7/10, see CID‑04).
   `.prm` asks for 12).
 - **Fix:** `~= nWorkers` — resizes either direction and logs it. No‑op for a correctly‑sized pool.
 
-### CID‑11 🟡 `struct_select_safe_` silent skip + length‑reconcile falsifies lengths *(the enabler)*
+### CID‑11 ✅ `struct_select_safe_` silent skip + length‑reconcile falsifies lengths *(the enabler)*
 - **Two compounding mechanisms:**
   1. `struct_select_safe_` resizes each field independently and **skips a field it
      can't resize with a console warning, returning normally** — no exception propagates.
@@ -201,11 +201,11 @@ symptom (7/10, see CID‑04).
   (200+14), matching meta `shankInd+1`. Existing `.prb` files untouched (regenerate to apply). See
   `logs/changes_log20260716.md` X4. Sibling generators still carry the same omission.
 
-### CID‑15 🟡 `viClu_prematch` — cleaned up (X1, 2026‑07‑16)
+### CID‑15 ✅ `viClu_prematch` — cleaned up (X1, 2026‑07‑16)
 - Set/read on adjacent lines — transient, always fresh at use. Not a correctness bug, but it was a
   per‑spike copy (~68 MB) persisted into every `_jrc.mat` for no reason.
 - **Fix (X1):** made it a **local** variable in the template‑match step instead of an `S_clu` field,
-  so it never reaches the save path. `frac_changed` byte‑identical. `checkcode` clean; uncommitted.
+  so it never reaches the save path. `frac_changed` byte‑identical. `checkcode` clean; committed `525b8f5`.
 
 ---
 
@@ -220,7 +220,7 @@ symptom (7/10, see CID‑04).
 | 2026‑07‑15 | first diagnosis (positional mask) **refuted**; CID‑01 found & confirmed; `87cd4f1` ships CID‑01…06; measured the on‑disk corruption; recovery attempted and **refuted**; `83776fc` ships the investigation + `repair_clu_sync.m` |
 | 2026‑07‑16 | CID‑07…10 fixed & verified; clustering‑method audit (CID‑13 measured); this tracker created. Re‑sort of `_irc_all.prm` completed clean (Test B, 0/547) |
 | 2026‑07‑16 | hardening pass begins (plan `plan_cluster_identity_hardening_20260716.md`): **P1** load‑time detection + **P3a** `[O]`‑path detection landed (extend CID‑06), verified 4/4; P2/P3b pending user decisions |
-| 2026‑07‑16 | hardening pass completes: **P2** abort‑propagation (explicit `fOk`, all 4 call‑site groups; `verify_p2.m` 4/4), **P3b** `cviSpk_clu` critical field (closes CID‑11; `verify_p3b.m` 3/3), **X3** `split_clu_` truncate/pad hard‑fail. CID‑07…10 marked committed (`d954926`). All uncommitted at time of writing |
+| 2026‑07‑16 | hardening pass completes: **P2** abort‑propagation (explicit `fOk`, all 4 call‑site groups; `verify_p2.m` 4/4), **P3b** `cviSpk_clu` critical field (closes CID‑11; `verify_p3b.m` 3/3), **X3** `split_clu_` truncate/pad hard‑fail. CID‑07…10 marked committed (`d954926`). P2/P3b/X3 committed `d372eac`; X1 `525b8f5` |
 
 ---
 
