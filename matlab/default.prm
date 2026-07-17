@@ -19,6 +19,7 @@ header_offset = 0;          % File header offset (set to 0 for files containing 
 version = '';               % IronClust version
 fVerbose = 0;               % Verbose flag, set to 0 to suppress displaying extra information 
 fParfor = 1;                % Use Multiple CPU cores (if parallel processing toolbox is installed)
+parfor_core_factor = 0.85;  % Safety-margin cap on the parfor worker pool cluster_labels_persite_ creates: floor(parfor_core_factor * #cores) (max_workers_ in irc.m). Lower on shared/interactive machines. NOT a fix for BLAS-thread oversubscription under parfor -- see logs/investigation_maxSpk_persite_clust.md; fParfor=0 remains the measured-correct setting for per-site label-clustering workloads.
 fGpu = 1;                   % Use GPU if parallel processing toolbox is installed
 fGpu_sort = 1;              % Use GPU for clustering if parallel processing toolbox is installed
 fGpu_rho = 1;               % Use GPU for computing KNN and Rho
@@ -206,7 +207,7 @@ isosplit_max_iterations = 1000;    % ISO-SPLIT (v5): safety cap on merge/redistr
 isosplit_whiten = 1;               % ISO-SPLIT (v5): whiten comparison axis by pooled covariance (1=on, 0=off)
 % The per-site clustering loop (kmeans/hdbscan/isosplit) runs in parallel when fParfor=1.
 nWorkers_clust = 12;               % max parallel workers for per-site clustering (capped at #cores). Each worker holds one site's data (~8GB), so raise only if RAM allows; lower (4-8) if memory-bound.
-maxSpk_persite_clust = [];         % per-site spike cap for label-based clustering. [] = off (no cap; behaviour byte-identical to before). Sites with more spikes cluster a random subsample of this many and assign the rest to the nearest subset member, bounding the O(n^2) kNN graph + clustering on huge (usually noise) channels. Try 50000-100000 to enable; with m=50000 a 1.1M-spike noise site drops from ~80 min to ~90 s (measured: isosplit ~5 s + subset kNN + a 1-NN assignment pass ~86 s).
+maxSpk_persite_clust = [];         % per-site spike cap for label-based clustering. [] = off (no cap; behaviour byte-identical to before). Sites with more spikes cluster a random subsample of this many and assign the rest to the nearest subset member, bounding the O(n^2) kNN graph + clustering on huge (usually noise) channels. Try 50000-100000 to enable; with m=50000 a 1.1M-spike noise site drops from ~80 min to ~90 s (measured: isosplit ~5 s + subset kNN + a 1-NN assignment pass ~86 s). When fGpu=1 the 1-NN assignment pass (nearest_in_set_) runs on GPU -- measured ~25-28x faster than CPU on the assignment step, with bit-exact indices -- automatically falling back to CPU if the GPU errors or if running inside a parfor worker (single shared GPU). Set fGpu=0 to force the CPU assignment path.
 
 % #Trial (used for plotting PSTH for each unit after clustering)
 vcFile_trial = '';          % .mat or .csv file containing timestamp in seconds unit. use any variable name.

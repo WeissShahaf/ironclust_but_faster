@@ -2553,11 +2553,7 @@ nWorkers = max(1, round(get_set_(P, 'nWorkers_clust', 8)));
 % profile's NumWorkers throws ("Too many workers requested ..."), which would otherwise
 % drop us to the (much slower) serial path. To use more workers, raise the profile cap:
 %   c = parcluster('local'); c.NumWorkers = 12; saveProfile(c);
-nWorkersMax = feature('numcores');
-try
-    nWorkersMax = parcluster('local').NumWorkers;
-catch
-end
+nWorkersMax = max_workers_(P);   % capped at 0.85x cores (P.parfor_core_factor); see default.prm
 nWorkers = min(nWorkers, nWorkersMax);
 progress_persite_('init', nSites);
 if fParfor
@@ -2788,7 +2784,15 @@ nLabel = max([0; viLabelSub(viLabelSub > 0)]);
 hT = tic;
 try
     [miKnnSub, vrRhoSub] = persite_knn_(Xsub', knn, viSpkSub);
-    viNN = nearest_in_set_(X', Xsub');     % n1 x 1, index into the m subset members
+    % Any capped site (n1 > maxSpk) is a GPU candidate for the 1-NN assignment when
+    % P.fGpu is on -- Step 0 measured GPU ~25-28x faster than CPU here with no upper
+    % crossover (GPU still wins at n1~587k), so there is no upper size band. nearest_in_set_
+    % declines GPU inside a parfor worker and falls back to CPU on any GPU error.
+    fUseGpu = get_set_(P, 'fGpu', 0);
+    viNN = nearest_in_set_(X', Xsub', fUseGpu);     % n1 x 1, index into the m subset members
+    if ~all(viNN >= 1 & viNN <= m)   % defensive: a valid assignment indexes only the m subset members
+        error('nearest_in_set_ returned an out-of-range index');   % caught below -> single-cluster fallback
+    end
     viLabel = viLabelSub(viNN);
     miKnn1 = miKnnSub(:, viNN);
     vrRho1 = vrRhoSub(viNN);
@@ -2806,16 +2810,58 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function viNN = nearest_in_set_(mrFet_all, mrFet_sub)
+function viNN = nearest_in_set_(mrFet_all, mrFet_sub, fUseGpu)
 % For each column of mrFet_all (nFet x n1), return the index (1..m) of the
 % nearest column in mrFet_sub (nFet x m) by Euclidean distance. Chunked over the
 % queries (like knn_cpu_) so the pdist2 distance block stays bounded in memory.
 % Pure of shared state -> parfor-safe. Used by the per-site spike cap to assign
 % every spike to its nearest clustered subsample member.
+%
+% fUseGpu (optional, default false): when true, try a gpuArray-wrapped pdist2 GPU
+% path first (single precision), FALLING BACK TO THE CPU PATH BELOW ON ANY GPU ERROR
+% (mirrors cuda_knn_/cuda_delta_knn_'s try/GPU/catch-fallback idiom). Since this runs
+% once per capped site, a GPU failure on one site falls back to CPU for that site
+% while later sites still retry GPU. Measured ~25-28x faster than CPU with bit-exact
+% indices on real data (site n1~587k, m up to 200k, RTX 4000 Ada). GPU is additionally
+% declined when running inside a parfor worker (getCurrentTask() non-empty), because
+% cluster_site_capped_ runs inside cluster_labels_persite_'s parfor loop across up to
+% nWorkers_clust workers sharing ONE physical GPU. Omitting fUseGpu (nargin<3) preserves
+% today's CPU-only behavior byte-identically.
+if nargin < 3 || isempty(fUseGpu), fUseGpu = false; end
 n1 = size(mrFet_all, 2);
+m  = size(mrFet_sub, 2);
 viNN = zeros(n1, 1);
 mrSub_T = mrFet_sub';            % m x nFet (the searched set)
 nStep = 10000;                   % larger blocks = fewer calls + better BLAS efficiency
+
+if fUseGpu && isempty(getCurrentTask())
+    [gSub_T, fGpu_ok] = gpuArray_(single(mrSub_T));   % upload the constant anchor set once (gpuArray_ retries after a gpuDevice(1) reset)
+    if fGpu_ok
+        try
+            % Budget the GPU chunk size by available VRAM: the nStep_gpu x m single-
+            % precision distance block pdist2 materializes must fit. The CPU nStep=10000
+            % assumes system RAM; m can be hundreds of thousands on a capped giant site.
+            try
+                nBudgetBytes = 0.25 * gpuDevice().AvailableMemory;
+            catch
+                nBudgetBytes = 1e9;   % ~1GB fallback if the device query itself fails
+            end
+            nStep_gpu = max(1, min(nStep, floor(nBudgetBytes / (4 * max(m,1)))));
+            for i1 = 1:nStep_gpu:n1
+                vi_ = i1:min(i1+nStep_gpu-1, n1);
+                gChunk = gpuArray(single(mrFet_all(:,vi_)'));
+                [~, gIx] = pdist2(gSub_T, gChunk, 'euclidean', 'Smallest', 1);
+                viNN(vi_) = gather(gIx(:));
+            end
+            return;
+        catch ME
+            fprintf(2, '\n\tnearest_in_set_: GPU path failed (%s); falling back to CPU\n', ME.message);
+            viNN = zeros(n1, 1);   % discard any partial GPU results; CPU loop below covers all n1
+        end
+    end
+end
+
+% CPU path (default; also the GPU-failure fallback) -- UNCHANGED from today
 for i1 = 1:nStep:n1
     vi_ = i1:min(i1+nStep-1, n1);
     [~, ix] = pdist2(mrSub_T, mrFet_all(:,vi_)', 'euclidean', 'Smallest', 1);
@@ -16417,6 +16463,27 @@ for iSite = 1:nSites
         tr(:,:,iSite) = reshape(mr(miRange, iSite), dimm_tr(1:2));
     end
 end
+end %func
+
+
+%--------------------------------------------------------------------------
+function nMax = max_workers_(P)
+% Hard cap on the parfor worker-pool width this file creates: floor(factor * cores),
+% using the same probe cluster_labels_persite_ already used (parcluster('local').NumWorkers,
+% falling back to feature('numcores')). Default factor 0.85 is a flat safety margin
+% (leaves ~15% of cores for OS/GUI/other processes) -- NOT a fix for BLAS-thread
+% oversubscription under parfor (see logs/investigation_maxSpk_persite_clust.md, which
+% found fParfor=1 itself a ~3x pessimization on the per-site label-clustering workload
+% regardless of worker count); override via P.parfor_core_factor if a machine needs a
+% different margin.
+if nargin < 1, P = []; end
+nCores = feature('numcores');
+try
+    nCores = parcluster('local').NumWorkers;
+catch
+end
+factor = get_set_(P, 'parfor_core_factor', 0.85);
+nMax = max(1, floor(factor * nCores));
 end %func
 
 
