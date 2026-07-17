@@ -177,6 +177,32 @@ mask+`ml2map_` separation with same-shank chain still collapsing (T1), regressio
 Hook B rejecting a cross-shank pair *byte-identically before mutation* while `fMerge_across_shank=1`
 falls through (T5).
 
-**Not yet run:** end-to-end re-`irc sort` on the real recording (long + overwrites `_jrc.mat`) and the
-interactive `irc manual` `[M]`/`[U]` check — pending user go-ahead. Requires shanks active (the baked
-`viShank_site` line commented out of the `.prm`, per §3).
+**Live-verified on the real recording (in-memory, no save).** The full re-`irc sort` re-clustered
+cleanly (1287 clusters, ~145 min) but its auto-merge crashed on a **pre-existing, unrelated `.prm`
+bug** (see below), upstream of every mask. So the mask path was instead exercised via an in-memory
+`post_merge_` on the existing sorted `_jrc.mat` (`scratchpad/verify_postmerge_inmem.m`): replicates
+`auto_`'s load + `post_merge_` with a **scalar** `post_merge_mode=17` (→ `templateMatch_post_`, which
+carries the cross-shank mask), guard on (`fMerge_across_shank=0`), 4 shanks active
+(`unique(viShank_site)=[1 2 3 4]`), **no `save0_`** (on-disk `_jrc.mat` byte-identical before/after).
+Result: `templateMatch_post_` merged 5 real clusters (934→929) without crashing on the real
+~934×934 adjacency; **0/929 final clusters span >1 shank by member-spike sites**; per-shank peak-site
+distribution `[239 230 193 267]`; **CID-01 invariant `all(viClu(cviSpk_clu{i})==i)` holds**. This
+confirms the mask is correctly placed/wired and non-crashing on real data, and that legitimate
+same-shank merges still proceed. (Combined with the 22/22 harness — which proves the mask actually
+*blocks* cross-shank edges when they exist — coverage is: harness = blocking correctness, live run =
+placement/wiring + no-crash + no identity corruption.)
+
+**Still not run:** the interactive `irc manual` `[M]`/`[U]` check (needs a live figure; user-driven).
+
+### Pre-existing bug surfaced (separate from the guard): `post_merge_mode` as an array
+
+`irc>fet2clu_` (irc.m:2382) unconditionally calls `post_merge_`, whose dispatch is
+`switch get_set_(P,'post_merge_mode',1)` (irc.m:3910) — a **scalar** switch. The recording's `.prm`
+had `post_merge_mode = [17,4,12,15]` (an array, evidently copy-pasted from the `post_merge_mode0`
+line, which *is* array-capable — its dispatcher at irc.m:11501 guards `numel(post_merge_mode0)>1`).
+Switching on an array throws `SWITCH expression must be a scalar or a character vector`, so **any**
+`irc('sort')` on this `.prm` crashes at auto-merge, with or without the cross-shank change. `default.prm`
+is correct (`post_merge_mode = 1;` scalar, `post_merge_mode0 = [12,17];` array). **Fix (user-authorized):**
+set the recording's `post_merge_mode = 17;` (scalar, first element). `post_merge_mode0` left as-is
+(irrelevant on this `fLabelClu`/iso-split path, which skips `postCluster_`). No `irc.m` change made for
+this — it is a recording-`.prm` fix, not a code fix.
