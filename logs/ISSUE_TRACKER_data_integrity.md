@@ -9,7 +9,7 @@ issue here is **new** and **distinct** from the `viClu`⇄`cviSpk_clu` desync fa
 re-verified present in current code — see Appendix A).
 
 **Legend.** ✅ fixed & committed · 🟡 fixed, uncommitted · 🔵 open/deferred · ⚪ not-a-bug ·
-⛔ retracted. **DI-01, DI-02, DI-05 are now 🟡 (implemented 2026-07-18, see below); the rest are 🔵 open.**
+⛔ retracted. **DI-01, DI-02, DI-05, DI-06, DI-15 are now 🟡 (implemented 2026-07-18, see below); the rest are 🔵 open.**
 
 **Confidence** = the mechanism is real, independent of trigger likelihood. **DI-01 was hand-verified
 twice** (auditor + devil's-advocate, independently). Line numbers verified against source on 2026-07-18;
@@ -36,10 +36,11 @@ duplicated copy is the single easiest way to half-migrate this plan.
 
 ---
 
-## ✅ Implemented 2026-07-18 — Phase 0 (foundation) + DI-01 + DI-02/05
+## ✅ Implemented 2026-07-18 — Phase 0 (foundation) + DI-01 + DI-02/05 + DI-06/15
 
-On branch `rewind` (uncommitted). Verified: `irc.m`/`irc2.m` parse clean (checkcode: 0 parse errors);
-12-check MATLAB harness `scratchpad/verify_phase012.m` all green on the real dev box.
+Phase 0-2 committed (`bcbe008`); Phase 3 (DI-06/15) follows. Verified: `irc.m`/`irc2.m` parse clean
+(checkcode: 0 parse errors); MATLAB harnesses `scratchpad/verify_phase012.m` (12 checks) +
+`verify_phase3.m` (7 checks) all green on the real dev box.
 - **DI-01** 🟡 — `execute_pending_and_update_` (irc.m ~9843) now reconciles the not-yet-processed
   pending groups after each in-group delete (concatenation form, reusing `adjust_pending_indices_`).
   Verified: `{[3,5],[7,9]}` → after group 1 deletes Clu5, group 2 correctly shifts `[7,9]`→`[6,8]`
@@ -48,6 +49,16 @@ On branch `rewind` (uncommitted). Verified: `irc.m`/`irc2.m` parse clean (checkc
   atomically (temp → `atomic_replace_` → `.bak`); `save0_` (irc.m:13161) blocks a false "success" and
   warns via `msgbox_`. Verified: healthy save `fOk=1`, content matches, no `.tmp` litter; bad-path
   `fOk=0`, no exception, **prior good `_jrc.mat` intact**; `atomic_replace_` refuses an empty temp.
+- **DI-06** 🟡 — `file2cellstr_` (irc.m:21907) now distinguishes a read failure on an *existing* file
+  (`fOk=false` → `edit_prm_file_` aborts rather than truncating the live `.prm`) from an *absent* file
+  (`fOk=true`, so new-`.prm` creation still works); `cellstr2file_` (irc.m:22010) writes to a temp then
+  renames (atomic; `movefile` not `atomic_replace_` so a legitimately-empty text file isn't refused).
+  Verified: edit round-trip preserves comments + untouched params; absent-file path still creates; empty
+  write still works.
+- **DI-15** 🟡 — `export_prm_` (irc.m:23413) now reads `P` from the source **before** touching the
+  target and builds the full prm into a temp (atomic replace + `.bak`), so `irc('export-prm','x.prm')`
+  in a fresh session no longer wipes the user's settings. Verified: `sRateHz=12345` survives a
+  standalone export (was clobbered to the default before). Both reuse the A1 helpers from Phase 0.
 - **Foundation (A1/A2/A4)** — `tempname_sibling_`/`atomic_replace_` (both files), `disperr_strict_`
   (irc.m), `fread_` default-off `fStrict` (both files; its own catch now rethrows in strict mode so a
   strict error isn't swallowed at layer 0), `fwrite_` short-write count check (irc.m). **All default-off
@@ -99,7 +110,7 @@ helpers exist.
 | **DI-03** | `file2spk_` uses last chunk as `dimm_*` template — zero-spike tail zeroes it | 1 | high | high | 🔵 |
 | **DI-04** | `fread_` silent short-read reshape → spike↔waveform misalignment (4-layer swallow chain) | 1 | high | high | 🔵 |
 | **DI-05** | Non-atomic `_jrc.mat` overwrite — no temp+rename/backup | 2 | high | high | 🟡 |
-| **DI-06** | `.prm` read-modify-write truncates the live file on a transient read failure | 2 | high | med-high | 🔵 |
+| **DI-06** | `.prm` read-modify-write truncates the live file on a transient read failure | 2 | high | med-high | 🟡 |
 | **DI-07** | `write_spk_`/`fwrite_` failures discarded during detection | 2 | high | high | 🔵 |
 | **DI-08** | `mn2tn_wav_` per-site catch → phantom zero waveforms + defeats GPU→CPU retry | 2 | medium | medium | 🔵 |
 | **DI-09** | `spikeMerge_` per-site catch drops a whole site's spikes for the chunk | 2 | medium | medium | 🔵 |
@@ -108,7 +119,7 @@ helpers exist.
 | **DI-12** | `field2str_` can't format MATLAB `string` class *(the error seen 2026-07-18)* | 3 | cosmetic | high | 🔵 |
 | **DI-13** | No `fclose` cleanup on mid-detection exception; unbuffered `'W'` handles | 3 | low-med | medium | 🔵 |
 | **DI-14** | irc2 stale-lock never cleared + check-then-act lock race (TOCTOU) | 3 | medium | medium | 🔵 |
-| **DI-15** | `export-prm` clobbers target before verify → **total unrecoverable config loss** | 2 | **high** | **high** | 🔵 |
+| **DI-15** | `export-prm` clobbers target before verify → **total unrecoverable config loss** | 2 | **high** | **high** | 🟡 |
 | **DI-16** | `wav_car_` int16 saturating sum corrupts the CAR reference | 3 | **low-med** | med-high | 🔵 |
 | **DI-17** | int32 saturation for untransposed >~20 h recordings | 3 | low (narrow) | low-med | 🔵 |
 | **DI-18** | `post_merge_mode` array → hard crash; no validation/coercion | 3 | low (crash) | high | 🔵 |

@@ -168,3 +168,29 @@ CID-01 `verify_reorder.m` convention).
 ## Files
 - Modified: `matlab/irc.m`, `matlab/irc2.m`.
 - Added: `logs/ISSUE_TRACKER_data_integrity.md`, `scratchpad/verify_phase012.m` (test harness, not committed).
+
+## Phase 3 (later same day) — DI-06 + DI-15 (`.prm` integrity)
+
+Both reuse the Phase 0 atomic-write foundation. `irc.m` only.
+
+### DI-06 (high) — a transient read failure silently truncated the live `.prm`
+`file2cellstr_`'s `catch` returned `{}` — indistinguishable from an empty file — so a momentary lock on
+the `.prm` at edit time made `edit_prm_file_` rewrite it with only the currently-loaded `P` fields,
+dropping comments/directives. **Fix:** `file2cellstr_` (irc.m:21907) returns a 2nd output `fOk`, `false`
+only when the file EXISTS but can't be read (an *absent* file stays `fOk=true`, so `edit_prm_file_` can
+still create a prm from scratch); `edit_prm_file_` (irc.m:21878) aborts instead of truncating on
+`fOk=false`; `cellstr2file_` (irc.m:22010) writes to a temp then renames (atomic; `movefile` so a
+legitimately-empty text file isn't refused). 4 other `file2cellstr_` callers and ~10 `cellstr2file_`
+callers are unaffected (backward-compatible signature, behavior-preserving writes).
+
+### DI-15 (high, upgraded from medium) — `export-prm` wiped the user's `.prm` in a fresh session
+`irc('export-prm','x.prm')` (standalone form, no 2nd arg) `copyfile`'d the bare default template over the
+target BEFORE reading `P`; in a fresh session `get0_('P')` is empty, so `P` was then read from the
+*already-clobbered* file — permanently losing the user's probe/thresholds. **Fix:** `export_prm_`
+(irc.m:23413) reads `P` from the source first, builds the full prm into a temp, and `atomic_replace_`s it
+onto the target (with a `.bak`).
+
+### Verification
+`scratchpad/verify_phase3.m` — 7 checks, all green: irc.m parses clean; `file2cellstr_` readable/absent;
+`edit_prm_file_` round-trip preserves comments+params (no truncation); `cellstr2file_` non-empty + empty;
+**DI-15 standalone export preserves the user setting** (`sRateHz=12345`, was clobbered to default before).

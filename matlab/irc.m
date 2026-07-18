@@ -21878,7 +21878,10 @@ end %func
 function P = edit_prm_file_(P, vcFile_prm)
 % Modify the parameter file using the variables in the P struct
 
-csLines = file2cellstr_(vcFile_prm); %read to cell string
+[csLines, fReadOk] = file2cellstr_(vcFile_prm); %read to cell string
+if ~fReadOk   % DI-06: a failed read reads as an empty file -- refuse to truncate a live .prm
+    error('edit_prm_file_: could not read %s; refusing to truncate a live file.', vcFile_prm);
+end
 csLines_var = first_string_(csLines);
 
 csName = fieldnames(P);
@@ -21904,17 +21907,31 @@ end %func
 
 %--------------------------------------------------------------------------
 % 8/2/17 JJJ: Documentation and test
-function csLines = file2cellstr_(vcFile)
+function [csLines, fOk] = file2cellstr_(vcFile)
 % read text file to a cell string
-try
-    fid = fopen(vcFile, 'r');
-    csLines = {};
-    while ~feof(fid), csLines{end+1} = fgetl(fid); end
-    fclose(fid);
-    csLines = csLines';
-catch
-    csLines = {};
+% DI-06: fOk distinguishes (real read OR legitimately-absent file = true) from a read FAILURE on
+% an EXISTING file (locked/permission = false). The failure case is otherwise indistinguishable
+% from an empty file, which let a transient lock on a .prm silently truncate it (see
+% edit_prm_file_). A nonexistent target stays fOk=true so edit_prm_file_ can still create a prm
+% from scratch. Existing single-output callers are unaffected (they ignore fOk, still get {}).
+csLines = {}; fOk = false;
+if exist(vcFile, 'file') ~= 2
+    fOk = true;   % absent (or not a plain file) -> legitimately empty, not a failure
+    return;
 end
+fid = fopen(vcFile, 'r');
+if fid < 0
+    fprintf(2, 'file2cellstr_: %s exists but could not be opened for reading (locked?)\n', vcFile);
+    return;   % fOk stays false -> a real read failure on an existing file
+end
+try
+    while ~feof(fid), csLines{end+1} = fgetl(fid); end
+    fOk = true;
+catch
+    csLines = {}; fOk = false;
+end
+fclose(fid);
+csLines = csLines';
 end %func
 
 
@@ -22012,11 +22029,25 @@ function cellstr2file_(vcFile, csLines, fVerbose)
 if nargin<3, fVerbose = 0; end
 vcDir = fileparts(vcFile);
 mkdir_(vcDir);
-fid = fopen(vcFile, 'w');
+% DI-06: write to a sibling temp then atomically rename, so a transient failure / interrupted
+% write can't leave the live file truncated. movefile (not atomic_replace_) because a text file
+% may legitimately be empty, which atomic_replace_ deliberately refuses to commit.
+vcFile_tmp = tempname_sibling_(vcFile);
+fid = fopen(vcFile_tmp, 'w');
+if fid < 0
+    fprintf(2, 'cellstr2file_: could not open %s for writing\n', vcFile_tmp);
+    return;
+end
 for i=1:numel(csLines)
     fprintf(fid, '%s\n', csLines{i});
 end
 fclose(fid);
+try
+    movefile(vcFile_tmp, vcFile, 'f');
+catch ME
+    fprintf(2, 'cellstr2file_: could not commit %s (%s)\n', vcFile, ME.message);
+    if exist(vcFile_tmp, 'file'), try delete(vcFile_tmp); catch, end, end
+end
 if fVerbose
     fprintf('Wrote to %s\n', vcFile);
 end
@@ -23417,10 +23448,17 @@ function export_prm_(vcFile_prm, vcFile_out_prm, fShow)
 if nargin<3, fShow = 1; end
 
 if isempty(vcFile_out_prm), vcFile_out_prm = vcFile_prm; end
-copyfile(ircpath_(read_cfg_('default_prm')), vcFile_out_prm, 'f');
+% DI-15: read P from the SOURCE before touching the target. In a fresh session get0_('P') is
+% empty, so P falls back to file2struct_(vcFile_prm); if vcFile_out_prm == vcFile_prm (the
+% documented standalone form), clobbering the target FIRST -- as the old code did -- made that
+% read return the bare default template, PERMANENTLY losing the user's settings. Build the full
+% prm into a temp, then atomically replace the target (with a .bak of the prior file).
 P = get0_('P');
 if isempty(P), P = file2struct_(vcFile_prm); end
-edit_prm_file_(P, vcFile_out_prm);
+vcFile_tmp = tempname_sibling_(vcFile_out_prm);
+copyfile(ircpath_(read_cfg_('default_prm')), vcFile_tmp, 'f');
+edit_prm_file_(P, vcFile_tmp);
+atomic_replace_(vcFile_tmp, vcFile_out_prm, true);
 vcMsg = sprintf('Full parameter settings are exported to %s', vcFile_out_prm);
 fprintf('%s\n', vcMsg);
 if fShow
