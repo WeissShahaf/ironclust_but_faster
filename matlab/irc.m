@@ -5731,13 +5731,17 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType)
+function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType, fStrict)
 % Get around fread bug (matlab) where built-in fread resize doesn't work
+% DI-04: fStrict (optional, default false) -> error on a short read instead of silently
+% reshaping to a smaller array. Default-off keeps every current caller byte-identical; only
+% the load_spk*_ paths (where dimm from _jrc.mat is authoritative) will opt in (a later phase).
 
 % defensive programming practice
 if strcmpi(vcDataType, 'float'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float32'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float64'), vcDataType = 'double'; end
+if nargin < 4, fStrict = false; end
 
 try
     if isempty(dimm_wav)
@@ -5748,6 +5752,10 @@ try
         if numel(mnWav1) == prod(dimm_wav)
             mnWav1 = reshape(mnWav1, dimm_wav);
         else
+            if fStrict
+                error('fread_: short read (%d of %d elements), dimm=[%s]', ...
+                    numel(mnWav1), prod(dimm_wav), sprintf('%d ', dimm_wav));
+            end
             dimm2 = floor(numel(mnWav1) / dimm_wav(1));
             if dimm2 >= 1
                 nSamples1 = dimm_wav(1) * dimm2;
@@ -5757,7 +5765,8 @@ try
             end
         end
     end
-catch
+catch hErr
+    if fStrict, rethrow(hErr); end   % DI-04: strict callers get a real error, not a swallow (this catch is layer 0 of the swallow chain)
     disperr_();
 end
 end %func
@@ -9841,7 +9850,21 @@ for iGroup = 1:numel(S0.cviMerge_pending)
         end
         csLog_group{end+1} = sprintf('merge %d %d', iClu_target, iClu_source); % stage, don't commit
 
-        % Adjust remaining indices in this group and other groups
+        % DI-01: reconcile the NOT-yet-processed pending groups for this in-group delete, so a
+        % later group's stored IDs aren't left stale after delete_clu_ renumbered clusters. Mirrors
+        % Step 1's adjust_pending_indices_ call (above). Use CONCATENATION, not
+        % `S0.cviMerge_pending(iGroup+1:end) = adjust_pending_indices_(...)`: adjust_pending_indices_
+        % DROPS sub-2-member groups, so the returned cell can be SHORTER than the LHS range and
+        % `A(idx)=B` would throw. (Pending groups are disjoint, so iClu_source never belongs to a
+        % later group -> the tail only gets decremented, never shrinks; the concat form is safe
+        % either way, and reshape(...,1,[]) preserves the row-cell convention.)
+        if iGroup < numel(S0.cviMerge_pending)
+            cviHead = reshape(S0.cviMerge_pending(1:iGroup), 1, []);
+            cviTail = reshape(adjust_pending_indices_(S0.cviMerge_pending(iGroup+1:end), iClu_source), 1, []);
+            S0.cviMerge_pending = [cviHead, cviTail];
+        end
+
+        % Adjust remaining indices in THIS group's local copy (other groups handled just above)
         for k = 1:numel(viClu_group)
             if viClu_group(k) > iClu_source
                 viClu_group(k) = viClu_group(k) - 1;
@@ -13158,7 +13181,11 @@ try
     P = S0.P;
     set0_(P);
     
-    struct_save_(S0, vcFile_mat, 1);
+    fOk = struct_save_(S0, vcFile_mat, 1);
+    if ~fOk   % DI-02: do not report success / export params when the save actually failed
+        msgbox_(sprintf('SAVE FAILED: %s was NOT updated - curation is only in memory. Do not close MATLAB.', vcFile_mat), 1);
+        return;
+    end
     vcFile_prm = S0.P.vcFile_prm;
     export_prm_(vcFile_prm, strrep(vcFile_prm, '.prm', '_full.prm'), 0);    
 
@@ -15171,16 +15198,21 @@ end %func
 %--------------------------------------------------------------------------
 % 11/19/2018 JJJ: improved matlab version check
 % 7/13/17 JJJ: Version check routine
-function struct_save_(S, vcFile, fVerbose)
-nRetry = 3;
+function fOk = struct_save_(S, vcFile, fVerbose)
+% DI-02/DI-05: returns fOk (previously void), and writes atomically (temp file + movefile)
+% so an interrupted/failed save can never truncate the previously-good file. Adding the
+% output is additive -- every existing bare-statement caller stays legal.
+nRetry = 3; fOk = false; fSaved = false;
 if nargin<3, fVerbose = 0; end
+vcFile_tmp = tempname_sibling_(vcFile);
+if exist(vcFile_tmp, 'file'), delete(vcFile_tmp); end   % clear any stale temp so atomic_replace_ can't commit it
 if fVerbose
     fprintf('Saving a struct to %s...\n', vcFile); t1=tic;
 end
 if version_matlab_() >= 2017
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3', '-nocompression'); %faster    
+            save(vcFile_tmp, '-struct', 'S', '-v7.3', '-nocompression'); fSaved = true; %faster    
             break;
         catch
             pause(.5);
@@ -15190,7 +15222,7 @@ if version_matlab_() >= 2017
 else    
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3');   
+            save(vcFile_tmp, '-struct', 'S', '-v7.3'); fSaved = true;
             break;
         catch
             pause(.5);
@@ -15198,8 +15230,45 @@ else
         fprintf(2, 'Saving failed: %s\n', vcFile);
     end    
 end
+if fSaved
+    fOk = atomic_replace_(vcFile_tmp, vcFile, true);   % DI-05: commit temp over the real file atomically
+end
+if ~fOk
+    fprintf(2, 'struct_save_: %s NOT updated (previous version preserved).\n', vcFile);
+end
 if fVerbose
     fprintf('\ttook %0.1fs.\n', toc(t1));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function vcFile_tmp = tempname_sibling_(vcFile_final)
+% DI-05 helper: same-directory temp path so movefile stays on one volume (atomicity needs same FS).
+vcFile_tmp = [vcFile_final, '.tmp'];
+end %func
+
+
+%--------------------------------------------------------------------------
+function fOk = atomic_replace_(vcFile_tmp, vcFile_final, fKeep_bak)
+% DI-05 helper: commit a fully-written temp over vcFile_final. REFUSES a missing/zero-byte temp
+% (never replaces a good file with a bad one). Optional .bak of the prior file. Uses fprintf (not
+% disperr_) on failure to avoid disperr_'s gpuDevice(1) reset side effect.
+if nargin<3, fKeep_bak = false; end
+fOk = false;
+try
+    S_dir = dir(vcFile_tmp);
+    if isempty(S_dir) || S_dir(1).bytes == 0
+        fprintf(2, 'atomic_replace_: refusing to commit missing/empty temp: %s\n', vcFile_tmp);
+        return;
+    end
+    if fKeep_bak && exist(vcFile_final, 'file')
+        try copyfile(vcFile_final, [vcFile_final, '.bak'], 'f'); catch, end   % best-effort backup
+    end
+    movefile(vcFile_tmp, vcFile_final, 'f');
+    fOk = (exist(vcFile_final, 'file') == 2);
+catch hErr
+    fprintf(2, 'atomic_replace_ failed (%s): %s\n', vcFile_final, hErr.message);
 end
 end %func
 
@@ -20369,6 +20438,24 @@ end %func
 
 
 %--------------------------------------------------------------------------
+function disperr_strict_(vcMsg, hErr)
+% Like disperr_ (print + log via save_err_) but RETHROWS. For sites that must fail loud (a later
+% phase wires DI-08/DI-09 to this). Do NOT overload disperr_ itself -- dozens of legitimately
+% swallowing cosmetic callers rely on its console-only behavior.
+if nargin<1, vcMsg = ''; end
+if nargin<2, hErr = []; end
+if isempty(hErr)
+    disperr_(vcMsg);
+    if isempty(vcMsg), vcMsg = 'disperr_strict_'; end
+    error('%s', vcMsg);
+else
+    disperr_(vcMsg, hErr);
+    rethrow(hErr);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 % 17/12/5 JJJ: created
 function save_err_(hErr, vcMsg)
 % save error object
@@ -24295,11 +24382,17 @@ end %func
 %--------------------------------------------------------------------------
 % 10/11/17 JJJ: created 
 function fSuccess = fwrite_(fid, vr)    
+fSuccess = 0;
 try
     if ~isempty(fid)
-        fwrite(fid, vr, class_(vr));
+        nWritten = fwrite(fid, vr, class_(vr));
+        fSuccess = (nWritten == numel(vr));   % DI-07: a disk-full short write returns a small count, not a throw
+        if ~fSuccess
+            fprintf(2, 'fwrite_: short write (%d of %d elements), fid=%d\n', nWritten, numel(vr), fid);
+        end
+    else
+        fSuccess = 1;   % no fid = nothing to write, not a failure (unchanged)
     end
-    fSuccess = 1;
 catch
     fSuccess = 0;
 end

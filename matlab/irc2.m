@@ -6375,13 +6375,15 @@ end
 
 
 %--------------------------------------------------------------------------
-function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType)
+function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType, fStrict)
 % Get around fread bug (matlab) where built-in fread resize doesn't work
+% DI-04 (irc2.m copy): fStrict (optional, default false) -> error on a short read. See irc.m.
 
 % defensive programming practice
 if strcmpi(vcDataType, 'float'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float32'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float64'), vcDataType = 'double'; end
+if nargin < 4, fStrict = false; end
 
 try
     if isempty(dimm_wav)
@@ -6392,6 +6394,10 @@ try
         if numel(mnWav1) == prod(dimm_wav)
             mnWav1 = reshape(mnWav1, dimm_wav);
         else
+            if fStrict
+                error('fread_: short read (%d of %d elements), dimm=[%s]', ...
+                    numel(mnWav1), prod(dimm_wav), sprintf('%d ', dimm_wav));
+            end
             dimm2 = floor(numel(mnWav1) / dimm_wav(1));
             if dimm2 >= 1
                 nSamples1 = dimm_wav(1) * dimm2;
@@ -6401,7 +6407,8 @@ try
             end
         end
     end
-catch
+catch hErr
+    if fStrict, rethrow(hErr); end   % DI-04: strict callers get a real error, not a swallow (this catch is layer 0 of the swallow chain)
     disperr_();
 end
 end %func
@@ -7013,16 +7020,19 @@ end %func
 %--------------------------------------------------------------------------
 % 11/19/2018 JJJ: improved matlab version check
 % 7/13/17 JJJ: Version check routine
-function struct_save_(S, vcFile, fVerbose)
-nRetry = 3;
+function fOk = struct_save_(S, vcFile, fVerbose)
+% DI-02/DI-05 (irc2.m copy): returns fOk and writes atomically (temp + movefile). See irc.m.
+nRetry = 3; fOk = false; fSaved = false;
 if nargin<3, fVerbose = 0; end
+vcFile_tmp = tempname_sibling_(vcFile);
+if exist(vcFile_tmp, 'file'), delete(vcFile_tmp); end
 if fVerbose
     fprintf('Saving a struct to %s: ', vcFile); t1=tic;
 end
 if version_matlab_() >= 2017
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3', '-nocompression'); %faster    
+            save(vcFile_tmp, '-struct', 'S', '-v7.3', '-nocompression'); fSaved = true; %faster    
             break;
         catch
             pause(.5);
@@ -7032,7 +7042,7 @@ if version_matlab_() >= 2017
 else    
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3');   
+            save(vcFile_tmp, '-struct', 'S', '-v7.3'); fSaved = true;
             break;
         catch
             pause(.5);
@@ -7040,8 +7050,44 @@ else
         fprintf(2, 'Saving failed: %s\n', vcFile);
     end    
 end
+if fSaved
+    fOk = atomic_replace_(vcFile_tmp, vcFile, true);
+end
+if ~fOk
+    fprintf(2, 'struct_save_: %s NOT updated (previous version preserved).\n', vcFile);
+end
 if fVerbose
     fprintf('took %0.1fs.\n', toc(t1));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function vcFile_tmp = tempname_sibling_(vcFile_final)
+% DI-05 helper (irc2.m copy): same-directory temp path so movefile stays on one volume.
+vcFile_tmp = [vcFile_final, '.tmp'];
+end %func
+
+
+%--------------------------------------------------------------------------
+function fOk = atomic_replace_(vcFile_tmp, vcFile_final, fKeep_bak)
+% DI-05 helper (irc2.m copy): commit a fully-written temp over vcFile_final; refuses a
+% missing/zero-byte temp. Uses fprintf (not disperr_) on failure. See irc.m for the primary copy.
+if nargin<3, fKeep_bak = false; end
+fOk = false;
+try
+    S_dir = dir(vcFile_tmp);
+    if isempty(S_dir) || S_dir(1).bytes == 0
+        fprintf(2, 'atomic_replace_: refusing to commit missing/empty temp: %s\n', vcFile_tmp);
+        return;
+    end
+    if fKeep_bak && exist(vcFile_final, 'file')
+        try copyfile(vcFile_final, [vcFile_final, '.bak'], 'f'); catch, end
+    end
+    movefile(vcFile_tmp, vcFile_final, 'f');
+    fOk = (exist(vcFile_final, 'file') == 2);
+catch hErr
+    fprintf(2, 'atomic_replace_ failed (%s): %s\n', vcFile_final, hErr.message);
 end
 end %func
 

@@ -111,3 +111,60 @@ by default (since `fParfor` defaults to 1) even when nothing downstream uses par
 ## Files
 - Modified: `matlab/irc.m`, `matlab/default.prm`.
 - Added: `logs/changes_log20260718.md`.
+
+---
+
+# Data-integrity remediation — audit + Phase 0-2 fixes (2026-07-18, later same day)
+
+> **Tracker:** [`logs/ISSUE_TRACKER_data_integrity.md`](ISSUE_TRACKER_data_integrity.md) (22 findings
+> DI-01…DI-22, prioritized, with solution designs + a phased build plan). Produced by a four-agent
+> read-only audit (persistence/file-I/O · cluster-identity · detect/feature pipeline · cache mechanics),
+> then a code-architect + devil's-advocate review. All 22 are distinct from the already-fixed
+> `viClu`⇄`cviSpk_clu` desync family; the 15 CID fixes were re-verified present in current code.
+
+Implemented **Phase 0 (shared foundation) + Phase 1 (DI-01) + Phase 2 (DI-02/05)** — the two
+highest-severity, saveable, silent-corruption/loss bugs plus reusable infrastructure. Everything is
+**additive** and no-op for existing callers on the healthy path.
+
+## DI-01 (critical) — `[U]` multi-group merge silently merged the wrong clusters
+`execute_pending_and_update_` (irc.m ~9843) processed each queued merge **group** against *static*
+indices, but each in-group `delete_clu_` renumbers higher clusters. Step 1 deletes reconciled the
+pending groups (`adjust_pending_indices_`, irc.m:9776); Step 2's per-group deletes did **not** — so with
+≥2 groups in one `[U]`, a later group merged the wrong clusters (e.g. queue Clu3+5 and Clu7+9 → the
+second merge hit original Clu8+Clu10). Internally consistent, so `S_clu_assert_synced_` reported 0 stale
+— no detector caught it, and it saved to `_jrc.mat`. **Fix:** after each in-group delete, reconcile the
+not-yet-processed groups via concatenation (the naive `cviMerge_pending(iGroup+1:end) = ...` form throws
+because `adjust_pending_indices_` drops sub-2-member groups). Hand-verified twice (auditor +
+devil's-advocate) and by the harness.
+
+## DI-02 + DI-05 (critical) — silent save failure + non-atomic overwrite of `_jrc.mat`
+`struct_save_` was `void` and never re-threw: 3 failed `save()` retries (AV/OneDrive/indexer lock, disk
+full) printed "Saving failed" and returned as success — every unsaved curation lost silently. It also
+`save()`d straight to the destination, so an interruption mid-write destroyed the previously-good file.
+**Fix (both irc.m:15174 + irc2.m:7016 — the function is duplicated across files):** `struct_save_` now
+returns `fOk` and writes atomically (`save` to `<file>.tmp` → `atomic_replace_` → `.bak` of the prior
+file); `save0_` (irc.m:13161) checks `fOk`, blocks the false "success" (skips `export_prm_`), and warns.
+
+## Foundation (A1/A2/A4) — reused by later phases
+- **`tempname_sibling_` + `atomic_replace_`** (both files) — atomic temp+rename+backup helper
+  (builtins only; refuses to commit a missing/zero-byte temp). Reused by DI-06/DI-15 in later phases.
+- **`disperr_strict_`** (irc.m) — print-then-rethrow sibling of `disperr_` (whose console-only swallow
+  is the root cause behind DI-02/06/07/08/09). Unused this phase; DI-08/09 wire to it in Phase 6.
+- **`fread_` gains default-off `fStrict`** (both files) — `error`s on a short read; **its own `catch`
+  now rethrows in strict mode** (else the strict error was swallowed at layer 0 — caught during
+  verification). Default-off ⇒ the hot `load_file_`/detection path is byte-identical; DI-04 wires the
+  `load_spk*_` callers in Phase 4.
+- **`fwrite_` short-write count check** (irc.m) — returns `fSuccess=0` on a disk-full short count (which
+  `fwrite` does not throw on). No-op until `write_spk_` consumes it in DI-07/Phase 4.
+
+## Verification (MATLAB R2023b, real dev box)
+`scratchpad/verify_phase012.m` — **12 checks, all green**: irc.m/irc2.m parse clean (checkcode: 0 parse
+errors); DI-01 reconcile `[7,9]→[6,8]`; `struct_save_` healthy (`fOk=1`, content match, no `.tmp` litter)
+and failure (`fOk=0`, no exception, **prior good file intact**); `atomic_replace_` refuses empty temp;
+`fread_` 3-arg lenient unchanged + `fStrict` throws; `fwrite_` healthy returns 1. Not run: the full
+GUI-driven `[U]` integration test (arithmetic negative control covers DI-01's logic, mirroring the
+CID-01 `verify_reorder.m` convention).
+
+## Files
+- Modified: `matlab/irc.m`, `matlab/irc2.m`.
+- Added: `logs/ISSUE_TRACKER_data_integrity.md`, `scratchpad/verify_phase012.m` (test harness, not committed).
