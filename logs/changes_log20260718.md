@@ -194,3 +194,28 @@ onto the target (with a `.bak`).
 `scratchpad/verify_phase3.m` — 7 checks, all green: irc.m parses clean; `file2cellstr_` readable/absent;
 `edit_prm_file_` round-trip preserves comments+params (no truncation); `cellstr2file_` non-empty + empty;
 **DI-15 standalone export preserves the user setting** (`sRateHz=12345`, was clobbered to default before).
+
+## Phase 5 (later same day) — DI-10 + DI-11 (cache keys)
+
+`irc.m` only; independent of the persistence work; lower-risk (no hot-path control-flow changes).
+
+### DI-10 (high) — GPU kernel launch config baked in at construction, stale across files
+The 7 GPU DPC/kNN kernels set `ThreadBlockSize`/`SharedMemorySize` inside their construction guard (keyed
+on `nC` only, or `isempty(CK)`) while only `GridSize` was recomputed each call. A second file in the same
+session with the same `nC` but different `P.nThreads`/`P.CHUNK`/`nC_max` (and bypassing `batch_`'s
+`irc('clear')`) would launch a new-sized grid against the old shared-memory size. **Fix:** recompute all
+three launch properties **every call** (mirroring irc2's `search_knn_drift_`), right before each kernel
+`feval`, in `cuda_rho_`/`cuda_delta_`/`cuda_rho_drift_`/`cuda_delta_drift_`/`cuda_knn_`/`cuda_knn__`/
+`cuda_delta_knn_`. Behavior-identical on single-file sessions (same values recomputed). Not exercised by
+the testbed recording (`vcCluster='isosplit'` bypasses the DPC path).
+
+### DI-11 (high) — get_spkwav_ global cache had no file key
+`get_spkwav_`'s `tnWav_spk`/`tnWav_raw` globals were invalidated only on `isempty()`; the sole file-switch
+cleaner was `load_cached_`, so any caller reaching `get_spkwav_` without it served the previous file's
+waveforms. **Fix:** added a `persistent vcFile_prm_` key (mirroring `get_spkfet_`) that clears the globals
+on a `vcFile_prm` change. Byte-identical for single-file sessions.
+
+### Verification
+`scratchpad/verify_phase5.m` — all green: irc.m parses clean; 7/7 DI-10 recompute sites present; DI-11
+same-file keeps the cache and a file switch clears the stale global. DI-10's runtime multi-file GPU
+divergence check is deferred (needs GPU hardware + two differently-configured recordings).

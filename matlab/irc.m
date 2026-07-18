@@ -3135,6 +3135,11 @@ if P.fGpu && knn==0
         CK.GridSize = [ceil(n1 / P.CHUNK / P.CHUNK), P.CHUNK]; %MaxGridSize: [2.1475e+09 65535 65535]    
         vrRho1 = zeros([1, n1], 'single', 'gpuArray'); 
         vnConst = int32([n1, n12, nC, dn_max, get_set_(P, 'fDc_spk', 0)]);
+        % DI-10: recompute launch config EVERY call. ThreadBlockSize/SharedMemorySize depend on
+        % P.nThreads/P.CHUNK/nC_max, which can change between files in one session while nC stays
+        % the same; the old code baked them in only at kernel construction -> stale kernel launch.
+        CK.ThreadBlockSize = [P.nThreads, 1];
+        CK.SharedMemorySize = 4 * P.CHUNK * (2 + nC_max + 2 * P.nThreads);
         vrRho1 = feval(CK, vrRho1, mrFet12, viiSpk12_ord, vnConst, dc2);
         return;
     catch        
@@ -3258,6 +3263,9 @@ if P.fGpu
         vrDelta1 = zeros([1, n1], 'single', 'gpuArray'); 
         viNneigh1 = zeros([1, n1], 'uint32', 'gpuArray'); 
         vnConst = int32([n1, n12, nC, dn_max, get_set_(P, 'fDc_spk', 0)]);
+        % DI-10: recompute launch config every call (depends on P.nThreads/P.CHUNK/nC_max).
+        CK.ThreadBlockSize = [P.nThreads, 1];
+        CK.SharedMemorySize = 4 * P.CHUNK * (3 + nC_max + 2*P.nThreads);
         [vrDelta1, viNneigh1] = feval(CK, vrDelta1, viNneigh1, mrFet12, viiSpk12_ord, viiRho12_ord, vnConst, dc2);
         % [vrDelta1_, viNneigh1_] = deal(vrDelta1, viNneigh1);
         return;
@@ -24442,9 +24450,18 @@ end %func
 function tnWav_ = get_spkwav_(P, fRaw)
 % if ~fRamCache, only keep one of the tnWav_raw or tnWav_spk in memory
 global tnWav_spk tnWav_raw
+persistent vcFile_prm_   % DI-11: file key (mirrors get_spkfet_'s persistent-key idiom)
 if nargin<1, P = []; end
 if isempty(P), P = get0_('P'); end
 if nargin<2, fRaw = P.fWav_raw_show; end
+
+% DI-11: these globals were keyed by nothing -- a caller reaching here without load_cached_ having
+% cleared them on a file switch would serve the PREVIOUS file's waveforms. Invalidate on a
+% vcFile_prm change so a new recording reloads instead of reusing stale global data.
+if ~strcmpi(get_(P, 'vcFile_prm'), vcFile_prm_)
+    [tnWav_spk, tnWav_raw] = deal([]);
+    vcFile_prm_ = get_(P, 'vcFile_prm');
+end
 
 try
     fRamCache = get_set_(P, 'fRamCache', 1);
@@ -26901,6 +26918,9 @@ if fGpu
             vrKnn = zeros([n1, 1], 'single', 'gpuArray');
             vnConst = int32([n2, n1, nC, knn]);            
             miKnn = zeros([knn, n1], 'int32', 'gpuArray'); 
+            % DI-10: recompute launch config every call (depends on nC_max/nThreads/CHUNK).
+            CK.ThreadBlockSize = [nThreads, 1];
+            CK.SharedMemorySize = 4 * CHUNK * (nC_max + nThreads*2);
             [vrKnn, miKnn] = feval(CK, vrKnn, miKnn, gmrFet2, gmrFet1, vnConst);
             miKnn = vi2(miKnn);
             return;
@@ -26968,6 +26988,9 @@ if fGpu
             CK.GridSize = [ceil(n1 / CHUNK / CHUNK), CHUNK]; %MaxGridSize: [2.1475e+09 65535 65535]    
             vrKnn = zeros([n1, 1], 'single', 'gpuArray');
             vnConst = int32([n2, n1, nC, knn]);            
+            % DI-10: recompute launch config every call (depends on nC_max/nThreads/CHUNK).
+            CK.ThreadBlockSize = [nThreads, 1];
+            CK.SharedMemorySize = 4 * CHUNK * (nC_max + nThreads);
             vrKnn = feval(CK, vrKnn, gmrFet2, gmrFet1, vnConst);
 %             miKnn = zeros([knn, n1], 'int32', 'gpuArray'); 
             %[vrKnn, miKnn] = feval(CK, vrKnn, miKnn, gmrFet2, gmrFet1, vnConst);
@@ -27053,6 +27076,9 @@ if fGpu
             vrDelta1 = zeros([n1, 1], 'single', 'gpuArray'); 
             viNneigh1 = zeros([n1, 1], 'uint32', 'gpuArray'); 
             vnConst = int32([n2, n1, nC]);
+            % DI-10: recompute launch config every call (depends on nC_max/nThreads/CHUNK).
+            CK.ThreadBlockSize = [nThreads, 1];
+            CK.SharedMemorySize = 4 * CHUNK * (nC_max + nThreads*2 + 1);
             [vrDelta1, viNneigh1] = feval(CK, vrDelta1, viNneigh1, gmrFet2, gmrFet1, gvrRho2, gvrRho1, vnConst);
             viNneigh1 = uint32(vi2(viNneigh1));
             return;
@@ -27147,6 +27173,9 @@ CK.GridSize = [ceil(n1 / CHUNK / CHUNK), CHUNK]; %MaxGridSize: [2.1475e+09 65535
 vrRho1 = zeros([1, n1], 'single', 'gpuArray'); 
 vnConst = int32([n1, n12, nC]);
 %vrRho1 = feval(CK, vrRho1, miSite12, mrFet1, mrFet2, vnConst, dc2);
+% DI-10: recompute launch config every call (depends on nThreads/CHUNK/nC_max).
+CK.ThreadBlockSize = [nThreads, 1];
+CK.SharedMemorySize = 4 * CHUNK * (nC_max + 1 + 2 * nThreads);
 vrRho1 = feval(CK, vrRho1, miSite12, mrFet1, mrFet2, vnConst, dc2);
 vrRho1 = gather_(vrRho1);
 end %func
@@ -27175,6 +27204,9 @@ CK.GridSize = [ceil(n1 / CHUNK / CHUNK), CHUNK]; %MaxGridSize: [2.1475e+09 65535
 vrDelta1 = zeros([1, n1], 'single', 'gpuArray'); 
 viNneigh1 = zeros([1, n1], 'uint32', 'gpuArray'); 
 vnConst = int32([n1, n12, nC]);
+% DI-10: recompute launch config every call (depends on nThreads/CHUNK/nC_max).
+CK.ThreadBlockSize = [nThreads, 1];
+CK.SharedMemorySize = 4 * CHUNK * (nC_max + 2 + 2 * nThreads);
 [vrDelta1, viNneigh1] = feval(CK, vrDelta1, viNneigh1, miSite12, mrFet1, mrFet2, gpuArray(vrRho1), vnConst, dc2);
 vrDelta1 = gather_(vrDelta1);
 viNneigh1 = gather_(viNneigh1);
