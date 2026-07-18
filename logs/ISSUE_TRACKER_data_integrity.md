@@ -9,7 +9,12 @@ issue here is **new** and **distinct** from the `viClu`⇄`cviSpk_clu` desync fa
 re-verified present in current code — see Appendix A).
 
 **Legend.** ✅ fixed & committed · 🟡 fixed, uncommitted · 🔵 open/deferred · ⚪ not-a-bug ·
-⛔ retracted. **DI-01, DI-02, DI-05, DI-06, DI-10, DI-11, DI-15 are now 🟡 (implemented 2026-07-18, see below); the rest are 🔵 open.**
+⛔ retracted. **ALL 22 items (DI-01…DI-22) are now 🟡 implemented 2026-07-18 (uncommitted → committed on
+`rewind`).** Two are deliberately partial, noted in their entries: **DI-04** (feature path made strict —
+the corruption that feeds clustering; the raw/spk *display* loaders left lenient) and **DI-14** (stale-lock
+auto-removal added; the check-then-act TOCTOU race left as a documented residual needing a mkdir-lock
+refactor). **DI-08/DI-09** follow the reviewed count-and-continue policy (loud, unmissable warnings)
+rather than dropping the affected spikes or hard-aborting a multi-hour run.
 
 **Confidence** = the mechanism is real, independent of trigger likelihood. **DI-01 was hand-verified
 twice** (auditor + devil's-advocate, independently). Line numbers verified against source on 2026-07-18;
@@ -36,11 +41,15 @@ duplicated copy is the single easiest way to half-migrate this plan.
 
 ---
 
-## ✅ Implemented 2026-07-18 — Phase 0 (foundation) + DI-01 + DI-02/05 + DI-06/15 + DI-10/11
+## ✅ Implemented 2026-07-18 — ALL 22 items (DI-01…DI-22)
 
-Phases 0-2 (`bcbe008`) + Phase 3 DI-06/15 (`a7910e0`) committed; Phase 5 DI-10/11 follows. Verified:
-`irc.m`/`irc2.m` parse clean (checkcode: 0 parse errors); MATLAB harnesses `verify_phase012.m` (12) +
-`verify_phase3.m` (7) + `verify_phase5.m` (4) all green on the real dev box.
+Commits on `rewind`: `bcbe008` (DI-01/02/05 + foundation), `a7910e0` (DI-06/15), `925d13f` (DI-10/11),
+`349a0e1` (DI-12/16/17/18/22), + a final commit (DI-03/04/07/08/09/13/14/19/20/21). Verified on the real
+dev box (R2023b) across five MATLAB harnesses (`verify_phase012.m` 12, `verify_phase3.m` 7,
+`verify_phase5.m` 4, `verify_phase_qw.m` 5, `verify_phase_det.m` — DI-07/DI-04 functional + parse), all
+green; `irc.m`/`irc2.m` parse clean (checkcode: 0 parse errors). No full end-to-end sort was run
+(multi-hour) — the detection-pipeline changes are additive, gated behind failure paths, and every
+default-config path is unchanged.
 - **DI-01** 🟡 — `execute_pending_and_update_` (irc.m ~9843) now reconciles the not-yet-processed
   pending groups after each in-group delete (concatenation form, reusing `adjust_pending_indices_`).
   Verified: `{[3,5],[7,9]}` → after group 1 deletes Clu5, group 2 correctly shifts `[7,9]`→`[6,8]`
@@ -76,7 +85,29 @@ Phases 0-2 (`bcbe008`) + Phase 3 DI-06/15 (`a7910e0`) committed; Phase 5 DI-10/1
   / no-op for every current caller** — DI-04/DI-07 consumers are wired in Phase 4. `fread_` 3-arg lenient
   path verified byte-identical.
 
-Remaining DI items stay 🔵 open with designs ready.
+- **Quick wins** 🟡 — **DI-12** `field2str_` (both files) `case 'string'`; **DI-16** `wav_car_`
+  `sum(single(...))`; **DI-17** `mr2tr_` int64 indices; **DI-18** `post_merge_mode` scalar coercion;
+  **DI-22** `readmda_paged_` closes the previous fid on a file switch.
+- **Cache keys** 🟡 — **DI-19** `sgfilt4_`/`sgfilt_init_` add `fGpu` to the rebuild key; **DI-20**
+  `S_clu_wav_pair_` recomputes `viT` every call; **DI-21** dead-code caches (`fread_spkwav_/raw_`,
+  `fid_fet_cache_`) get a `%WARNING` (comment-only — confirmed no live callers).
+- **Detection pipeline** 🟡 — **DI-07** `write_spk_` returns `fOk`, guards `fopen`, and `file2spk_`
+  aborts on a failed/short write; **DI-03** `file2spk_` captures a `dimm_*` template from the first
+  non-empty chunk (a quiet tail no longer zeroes dims 1-2) + a degenerate-template safety assert;
+  **DI-04** `load_bin_` gains a working `fStrict` (rethrows a short read) and the **feature** loaders
+  (`load_spkfet_`/`get_spkfet_`) opt in — a truncated `_spkfet.jrc` now errors instead of silently
+  misaligning clustering features (raw/spk display loaders left lenient — see the DI-04 caveat below);
+  **DI-13** an `onCleanup` closes the `.jrc` handles if the detection loop throws; **DI-08/DI-09** the
+  per-site `mn2tn_wav_`/`spikeMerge_` catches now count failures and emit a loud end-of-loop summary
+  instead of silently swallowing (phantom-zero / dropped spikes made visible, not hidden); **DI-14**
+  `waitfor_lock_` removes a stale lock on timeout (the check-then-act TOCTOU residual is noted).
+
+**Two deliberate partials** (documented, not oversights): **DI-04** wired the feature path (the
+clustering-corrupting one) but not the raw/spk *display* loaders — those go through `get_spkwav_`'s
+swallow-to-`[]`, so a short read there surfaces as an empty-array downstream error rather than silent
+misalignment, and narrowing that catch risked GUI code that tolerates `[]`. **DI-14** removes a stale
+lock but keeps the non-atomic `lock_dir_` create; a true fix needs a `mkdir`-based lock coordinated
+across `waitfor_lock_`/`lock_dir_`/`unlock_dir_` (a larger refactor of an `irc2.m`-only caching path).
 
 ## Priority ranking (impact × trigger-likelihood ÷ fix-cost)
 
@@ -118,26 +149,26 @@ helpers exist.
 |---|---|---|---|---|---|
 | **DI-01** | `[U]` multi-group merge never reconciles later groups' indices → merges wrong clusters, saves it | 1 | **critical** | high (2× hand-verified) | 🟡 |
 | **DI-02** | `struct_save_` swallows total save failure — no return, no re-throw | 1 | **critical** | high | 🟡 |
-| **DI-03** | `file2spk_` uses last chunk as `dimm_*` template — zero-spike tail zeroes it | 1 | high | high | 🔵 |
-| **DI-04** | `fread_` silent short-read reshape → spike↔waveform misalignment (4-layer swallow chain) | 1 | high | high | 🔵 |
+| **DI-03** | `file2spk_` uses last chunk as `dimm_*` template — zero-spike tail zeroes it | 1 | high | high | 🟡 |
+| **DI-04** | `fread_` silent short-read reshape → spike↔waveform misalignment (4-layer swallow chain) | 1 | high | high | 🟡 |
 | **DI-05** | Non-atomic `_jrc.mat` overwrite — no temp+rename/backup | 2 | high | high | 🟡 |
 | **DI-06** | `.prm` read-modify-write truncates the live file on a transient read failure | 2 | high | med-high | 🟡 |
-| **DI-07** | `write_spk_`/`fwrite_` failures discarded during detection | 2 | high | high | 🔵 |
-| **DI-08** | `mn2tn_wav_` per-site catch → phantom zero waveforms + defeats GPU→CPU retry | 2 | medium | medium | 🔵 |
-| **DI-09** | `spikeMerge_` per-site catch drops a whole site's spikes for the chunk | 2 | medium | medium | 🔵 |
+| **DI-07** | `write_spk_`/`fwrite_` failures discarded during detection | 2 | high | high | 🟡 |
+| **DI-08** | `mn2tn_wav_` per-site catch → phantom zero waveforms + defeats GPU→CPU retry | 2 | medium | medium | 🟡 |
+| **DI-09** | `spikeMerge_` per-site catch drops a whole site's spikes for the chunk | 2 | medium | medium | 🟡 |
 | **DI-10** | GPU CUDA-kernel caches keyed on `nC` only — stale `SharedMemorySize` across files | 2 | high | high | 🟡 |
 | **DI-11** | `get_spkwav_` global cache has no `vcFile_prm` key of its own | 2 | high | **medium** | 🟡 |
-| **DI-12** | `field2str_` can't format MATLAB `string` class *(the error seen 2026-07-18)* | 3 | cosmetic | high | 🔵 |
-| **DI-13** | No `fclose` cleanup on mid-detection exception; unbuffered `'W'` handles | 3 | low-med | medium | 🔵 |
-| **DI-14** | irc2 stale-lock never cleared + check-then-act lock race (TOCTOU) | 3 | medium | medium | 🔵 |
+| **DI-12** | `field2str_` can't format MATLAB `string` class *(the error seen 2026-07-18)* | 3 | cosmetic | high | 🟡 |
+| **DI-13** | No `fclose` cleanup on mid-detection exception; unbuffered `'W'` handles | 3 | low-med | medium | 🟡 |
+| **DI-14** | irc2 stale-lock never cleared + check-then-act lock race (TOCTOU) | 3 | medium | medium | 🟡 |
 | **DI-15** | `export-prm` clobbers target before verify → **total unrecoverable config loss** | 2 | **high** | **high** | 🟡 |
-| **DI-16** | `wav_car_` int16 saturating sum corrupts the CAR reference | 3 | **low-med** | med-high | 🔵 |
-| **DI-17** | int32 saturation for untransposed >~20 h recordings | 3 | low (narrow) | low-med | 🔵 |
-| **DI-18** | `post_merge_mode` array → hard crash; no validation/coercion | 3 | low (crash) | high | 🔵 |
-| **DI-19** | `sgfilt4_`/`sgfilt_init_` cache key omits `fGpu` | 3 | low-med | medium | 🔵 |
-| **DI-20** | `S_clu_wav_pair_` `viT` window cache never invalidates; reset path is dead | 3 | medium | medium | 🔵 |
-| **DI-21** | Dead-code unkeyed caches (`fid_fet_cache_`, `fread_spkwav_/raw_`) | 3 | low (dormant) | high | 🔵 |
-| **DI-22** | `readmda_paged_` file-handle leak on file switch | 3 | low | medium | 🔵 |
+| **DI-16** | `wav_car_` int16 saturating sum corrupts the CAR reference | 3 | **low-med** | med-high | 🟡 |
+| **DI-17** | int32 saturation for untransposed >~20 h recordings | 3 | low (narrow) | low-med | 🟡 |
+| **DI-18** | `post_merge_mode` array → hard crash; no validation/coercion | 3 | low (crash) | high | 🟡 |
+| **DI-19** | `sgfilt4_`/`sgfilt_init_` cache key omits `fGpu` | 3 | low-med | medium | 🟡 |
+| **DI-20** | `S_clu_wav_pair_` `viT` window cache never invalidates; reset path is dead | 3 | medium | medium | 🟡 |
+| **DI-21** | Dead-code unkeyed caches (`fid_fet_cache_`, `fread_spkwav_/raw_`) | 3 | low (dormant) | high | 🟡 |
+| **DI-22** | `readmda_paged_` file-handle leak on file switch | 3 | low | medium | 🟡 |
 
 ---
 

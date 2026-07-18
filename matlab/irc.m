@@ -1757,13 +1757,18 @@ if fParfor
     end
 end %if
 if ~fParfor
+    nFail_site = 0;   % DI-09: count per-site failures instead of silently dropping a whole site's spikes
     for iSite = 1:nSites
         try
             [cviSpkA{iSite}, cvrSpkA{iSite}, cviSiteA{iSite}] = ...
-                spikeMerge_single_(viSpk, vrSpk, viSite, iSite, P);            
-        catch
-            disperr_();
+                spikeMerge_single_(viSpk, vrSpk, viSite, iSite, P);
+        catch ME
+            nFail_site = nFail_site + 1;
+            fprintf(2, '\tspikeMerge_: site %d failed (%s) -- its spikes are dropped from this chunk.\n', iSite, ME.message);
         end
+    end
+    if nFail_site > 0
+        fprintf(2, '\t*** spikeMerge_: %d site(s) failed; their spikes are missing from the merged output. ***\n', nFail_site);
     end
 end
 
@@ -2238,16 +2243,19 @@ end %func
 
 %--------------------------------------------------------------------------
 % 2018/6/1: Added support for .prm format
-function mnWav = load_bin_(vcFile, vcDataType, dimm, header)
+function mnWav = load_bin_(vcFile, vcDataType, dimm, header, fStrict)
 % mnWav = load_bin_(vcFile, dimm, vcDataType)
 % mnWav = load_bin_(fid, dimm, vcDataType)
 % mnWav = load_bin_(vcFile_prm)
 % [Input arguments]
 % header: header bytes
+% fStrict (optional, default false): DI-04 -- error on a short read (rethrown from the catch below,
+%   not swallowed by disperr_) so a truncated .jrc surfaces instead of silently misaligning spikes.
 
 if nargin<2, vcDataType = []; end
 if nargin<3, dimm = []; end
 if nargin<4, header = 0; end
+if nargin<5, fStrict = false; end
 if isempty(vcDataType), vcDataType = 'int16'; end
 
 mnWav = [];
@@ -2285,12 +2293,14 @@ else % fid directly passed
 end
 try
     t1 = tic;
-    mnWav = fread_(fid, dimm, vcDataType);
+    mnWav = fread_(fid, dimm, vcDataType, fStrict);
     if ischar(vcFile)
         fclose(fid);
-%         fprintf('Loading %s took %0.1fs\n', vcFile, toc(t1)); 
+%         fprintf('Loading %s took %0.1fs\n', vcFile, toc(t1));
     end
-catch
+catch hErr
+    if ischar(vcFile), try fclose(fid); catch, end, end   % don't leak the handle on error
+    if fStrict, rethrow(hErr); end   % DI-04: strict callers (load_spkfet_/get_spkfet_) get a real error
     disperr_();
 end
 end %func
@@ -3866,20 +3876,21 @@ end %func
 
 %--------------------------------------------------------------------------
 function [via1, via2, via3, via4, vib1, vib2, vib3, vib4] = sgfilt4_(n1, fGpu)
-persistent n1_prev_ via1_ via2_ via3_ via4_ vib1_ vib2_ vib3_ vib4_
+persistent n1_prev_ fGpu_prev_ via1_ via2_ via3_ via4_ vib1_ vib2_ vib3_ vib4_
 if nargin<2, fGpu=0; end
 
 % Build filter coeff
 if isempty(n1_prev_), n1_prev_ = 0; end
+if isempty(fGpu_prev_), fGpu_prev_ = -1; end   % DI-19: force rebuild on first call / fGpu change
 try a = size(via1_); catch, n1_prev_ =0; end
-if n1_prev_ ~= n1 %rebuild cache
+if n1_prev_ ~= n1 || fGpu_prev_ ~= fGpu %rebuild cache (DI-19: fGpu keyed -- cached arrays are CPU or GPU)
     vi0 = int32(1:n1);        
     vi0 = gpuArray_(vi0, fGpu);
     via4_ = vi0+4; via4_(end-3:end)=n1;   vib4_ = vi0-4; vib4_(1:4)=1;
     via3_ = vi0+3; via3_(end-2:end)=n1;   vib3_ = vi0-3; vib3_(1:3)=1;
     via2_ = vi0+2; via2_(end-1:end)=n1;   vib2_ = vi0-2; vib2_(1:2)=1;
     via1_ = vi0+1; via1_(end)=n1;         vib1_ = vi0-1; vib1_(1)=1;
-    n1_prev_ = n1;
+    n1_prev_ = n1; fGpu_prev_ = fGpu;
 end
 
 % Copy from cache
@@ -3892,13 +3903,14 @@ end %func
 
 %--------------------------------------------------------------------------
 function [miA, miB, viC] = sgfilt_init_(nData, nFilt, fGpu)
-persistent miA_ miB_ viC_ nData_ nFilt_
+persistent miA_ miB_ viC_ nData_ nFilt_ fGpu_
 if nargin<2, fGpu=0; end
 
 % Build filter coeff
 if isempty(nData_), nData_ = 0; end
+if isempty(fGpu_), fGpu_ = -1; end   % DI-19: force rebuild on first call / fGpu change
 try a = size(miA_); catch, nData_ = 0; end
-if nData_ == nData && nFilt_ == nFilt
+if nData_ == nData && nFilt_ == nFilt && fGpu_ == fGpu   % DI-19: fGpu keyed
     [miA, miB, viC] = deal(miA_, miB_, viC_);
 else
     vi0 = gpuArray_(int32(1):int32(nData), fGpu)';
@@ -3906,7 +3918,7 @@ else
     miA = min(max(bsxfun(@plus, vi0, vi1),1),nData);
     miB = min(max(bsxfun(@plus, vi0, -vi1),1),nData);
     viC = gpuArray_(int32(-nFilt:nFilt), fGpu);
-    [nData_, nFilt_, miA_, miB_, viC_] = deal(nData, nFilt, miA, miB, viC);
+    [nData_, nFilt_, miA_, miB_, viC_, fGpu_] = deal(nData, nFilt, miA, miB, viC, fGpu);
 end
 end %func
 
@@ -9153,6 +9165,7 @@ else
         tnWav_raw = [];
     end
     tnWav_spk = zeros(diff(spkLim_wav) + 1, nSites_spk, nSpks, 'like', mnWav_spk);
+    nFail_site = 0;   % DI-08: count per-site failures instead of silently swallowing (phantom zero waveforms)
     for iSite = 1:nSites
         viiSpk11 = find(viSite_spk == iSite);
         if isempty(viiSpk11), continue; end
@@ -9170,9 +9183,14 @@ else
             if ~isempty(mnWav_raw)
                 tnWav_raw(:,:,viiSpk11) = permute(mr2tr_(mnWav_raw, spkLim_raw, viTime_spk11, viSite11), [1,3,2]); %raw
             end
-        catch % GPU failure
-            disperr_('mn2tn_wav_: GPU failed'); 
+        catch ME   % DI-08: was a silent swallow that left phantom ZERO waveforms for this site's spikes
+            nFail_site = nFail_site + 1;
+            fprintf(2, '\n\tmn2tn_wav_: site %d failed (%s) -- %d spikes get zero waveforms.\n', ...
+                iSite, ME.message, numel(viiSpk11));
         end
+    end
+    if nFail_site > 0
+        fprintf(2, '\n\t*** mn2tn_wav_: %d site(s) failed; their spikes have ZERO waveforms/features -- unreliable. ***\n', nFail_site);
     end
 end
 if 1 %10/19/2018 JJJ
@@ -18307,6 +18325,9 @@ nFiles = numel(csFile_merge);
 [vrFilt_spk, mrPv_global] = deal([]); % reset the template
 set0_(mrPv_global, vrFilt_spk); % reeset mrPv_global and force it to recompute
 write_spk_(P);
+oc_spk_ = onCleanup(@() write_spk_());   %#ok<NASGU> DI-13: close the .jrc handles even if the loop throws (unbuffered 'W' fids would otherwise leak + lose buffered data)
+S_dimm_ = [];   % DI-03: shape/dtype template from the first chunk WITH spikes (the last chunk may be
+                % empty -- a quiet tail -- which would zero dims 1-2 and corrupt every reshape of the on-disk data)
 for iFile=1:nFiles
     clear load_file_
     fprintf('File %d/%d: detecting spikes from %s\n', iFile, nFiles, csFile_merge{iFile});
@@ -18332,7 +18353,17 @@ for iFile=1:nFiles
         [viTime_spk11, viSite_spk11] = filter_spikes_(viTime_spk0, viSite_spk0, nSamples_total + [1, nSamples11]);
         [tnWav_raw_, tnWav_spk_, trFet_spk_, miSite_spk{end+1}, viTime_spk{end+1}, vrAmp_spk{end+1}, vnThresh_site{end+1}, P.fGpu] ...
                 = wav2spk_(mnWav11, P, viTime_spk11, viSite_spk11, mnWav11_pre, mnWav11_post);
-        write_spk_(tnWav_raw_, tnWav_spk_, trFet_spk_);
+        if ~write_spk_(tnWav_raw_, tnWav_spk_, trFet_spk_)   % DI-07: a silent short/failed write leaves
+            % empty/truncated .jrc while _jrc.mat records in-memory dims. Abort loudly -- chunks already
+            % written stay readable; fix the disk/lock and re-run.
+            error('file2spk_: spike write failed at file %d/%d, chunk %d/%d (see fwrite_ warning above).', ...
+                iFile, nFiles, iLoad1, nLoad1);
+        end
+        if isempty(S_dimm_) && ~isempty(trFet_spk_)   % DI-03: capture template from the first non-empty chunk
+            S_dimm_ = struct('dimm_raw', size(tnWav_raw_), 'type_raw', class(tnWav_raw_), ...
+                'dimm_spk', size(tnWav_spk_), 'type_spk', class(tnWav_spk_), ...
+                'dimm_fet', size(trFet_spk_), 'type_fet', class(trFet_spk_));
+        end
         viTime_spk{end} = viTime_spk{end} + nSamples_total;
         nSamples_total = nSamples_total + nSamples11;
         nSamples_file1 = nSamples_file1 + nSamples11;
@@ -18361,9 +18392,22 @@ else
 end
 
 % set S0
-[dimm_raw, dimm_spk, dimm_fet] = deal(size(tnWav_raw_), size(tnWav_spk_), size(trFet_spk_));
-[type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
+% DI-03: if the LAST chunk was empty (size([])=[0 0]) dims 1-2 would zero out and corrupt every reshape
+% of the on-disk waveforms/features. Prefer the first-non-empty-chunk template captured in the loop.
+if ~isempty(trFet_spk_)
+    [dimm_raw, dimm_spk, dimm_fet] = deal(size(tnWav_raw_), size(tnWav_spk_), size(trFet_spk_));
+    [type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
+elseif ~isempty(S_dimm_)
+    [dimm_raw, dimm_spk, dimm_fet] = deal(S_dimm_.dimm_raw, S_dimm_.dimm_spk, S_dimm_.dimm_fet);
+    [type_raw, type_spk, type_fet] = deal(S_dimm_.type_raw, S_dimm_.type_spk, S_dimm_.type_fet);
+else
+    [dimm_raw, dimm_spk, dimm_fet] = deal(size(tnWav_raw_), size(tnWav_spk_), size(trFet_spk_));
+    [type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
+end
 [dimm_raw(3), dimm_spk(3), dimm_fet(3)] = deal(numel(viTime_spk));
+if numel(viTime_spk) > 0 && (dimm_fet(1)==0 || dimm_fet(2)==0)   % DI-03 safety net
+    error('file2spk_: %d spikes detected but the feature template is degenerate -- aborting to avoid a corrupt _jrc.mat.', numel(viTime_spk));
+end
 nSites = numel(P.viSite2Chan);
 cviSpk_site = arrayfun(@(iSite)find(miSite_spk(:,1) == iSite), 1:nSites, 'UniformOutput', 0);
 if size(miSite_spk,2) >= 2
@@ -18483,14 +18527,14 @@ nTime_clu = get_set_(S0.P, 'nTime_clu', 4);
 nSamples_max = 1000;
 miSites = S0.P.miSites;
 
-if isempty(viT)
-    spkLim_raw = get_(S0.P, 'spkLim_raw');
-    nSamples_raw = diff(spkLim_raw) + 1;
-%     viT = 1:nSamples_raw;
-    spkLim_factor_merge = get_set_(S0.P, 'spkLim_factor_merge', 1);
-    spkLim_merge = round(S0.P.spkLim * spkLim_factor_merge);
-    viT = (spkLim_merge(1) - spkLim_raw(1) + 1):(nSamples_raw - spkLim_raw(2) + spkLim_merge(2));
-end
+% DI-20: recompute viT every call. It derives from S0.P.spkLim_raw/spkLim/spkLim_factor_merge, which
+% can differ between files in one session; the old persistent cache never invalidated (and its
+% nargin==0 reset hook has no callers). The computation is trivial, so caching bought nothing.
+spkLim_raw = get_(S0.P, 'spkLim_raw');
+nSamples_raw = diff(spkLim_raw) + 1;
+spkLim_factor_merge = get_set_(S0.P, 'spkLim_factor_merge', 1);
+spkLim_merge = round(S0.P.spkLim * spkLim_factor_merge);
+viT = (spkLim_merge(1) - spkLim_raw(1) + 1):(nSamples_raw - spkLim_raw(2) + spkLim_merge(2));
 [mrPos_spk1, mrPos_spk2] = deal(S0.mrPos_spk(viSpk1,:), S0.mrPos_spk(viSpk2,:));
 if 0
     mrDist12 = eucl2_dist_(mrPos_spk1', mrPos_spk2');
@@ -24304,7 +24348,7 @@ function trFet_spk = load_spkfet_(S0, P)
 if nargin<1, S0 = get(0, 'UserData'); end
 if nargin<2, P = S0.P; end
 type_fet = get_set_(S0, 'type_fet', 'single');
-trFet_spk = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), type_fet, S0.dimm_fet);
+trFet_spk = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), type_fet, S0.dimm_fet, 0, true); % DI-04: strict -- features feed clustering; a short read must not silently misalign
 end %func
 
 
@@ -24312,6 +24356,8 @@ end %func
 % 10/10/17 JJJ: created and tested. 
 function tnWav_spk1 = fread_spkwav_(viSpk1, fRamCache)
 % Read spikes from file
+% DI-21: DEAD CODE (no callers -- grep-confirmed). fid_/dimm_ are keyed by nothing; if reactivated,
+% add a P.vcFile_prm key (see get_spkfet_ / DI-11) before reusing fid_ across files.
 persistent fid_ dimm_
 if nargin<2, P = get0_('P'); fRamCache = get_set_(P, 'fRamCache', 1); end
 
@@ -24345,6 +24391,8 @@ end %func
 % 10/10/17 JJJ: created and tested
 function tnWav_spk1 = fread_spkraw_(viSpk1, fRamCache)
 % Read spikes from file
+% DI-21: DEAD CODE (no callers -- grep-confirmed). fid_/dimm_ are keyed by nothing; if reactivated,
+% add a P.vcFile_prm key (see get_spkfet_ / DI-11) before reusing fid_ across files.
 persistent fid_ dimm_
 if nargin<2, P = get0_('P'); fRamCache = get_set_(P, 'fRamCache'); end
 
@@ -24391,20 +24439,23 @@ end %func
 
 %--------------------------------------------------------------------------
 % 10/11/17 JJJ: created and tested
-function write_spk_(varargin)
+function fOk = write_spk_(varargin)
 % [Usage]
 % write_spk_(vcFile_prm) %open file
 % write_spk_(P) %open file
 % write_spk_(tnWav_raw, tnWav_spk, trFet_spk)
 % write_spk_() % close and clear
+% DI-07: returns fOk (previously void) -- open failures and short/failed writes are reported so the
+% caller can abort instead of the run "succeeding" while writing empty/truncated .jrc.
 
 persistent fid_raw fid_spk fid_fet
+fOk = true;
 
 switch nargin
     case 0
-        fid_raw = fclose_(fid_raw); 
-        fid_spk = fclose_(fid_spk); 
-        fid_fet = fclose_(fid_fet); 
+        fid_raw = fclose_(fid_raw);
+        fid_spk = fclose_(fid_spk);
+        fid_fet = fclose_(fid_fet);
     case 1
         vcFile_prm = varargin{1};
         if ischar(vcFile_prm)
@@ -24420,14 +24471,16 @@ switch nargin
             else
                 [fid_raw, fid_spk] = deal([]);
             end
-            fid_fet = fopen(strrep(vcFile_prm, '.prm', '_spkfet.jrc'), 'W'); 
+            fid_fet = fopen(strrep(vcFile_prm, '.prm', '_spkfet.jrc'), 'W');
         else
             error('write_spk_: invalid format');
         end
+        % DI-07: fail fast if any output file could not be opened ([] means "not saved", not a failure)
+        if isequal(fid_raw,-1) || isequal(fid_spk,-1) || isequal(fid_fet,-1)
+            error('write_spk_: could not open spike output file(s) for %s (locked / permission / disk?)', vcFile_prm);
+        end
     case 3
-        fwrite_(fid_raw, varargin{1});
-        fwrite_(fid_spk, varargin{2});
-        fwrite_(fid_fet, varargin{3});
+        fOk = fwrite_(fid_raw, varargin{1}) & fwrite_(fid_spk, varargin{2}) & fwrite_(fid_fet, varargin{3});
     otherwise
         disperr_('write_spk_:invalid nargin');
 end %switch
@@ -24506,7 +24559,7 @@ else
 end
 if fLoad
     vcFile_prm_ = P.vcFile_prm;
-    trWav_fet_ = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), 'single', get0_('dimm_fet'));
+    trWav_fet_ = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), 'single', get0_('dimm_fet'), 0, true); % DI-04: strict
 end
 trWav_fet = trWav_fet_;
 end %func

@@ -238,3 +238,48 @@ Five small, low-risk fixes.
 
 Verified (`scratchpad/verify_phase_qw.m`, all green): irc.m/irc2.m parse clean; `field2str_(string)` →
 `'hello'`/`"hello"`; `mr2tr_` int64 returns the correct shape with no error; DI-16/18/22 edits present.
+
+## Cache keys (later same day) — DI-19, DI-20, DI-21
+
+- **DI-19** — `sgfilt4_`/`sgfilt_init_` (irc.m) add `fGpu` to the persistent rebuild key (+ store it), so
+  a same-dimension call with a flipped `fGpu` rebuilds instead of returning CPU arrays for a GPU call.
+- **DI-20** — `S_clu_wav_pair_` recomputes `viT` every call (it derives from
+  `spkLim_raw`/`spkLim`/`spkLim_factor_merge`, which can differ per file; the old persistent never
+  invalidated and its reset hook has no callers). Trivial computation, so caching bought nothing.
+- **DI-21** — dead-code caches `fread_spkwav_`/`fread_spkraw_` (irc.m) and `fid_fet_cache_` (irc2.m) get a
+  `%WARNING` at their `persistent` declarations (grep-confirmed: only definitions + commented-out call
+  sites, no live callers). Comment-only, per the no-delete rule.
+
+## Detection pipeline (later same day) — DI-03, DI-04, DI-07, DI-08, DI-09, DI-13; + DI-14
+
+The higher-risk group (the detect loop runs on every sort). All changes are additive / gated behind
+failure paths; every default-config path is unchanged. Verified via `scratchpad/verify_phase_det.m`
+(parse clean; `write_spk_` fOk+content; `load_bin_` strict throws / lenient returns) — a full end-to-end
+sort was not run.
+
+- **DI-07** (high) — `write_spk_` now returns `fOk`, and: `case 1` errors if any `fopen('W')` returns
+  `-1` (fail fast at open); `case 3` returns `fwrite_(raw) & fwrite_(spk) & fwrite_(fet)` (each already
+  count-checked). `file2spk_`'s per-chunk write is now `if ~write_spk_(...), error(...); end` — a
+  failed/short write aborts loudly instead of the run "succeeding" with empty/truncated `.jrc`.
+- **DI-03** (high) — `file2spk_` captures a `dimm_*`/`type_*` template from the **first chunk with
+  spikes** and uses it when the last chunk is empty (a quiet tail no longer produces `[0,0,N]` dims that
+  corrupt every reshape of the on-disk data). Guarded on `trFet_spk_` (raw/spk are legitimately empty
+  when `fSave_spkwav=0`), plus a "spikes exist but template degenerate" safety `error`.
+- **DI-04** (high, feature path) — `load_bin_` gains a working `fStrict` (5th arg, default off): its
+  `catch` **rethrows** when strict (previously the short-read error was swallowed by `fread_`'s catch
+  *and* `load_bin_`'s). The **feature** loaders `load_spkfet_` + `get_spkfet_` pass `fStrict=true`, so a
+  truncated `_spkfet.jrc` errors instead of silently misaligning clustering features. Raw/spk display
+  loaders left lenient (they route through `get_spkwav_`'s swallow-to-`[]`, a deeper/riskier chain; a
+  short read there surfaces as an empty-array downstream error, not silent misalignment). `load_bin_`
+  also now closes the fid on error (no leak). Default (3/4-arg) callers are byte-identical.
+- **DI-13** (low-med) — `file2spk_` wraps the open `.jrc` handles in `onCleanup(@() write_spk_())`, so an
+  exception mid-detection closes/flushes the unbuffered `'W'` handles instead of leaking them.
+- **DI-08/DI-09** (medium) — the per-site `mn2tn_wav_` and `spikeMerge_` catches previously swallowed
+  **any** error silently (leaving phantom-zero waveforms / dropping a whole site's spikes). Per the
+  devil's-advocate review, an unconditional re-throw would trade rare corruption for a common
+  multi-hour-run abort; instead they now **count failures and emit a loud, unmissable end-of-loop
+  summary** so the corruption is visible. (Structurally dropping the affected spikes is a deeper change
+  left for later; making it non-silent is the load-bearing fix.)
+- **DI-14** (medium, irc2) — `waitfor_lock_` deletes a stale lock on timeout (a crashed process no longer
+  forces a 1-hour stall on every later cached run). The check-then-act TOCTOU race in `lock_dir_` is a
+  documented residual (needs a `mkdir`-based atomic lock across `waitfor_lock_`/`lock_dir_`/`unlock_dir_`).

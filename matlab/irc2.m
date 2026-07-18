@@ -454,9 +454,10 @@ i=0;
 while exist_file_(vcFile_lock)
     if i==0, fprintf('Waiting for lock: %s\n', vcFile_lock); end
     if toc(t1) > lock_timeout
-        fprintf(2, 'Timeout (%0.1f s) for lock: %s\n', lock_timeout, vcFile_lock);
-        break; 
-    else        
+        fprintf(2, 'Timeout (%0.1f s) for lock: %s -- removing the stale lock.\n', lock_timeout, vcFile_lock);
+        try delete(vcFile_lock); catch, end   % DI-14: clear a stale lock (crashed process) rather than proceeding while it still exists
+        break;
+    else
         pause(check_period);
     end
     i=i+1;
@@ -4144,6 +4145,8 @@ function [fid, fCached] = fid_fet_cache_(vcCmd, arg1, arg2)
 % fid = fid_fet_cache_('set', v_fid_fet, v_fid_fet2)
 % fid = fid_fet_cache_(vcFile_prm, iLoad, iFet)
 
+% DI-21: DEAD CODE (only commented-out call sites remain, irc2.m:4368/4391). c_fid_load ignores the
+% vcFile_prm arg on a cache hit; add a file key (see DI-11) before reactivating.
 persistent c_fid_load c_fid2_load
 fCached = 0;
 
