@@ -3961,7 +3961,9 @@ if ~get_set_(P, 'fSave_spkwav', 1)
     return;
 end
     
-switch get_set_(P, 'post_merge_mode', 1)
+post_merge_mode = get_set_(P, 'post_merge_mode', 1);
+if numel(post_merge_mode) > 1, post_merge_mode = post_merge_mode(1); end   % DI-18: a .prm array (copy-paste from post_merge_mode0) would crash the scalar switch; use the first element
+switch post_merge_mode
     case 17, S_clu = templateMatch_post_(S_clu, P, clu_wave_similarity_paged(S_clu, P));
     case 16, S_clu = post_merge_local_(S_clu, P);
     case 15, S_clu = post_merge_similarity_cc_(S_clu, P);
@@ -5117,14 +5119,14 @@ switch lower(P.vcCommonRef)
         if strcmpi(P.vcCommonRef, 'tmean')
             for iChan=1:size(mnWav1,2)
                 mnWav2 = sort(mnWav1_pre(:, miSite_ref(:,iChan)), 2);
-                gvr_tmean = sum(mnWav2(:,viChan_keep), 2); %may go out of range
+                gvr_tmean = sum(single(mnWav2(:,viChan_keep)), 2); % DI-16: single() before sum -- int16 sum saturates at +/-32767 during large correlated events
                 gvr_tmean = int16(single(gvr_tmean)/numel(viChan_keep));
                 mnWav1(:,iChan) = mnWav1_pre(:,iChan) - gvr_tmean;
                 fprintf('.');
             end
         else
             for iChan=1:size(mnWav1,2)
-                gvr_tmean = sum(mnWav1_pre(:, miSite_ref(:,iChan)), 2); %may go out of range
+                gvr_tmean = sum(single(mnWav1_pre(:, miSite_ref(:,iChan))), 2); % DI-16: single() before sum (int16 saturation)
                 gvr_tmean = int16(single(gvr_tmean)/size(miSite_ref,1));
                 mnWav1(:,iChan) = mnWav1_pre(:,iChan) - gvr_tmean;
                 fprintf('.');
@@ -13534,7 +13536,7 @@ else
     [viTime, viSite] = deal(gather_(viTime), gather_(viSite)); 
 end
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime));
+miRange = bsxfun(@plus, int64(viTime0), int64(viTime)); % DI-17: int64 avoids int32 index saturation on >~20h untransposed recordings
 miRange = min(max(miRange, 1), N);
 miRange = miRange(:);
 if isempty(viSite)
@@ -16527,7 +16529,7 @@ viTime = gpuArray_(viTime, fGpu);
 spkLim = gpuArray_(spkLim, fGpu);
 
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime));
+miRange = bsxfun(@plus, int64(viTime0), int64(viTime)); % DI-17: int64 avoids int32 index saturation on >~20h untransposed recordings
 miRange = min(max(miRange, 1), nT);
 tr = zeros([numel(viTime0), numel(viTime), nSites], vcDataType);
 dimm_tr = size(tr);
@@ -22006,6 +22008,13 @@ switch class(val)
             vcStr = '1';
         else
             vcStr = '0';
+        end
+        return;
+    case 'string'   % DI-12: MATLAB string class (double-quoted) -> format like a char literal
+        if fDoubleQuote
+            vcStr = sprintf('"%s"', char(val));
+        else
+            vcStr = sprintf('''%s''', char(val));
         end
         return;
     otherwise

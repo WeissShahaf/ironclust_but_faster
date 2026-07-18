@@ -219,3 +219,22 @@ on a `vcFile_prm` change. Byte-identical for single-file sessions.
 `scratchpad/verify_phase5.m` — all green: irc.m parses clean; 7/7 DI-10 recompute sites present; DI-11
 same-file keeps the cache and a file switch clears the stale global. DI-10's runtime multi-file GPU
 divergence check is deferred (needs GPU hardware + two differently-configured recordings).
+
+## Quick wins (later same day) — DI-12, DI-16, DI-17, DI-18, DI-22
+
+Five small, low-risk fixes.
+- **DI-12** (cosmetic) — `field2str_` (irc.m + irc2.m) gains `case 'string'` (formats a MATLAB `string`
+  like a char literal, honoring `fDoubleQuote`) instead of warning + returning `''`. This is the exact
+  error the user hit on 2026-07-18 (a `string`-class param blanked a line in the exported `_full.prm`).
+- **DI-16** (non-default config) — `wav_car_`'s `'tmean'`/`'nmean'` branches now `sum(single(...))`
+  before dividing, so an int16 reference sum can't saturate at ±32767 during large correlated events.
+- **DI-17** (narrow) — `mr2tr_`'s `miRange = bsxfun(@plus, int64(...), int64(...))` (both sites) avoids
+  int32 index saturation on >~20 h untransposed single-block recordings.
+- **DI-18** (crash) — `post_merge_` coerces `post_merge_mode` to a scalar before the switch, so a `.prm`
+  that sets it as an array (copy-paste from `post_merge_mode0`) no longer crashes the sort. Already hit
+  in production (see project memory).
+- **DI-22** (resource leak) — `readmda_paged_` (irc2.m) closes the previous file's `fid` before
+  reopening on a file switch.
+
+Verified (`scratchpad/verify_phase_qw.m`, all green): irc.m/irc2.m parse clean; `field2str_(string)` →
+`'hello'`/`"hello"`; `mr2tr_` int64 returns the correct shape with no error; DI-16/18/22 edits present.

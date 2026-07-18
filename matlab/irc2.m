@@ -5228,6 +5228,7 @@ if nargin==1
         end
     end
     vcFile = P.vcFile;
+    if ~isempty(fid), fclose_(fid); fid = []; end   % DI-22: close the previous file's fid before reopening (handle leak on file switch)
     viSite2Chan_ = get_(P, 'viSite2Chan');
     switch recording_type_(vcFile)        
         case 'mda'
@@ -9312,6 +9313,13 @@ switch class(val)
             vcStr = '1';
         else
             vcStr = '0';
+        end
+        return;
+    case 'string'   % DI-12 (irc2.m copy): MATLAB string class -> format like a char literal
+        if fDoubleQuote
+            vcStr = sprintf('"%s"', char(val));
+        else
+            vcStr = sprintf('''%s''', char(val));
         end
         return;
     otherwise
