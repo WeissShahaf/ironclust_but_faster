@@ -154,6 +154,36 @@ it silently defeated a length-based guard in `delete_clu_` (caught only by a neg
 > `merge_clu_pair_`). They are proposals that were never implemented. Verify against `irc.m`
 > before relying on any claim in them.
 
+### Data-integrity hardening (2026-07-18) — see `logs/ISSUE_TRACKER_data_integrity.md`
+
+A 22-item audit (DI-01…DI-22) fixed silent corruption/loss + cache-staleness across persistence, the
+detect/feature pipeline, and caches (branch `rewind`, commits `bcbe008`→`1cb9888`). Contracts a future
+change must **preserve**:
+
+- **`struct_save_` returns `fOk` and writes atomically** (temp `<file>.tmp` → `movefile` → `.bak`;
+  refuses an empty temp) — in **both** `irc.m` and `irc2.m` (the function is duplicated). `save0_`
+  checks `fOk`, shows a blocking `msgbox_`, and **returns without running `export_prm_`** on failure.
+  Do not revert to a direct `save(...)` — it guards a good `_jrc.mat` against crash/lock truncation
+  (DI-02/05).
+- **`[U]` multi-group merge** (`execute_pending_and_update_`) reconciles the *not-yet-processed*
+  pending groups after each in-group `delete_clu_` (concatenation form, reusing
+  `adjust_pending_indices_`). Without it, batching ≥2 merge groups silently merges the wrong clusters,
+  and `S_clu_assert_synced_` does **not** catch it (wrong-but-consistent). DI-01 — distinct from the
+  `viClu`/`cviSpk_clu` desync family.
+- **`fread_`/`load_bin_` take a default-off `fStrict`** that rethrows on a short read; the **feature**
+  loaders (`load_spkfet_`, `get_spkfet_`) pass `true`, so a truncated `_spkfet.jrc` errors instead of
+  silently misaligning clustering features (DI-04). Raw/spk display loaders stay lenient by design.
+- **`write_spk_` returns `fOk`** (guards `fopen('W')==-1`, checks `fwrite` counts); `file2spk_` **aborts**
+  on a failed/short write and builds its `dimm_*` template from the **first non-empty chunk** so a quiet
+  tail no longer zeroes dims 1-2 (DI-03/07).
+- **`disperr_` still swallows AND resets the GPU** (`gpuDevice(1)`). For paths that must fail loud, use
+  the new **`disperr_strict_`** (print + rethrow). The per-site `mn2tn_wav_`/`spikeMerge_` catches now
+  **count + warn loudly** instead of swallowing (DI-08/09, count-and-continue — not a hard abort).
+- **Cache keys:** `get_spkwav_` keyed on `vcFile_prm` (DI-11, mirrors `get_spkfet_`); the GPU CUDA
+  kernels recompute launch config every call (DI-10); `sgfilt4_`/`sgfilt_init_` key on `fGpu` (DI-19).
+- **Not yet run:** a full end-to-end `irc('sort', …)` on a real recording — recommended before relying
+  on the detection-pipeline changes in production.
+
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)
 - Page-based loading for large files

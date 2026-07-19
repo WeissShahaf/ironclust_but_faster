@@ -254,7 +254,7 @@ risk to every detection run.
   (9787) silently drops it. **`S_clu_assert_synced_` reports 0 stale** (each merge is internally
   consistent) → no detector; saves to `_jrc.mat`. **Only triggers with ≥2 groups in one `[U]`
   batch** — applying one merge per `[U]` never hits it.
-- **Severity:** critical. **Confidence:** high. **Status:** 🔵 NEW (commit `1a4ce9e` edited this exact
+- **Severity:** critical. **Confidence:** high. **Status:** 🟡 done 2026-07-18 · was NEW (commit `1a4ce9e` edited this exact
   loop for cross-shank but not this).
 - **Scoped fix — CORRECTED (the naive one-liner throws):** after line 9842, before the local adjust:
   ```matlab
@@ -285,7 +285,7 @@ risk to every detection run.
   return normally; `save0_`'s `try/catch` can't fire → caller reports success.
 - **Repro:** `_jrc.mat` momentarily locked (AV/OneDrive/indexer) during a curation save → 3 red lines
   in a scrolling log → user closes MATLAB → **all unsaved curation lost silently.**
-- **Severity:** critical. **Confidence:** high. **Status:** 🔵 NEW.
+- **Severity:** critical. **Confidence:** high. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix (folds in A1+A2 in one edit):** add `fOk` output; write to `tempname_sibling_`, then
   `atomic_replace_(…, true)` on success (DI-05 for free); on all-retries-failed print a clear
   "NOT updated — previous version preserved." `save0_` checks `fOk`, shows `msgbox_` ("curation only in
@@ -303,7 +303,7 @@ risk to every detection run.
   empty-feature sort).
 - **Repro:** any long/multi-file recording whose trailing segment is quiet (post-record rest, blank
   trailing file, low rate).
-- **Severity:** high. **Confidence:** high. **Status:** 🔵 NEW.
+- **Severity:** high. **Confidence:** high. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix:** capture a `dimm_*`/`type_*` template from the **first chunk with >0 spikes** and use
   it when the final chunk is empty; `assert(dimm_fet(1)>0 && dimm_fet(2)>0, …)`. **Care:**
   `dimm_raw/spk` can be *legitimately* all-empty when `fSave_spkwav=0` (write_spk_ case-3 guard,
@@ -322,7 +322,7 @@ risk to every detection run.
   directly.)
 - **Repro:** any partial/interrupted/truncated `.jrc` (i.e. DI-07's output) with authoritative-but-now-
   wrong `dimm` in `_jrc.mat` → silent spike↔waveform **misalignment**.
-- **Severity:** high. **Confidence:** high. **Status:** 🔵 NEW.
+- **Severity:** high. **Confidence:** high. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix:** thread `fStrict` (A4, default-off) through `fread_`→`load_bin_`→`load_spk*_`, and
   **narrow the intermediate catches** so a strict error actually surfaces: `load_bin_` `rethrow` when
   `fStrict`; `load_spkraw_`/`get_spkwav_` catches narrowed to only the legit `fSave_spkwav=0`/not-yet-
@@ -351,7 +351,7 @@ risk to every detection run.
   **Devil's-advocate refinement:** at the normal `edit_prm_file_(P, P.vcFile_prm)` sites, `P` already
   holds correct values, so the loss is *comments/structure*, not tuned values — the worst case (tuned
   value loss) only manifests chained with DI-15's clobber-before-read pattern.
-- **Severity:** high. **Confidence:** med-high. **Status:** 🔵 NEW.
+- **Severity:** high. **Confidence:** med-high. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix (two halves, both required):** (1) read-guard — `file2cellstr_` returns `[csLines, fOk]`,
   `fOk=false` on `fid<0`; `edit_prm_file_` `error`s (never truncates) on a bad read. (2) atomic write —
   route `cellstr2file_` through A1. **Do not ship one half without the other** (read-guard alone still
@@ -366,7 +366,7 @@ risk to every detection run.
 - **Mechanism:** `fopen` unchecked; `fwrite_` swallows into a `fSuccess` the caller ignores; a
   disk-full `fwrite` returns a short count never compared. Run "succeeds" with empty/truncated `.jrc`
   while `_jrc.mat` records in-memory dims (compounds DI-04).
-- **Severity:** high. **Confidence:** high. **Status:** 🔵 NEW.
+- **Severity:** high. **Confidence:** high. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix:** guard each `fopen` (`==-1` → error); `fwrite_` compares count to `numel` (A4) and
   returns `fSuccess`; `write_spk_` case-3 returns `fOk`; `file2spk_` aborts the run on a failed write
   (partial-but-committed chunks stay readable). **Devil's-advocate add:** pair with the same bounded
@@ -381,7 +381,7 @@ risk to every detection run.
 - **Mechanism:** the catch swallows **any** per-site throw, leaving that site's slice at pre-allocated
   **zeros** (real times, zero features → degenerate near-origin spikes) and consuming the exception so
   `wav2spk_`'s GPU→CPU retry never fires.
-- **Severity:** medium. **Confidence:** medium. **Status:** 🔵 NEW.
+- **Severity:** medium. **Confidence:** medium. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix — DEVIL'S-ADVOCATE OVERRIDE (do NOT lead with re-throw):** the architect proposed
   `disperr_strict_` re-throw, but this catch runs inside the per-chunk×per-site loop (thousands of
   iterations); an **unconditional re-throw turns one transient hiccup into a total multi-hour-run
@@ -416,7 +416,7 @@ risk to every detection run.
 - **Devil's-advocate concession (auditor self-limited correctly):** `irc('clear')` (irc.m:21160) clears
   all persistents and `batch_` (irc.m:5068) calls it before each file — so **only interactive/scripted
   multi-file loops that bypass `batch_`** are exposed.
-- **Severity:** high. **Confidence:** high. **Status:** 🔵 NEW.
+- **Severity:** high. **Confidence:** high. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix:** apply `search_knn_drift_`'s shape to all 7 — cache only the `CUDAKernel` construction
   (`isempty(CK) || nC_~=nC`), **reassign `ThreadBlockSize`/`SharedMemorySize`/`GridSize` every call**
   (property assignment, not a recompile — proven safe in production, byte-identical on single-file
@@ -434,7 +434,7 @@ risk to every detection run.
   is actually reached via `auto_` (irc.m:17147), which calls `load_cached_` first (line 17153); and
   `sort_` populates the globals from this run's own detection. Live exposure requires bypassing both
   command entry points (direct script/console call). Fix still cheap and worth doing.
-- **Severity:** high. **Confidence:** medium. **Status:** 🔵 NEW.
+- **Severity:** high. **Confidence:** medium. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix:** add `persistent vcFile_prm_` (A3); reload when `P.vcFile_prm` changes. Byte-identical
   on single-file sessions.
 
@@ -448,7 +448,7 @@ risk to every detection run.
   from the **already-clobbered** file → `edit_prm_file_` patches default values into a default file.
   **The user's probe/channel config/thresholds are permanently gone, unconditionally, with no in-memory
   copy** — not "if the patch throws." This is the natural way to use an export utility.
-- **Severity:** **high**. **Confidence:** **high**. **Status:** 🔵 NEW.
+- **Severity:** **high**. **Confidence:** **high**. **Status:** 🟡 done 2026-07-18 · was NEW.
 - **Scoped fix:** build the patched content in a temp (`copyfile → vcFile_tmp`; `edit_prm_file_(P,
   vcFile_tmp)`), then `atomic_replace_` only on success (A1). Also fix the doc/behavior mismatch (help
   implies a `_full.prm` default output the code doesn't apply). **Follow-up:** grep other
