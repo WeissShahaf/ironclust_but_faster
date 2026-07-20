@@ -1,0 +1,6 @@
+session : afm18367_260317_0#260317_afm18367_g0_tcat.imec0.ap_IRC_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\Project_Motor\NPX\00_data\260317_AFM-18367\supercat_260317_afm18367_g0\260317_afm18367_g0_imec0\260317_afm18367_g0_tcat.imec0.ap_IRC_jrc.mat
+verdict : PASS
+nClu=170  nSpk=2800229
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=3  worstSiteSpan=75

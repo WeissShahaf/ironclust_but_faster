@@ -1,0 +1,6 @@
+session : afm17372_241206_0#shortwaves_histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17372\241206\concat\afm17372_241206_0_g0\afm17372_241206_0_g0_imec0\shortwaves_histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc.mat
+verdict : DESYNC-SEVERE
+nClu=191  nSpk=2437314
+nCluDesync=184  nCacheMixLabels=19  pctSpkWrong=97.874%
+nCluSpatialFlag=1  worstSiteSpan=27

@@ -1,0 +1,6 @@
+session : afm17372_241127_0
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17372\241127\concat\supercat_afm17372_241127_g0\afm17372_241127_g0_imec0\afm17372_241127_g0_tcat.imec0.ap_shortlist_IRC_jrc.mat
+verdict : DESYNC-SEVERE
+nClu=199  nSpk=5685088
+nCluDesync=185  nCacheMixLabels=38  pctSpkWrong=93.872%
+nCluSpatialFlag=3  worstSiteSpan=47

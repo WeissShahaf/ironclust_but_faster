@@ -1,0 +1,6 @@
+session : afm17313_241029_0
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241029\catgt_output\supercat_afm17313_241029_hunting_pups_escape_g0\afm17313_241029_hunting_pups_escape_g0_imec0\afm17313_241029_hunting_pups_escape_g0_tcat.imec0.ap_IRC_PAG_jrc.mat
+verdict : DESYNC-SEVERE
+nClu=314  nSpk=1681728
+nCluDesync=313  nCacheMixLabels=79  pctSpkWrong=99.359%
+nCluSpatialFlag=107  worstSiteSpan=139

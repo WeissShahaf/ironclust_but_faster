@@ -1,0 +1,7 @@
+session : afm18349_260317_0_all_sites#260317_afm18349_g0_tcat.imec0.ap_IRC_all_sites_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\Project_Motor\NPX\00_data\260317_AFM-18349\catgt_260317_afm18349_g0\260317_afm18349_g0_imec0\260317_afm18349_g0_tcat.imec0.ap_IRC_all_sites_jrc.mat
+verdict : SKIP:loaderr
+nClu=0  nSpk=0
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=0  worstSiteSpan=0
+note    : Unable to read MAT-file \\gpfs.corp.brain.mpg.de\stem\data\Project_Motor\NPX\00_data\260317_AFM-18349\catgt_260317_afm18349_g0\260317_afm18349_g0_imec0\260317_afm18349_g0_tcat.imec0.ap_IRC_all_sites_jrc.mat. File might be corrupt.

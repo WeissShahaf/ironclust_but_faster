@@ -1,0 +1,6 @@
+session : afm18367_260320_0
+file    : \\gpfs.corp.brain.mpg.de\stem\data\Project_Motor\NPX\00_data\260320_AFM-18367\260320_afm18367_g0\260320_afm18367_g0_imec0\260320_afm18367_g0_tcat.imec0.ap_IRC_jrc.mat
+verdict : DESYNC-SEVERE
+nClu=138  nSpk=5196093
+nCluDesync=74  nCacheMixLabels=26  pctSpkWrong=43.445%
+nCluSpatialFlag=3  worstSiteSpan=75

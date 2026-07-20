@@ -1,0 +1,6 @@
+session : afm18367_260324_0_catgt_KS4
+file    : \\gpfs.corp.brain.mpg.de\stem\data\Project_Motor\NPX\00_data\260324_AFM-18367\260324_afm18367_g0\catgt_260324_afm18367_g0\260324_afm18367_g0_imec0\260324_afm18367_g0_tcat.imec0.ap_IRC_jrc.mat
+verdict : PASS
+nClu=159  nSpk=4082385
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=1  worstSiteSpan=75
