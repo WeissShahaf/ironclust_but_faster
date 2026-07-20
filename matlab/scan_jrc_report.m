@@ -44,8 +44,8 @@ for k = 1:n
         R(k) = check_jrc_one(p);
     end
     write_log_(fullfile(vcLogDir, [safe_(labels{k}) '.log']), labels{k}, R(k));
-    fprintf('  [%3d/%3d] %-38s %-14s (nClu=%d desync=%d mix=%d spatial=%d)\n', ...
-        k, n, labels{k}, char(R(k).verdict), R(k).nClu, R(k).nCluDesync, R(k).nCacheMix, R(k).nCluSpatial);
+    fprintf('  [%3d/%3d] %-38s %-14s (nClu=%d desync=%d mix=%d suspect=%d)\n', ...
+        k, n, labels{k}, char(R(k).verdict), R(k).nClu, R(k).nCluDesync, R(k).nCacheMix, R(k).nCluSuspect);
 end
 
 T = struct2table(R, 'AsArray', true);
@@ -65,7 +65,7 @@ fprintf(fid, 'file    : %s\n', char(R.file));
 fprintf(fid, 'verdict : %s\n', char(R.verdict));
 fprintf(fid, 'nClu=%d  nSpk=%d\n', R.nClu, R.nSpk);
 fprintf(fid, 'nCluDesync=%d  nCacheMixLabels=%d  pctSpkWrong=%.3f%%\n', R.nCluDesync, R.nCacheMix, R.pctSpkWrong);
-fprintf(fid, 'nCluSpatialFlag=%d  worstSiteSpan=%d\n', R.nCluSpatial, round(R.worstSiteSpan));
+fprintf(fid, 'nCluSuspect=%d  worstDepthGapUm=%d\n', R.nCluSuspect, round(R.worstDepthGapUm));
 if strlength(R.note)>0, fprintf(fid, 'note    : %s\n', char(R.note)); end
 fclose(fid);
 end
@@ -76,7 +76,7 @@ function write_report_(vcFile, vcTitle, vcManifest, lbl, R)
 v = [R.verdict];
 isDes  = startsWith(v,'DESYNC');
 isSkip = startsWith(v,'SKIP');
-isSpat = [R.nCluSpatial]'>0 & ~isDes(:) & ~isSkip(:);
+isSpat = [R.nCluSuspect]'>0 & ~isDes(:) & ~isSkip(:);
 L = {};
 L{end+1} = sprintf('# %s', vcTitle);
 L{end+1} = '';
@@ -94,9 +94,9 @@ else
 end
 L{end+1} = '';
 
-L{end+1} = '## 🔍 Review — PASS but spatially flagged (heuristic; may be normal drift/large units)';
+L{end+1} = '## 🔍 Review — PASS but SUSPECT (tightened heuristic: a time-interleaved secondary depth population; eyeball for a two-neuron fusion)';
 if any(isSpat)
-    L = [L, md_table_(lbl(isSpat), R(isSpat), {'label','nClu','nCluSpatial','worstSiteSpan','file'})];
+    L = [L, md_table_(lbl(isSpat), R(isSpat), {'label','nClu','nCluSuspect','worstDepthGapUm','file'})];
 else
     L{end+1} = '_None._';
 end
@@ -111,7 +111,7 @@ end
 L{end+1} = '';
 
 L{end+1} = '## All results';
-L = [L, md_table_(lbl, R, {'label','verdict','nClu','nCluDesync','nCacheMix','pctSpkWrong','nCluSpatial','file'})];
+L = [L, md_table_(lbl, R, {'label','verdict','nClu','nCluDesync','nCacheMix','pctSpkWrong','nCluSuspect','file'})];
 
 fid = fopen(vcFile,'w'); if fid<0, warning('cannot write %s', vcFile); return; end
 fprintf(fid, '%s\n', L{:});
@@ -131,7 +131,7 @@ for k = 1:numel(R)
             case 'note',         cells{j} = char(R(k).note);
             case 'file',         cells{j} = ['`' char(R(k).file) '`'];
             case 'pctSpkWrong',  cells{j} = sprintf('%.2f%%', R(k).pctSpkWrong);
-            case 'worstSiteSpan',cells{j} = num2str(round(R(k).worstSiteSpan));
+            case 'worstDepthGapUm',cells{j} = num2str(round(R(k).worstDepthGapUm));
             otherwise,           cells{j} = num2str(R(k).(cols{j}));
         end
         cells{j} = strrep(cells{j}, '|', '\|');

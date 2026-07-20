@@ -41,8 +41,8 @@ end
 T = struct2table(R, 'AsArray', true);
 if fVerbose
     nFail = sum(startsWith([R.verdict], 'DESYNC'));
-    nSpat = sum([R.nCluSpatial] > 0 & ~startsWith([R.verdict],'DESYNC') & ~startsWith([R.verdict],'SKIP'));
-    fprintf('\n>>> %d DESYNC (corrupted; re-sort) | %d PASS-but-spatially-flagged (review) | of %d\n', ...
+    nSpat = sum([R.nCluSuspect] > 0 & ~startsWith([R.verdict],'DESYNC') & ~startsWith([R.verdict],'SKIP'));
+    fprintf('\n>>> %d DESYNC (corrupted; re-sort) | %d PASS-but-suspect (review) | of %d\n', ...
         nFail, nSpat, numel(csFiles));
 end
 if nargout, varargout{1} = T; end
@@ -51,9 +51,9 @@ end
 
 %--------------------------------------------------------------------------
 function s = local_line_(R)
-s = sprintf('%-52s  %-14s  nClu=%-5d desync=%-5d mix=%-4d wrong=%5.2f%%  spatialFlag=%-4d span=%d  %s', ...
+s = sprintf('%-52s  %-14s  nClu=%-5d desync=%-5d mix=%-4d wrong=%5.2f%%  suspect=%-4d gapUm=%d  %s', ...
     char(R.name), char(R.verdict), R.nClu, R.nCluDesync, R.nCacheMix, R.pctSpkWrong, ...
-    R.nCluSpatial, round(R.worstSiteSpan), char(R.note));
+    R.nCluSuspect, round(R.worstDepthGapUm), char(R.note));
 end
 
 
