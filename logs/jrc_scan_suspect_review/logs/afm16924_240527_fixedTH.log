@@ -1,0 +1,6 @@
+session : afm16924_240527_fixedTH
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16924\concat\catgt_afm16924_240527_pup_retrieval_hunting_g0\afm16924_240527_pup_retrieval_hunting_g0_imec0\afm16924_240527_pup_retrieval_hunting_g0_tcat.imec0.ap_imec32b2_jrc.mat
+verdict : PASS
+nClu=72  nSpk=840868
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSuspect=0  worstDepthGapUm=0

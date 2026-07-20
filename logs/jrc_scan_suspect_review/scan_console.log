@@ -1,0 +1,21 @@
+scan_jrc_report: 18 dataset(s) from D:\github\ironclustSW\logs\jrc_scan_suspect_review\manifest.csv
+  [  1/ 18] afm16505_231213_0                      PASS           (nClu=335 desync=0 mix=0 suspect=0)
+  [  2/ 18] afm16505_231215_2_0#shortwin_traces_cached_seg0_probe_jrc PASS           (nClu=491 desync=0 mix=0 suspect=0)
+  [  3/ 18] afm16505_231215_2_0#traces_cached_seg0_probe_jrc PASS           (nClu=416 desync=0 mix=0 suspect=1)
+  [  4/ 18] afm16924_240529_test                   PASS           (nClu=181 desync=0 mix=0 suspect=0)
+  [  5/ 18] afm16924_240527_fixedTH                PASS           (nClu=72 desync=0 mix=0 suspect=0)
+  [  6/ 18] afm16924_240522_test_last_good         PASS           (nClu=271 desync=0 mix=0 suspect=0)
+  [  7/ 18] afm16963_240526_sw#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=303 desync=0 mix=0 suspect=1)
+  [  8/ 18] afm16963_240526_sw#Hi_amps_monopolar_afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=682 desync=0 mix=0 suspect=0)
+  [  9/ 18] afm16963_240526_sw#shortwin_Hi_amps_monopolar_afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=436 desync=0 mix=0 suspect=0)
+  [ 10/ 18] afm16963_240526#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2 - Copy_jrc PASS           (nClu=636 desync=0 mix=0 suspect=0)
+  [ 11/ 18] afm16963_240526#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=151 desync=0 mix=0 suspect=1)
+  [ 12/ 18] afm17313_241024#afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=427 desync=0 mix=0 suspect=0)
+  [ 13/ 18] afm17365_241219_01_resorted2           PASS           (nClu=492 desync=0 mix=0 suspect=0)
+  [ 14/ 18] afm17365_241202_0                      PASS           (nClu=928 desync=0 mix=0 suspect=1)
+  [ 15/ 18] afm17372_241129_0#monopolar_of_afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=340 desync=0 mix=0 suspect=0)
+  [ 16/ 18] afm18367_260317_0#260317_afm18367_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=170 desync=0 mix=0 suspect=0)
+  [ 17/ 18] afm18367_260324_0                      PASS           (nClu=226 desync=0 mix=0 suspect=0)
+  [ 18/ 18] afm18367_260324_0_catgt_IRC            PASS           (nClu=159 desync=0 mix=0 suspect=0)
+
+Wrote D:\github\ironclustSW\logs\jrc_scan_suspect_review\AFFECTED_REPORT.md and 18 per-session logs in D:\github\ironclustSW\logs\jrc_scan_suspect_review\logs

@@ -106,10 +106,26 @@ Four `_jrc.mat` returned MAT-file read errors ("File might be corrupt") — a di
 failure (bad/truncated save, the DI-02/05 class now fixed). Listed under "Not checked / load error"
 in the per-repo report.
 
-### 4.3 Clean (64 PASS) and review candidates (36 spatially flagged)
-The remaining sorts pass the invariant. 36 PASS files carry ≥1 spatial-heuristic flag (e.g.
-`afm17365_241202_0`, 21 flagged clusters) — candidates to eyeball, most likely benign drift. These
-are being re-scored with a tightened heuristic (§8).
+### 4.3 Clean (64 PASS) and review candidates (tightened)
+The remaining sorts pass the invariant. The 72 PASS files (both repos, 18 unique) were re-scored
+with the **tightened** heuristic (§3): a distinct secondary depth population (>150 µm, ≥15% & ≥50
+spikes) **interleaved in time** with the main one — drift (a time-ordered depth ramp) excluded.
+This cut the candidate list from ~44 noisy site-spread flags to **4 files, each with a single
+suspect cluster** — all in Project_hierarchy:
+
+| session(s) | file | nClu | suspect | worst depth gap |
+|---|---|---|---|---|
+| afm16505 231215_2_0 | `…/spk/traces_cached_seg0_probe_jrc.mat` | 416 | 1 | 187 µm |
+| afm16963 240526 / 240526_sw | `…/…ap_imec3b2_jrc.mat` (2 labels, same recording) | 303 / 151 | 1 | 152 µm |
+| **afm17365 241202_0** | `…/supercat_…/…ap_**IRC_reordered**_jrc.mat` | 928 | 1 | **329 µm** |
+
+**afm17365 241202_0 is the standout:** its filename literally contains `_reordered` (it *was*
+`[O]`-reordered), yet it **passes the invariant** — the exact "corruption healed into a
+consistent-but-wrong state" that the definitive test can't see and the tightened heuristic is built
+to catch. Worth opening in the GUI to inspect that one cluster (a 329 µm secondary population firing
+throughout the recording = a likely two-neuron fusion). The other three (152–187 µm, 1 cluster each)
+are lower-confidence — possibly genuine large/bursting units. **All cuniform PASS files scored
+`suspect=0`.** Full detail: `logs/jrc_scan_suspect_review/AFFECTED_REPORT.md`.
 
 ### 4.4 Note
 Several **actively-analysed** afm17372 sessions (241125, 241127, 241129, 241202, 241206, 241209, …
@@ -183,8 +199,8 @@ afm17372 {241125_0/1/2, 241127_0/1/2, 241129_0/1/2, 241202_0/1/2, 241206_0/1, 24
 2. **After each re-sort, verify** with `check_jrc_sync('<new_jrc.mat>')` — it should read `PASS`.
 3. **Investigate the 6 won't-load files** separately (bad/truncated saves; re-sort or restore from
    backup).
-4. **Tighten the spatial heuristic** (in progress) to cut false positives and surface only
-   higher-confidence review candidates, then re-score the PASS set.
+4. **Tighten the spatial heuristic** — ✅ done (drift-robust depth+time test). Re-scored the 18
+   unique PASS files → 4 single-cluster candidates (§4.3); eyeball `afm17365_241202_0` first.
 5. Optionally, generate ready-to-run re-sort command lists for the 22 files.
 
 ---

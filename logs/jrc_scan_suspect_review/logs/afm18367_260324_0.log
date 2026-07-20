@@ -1,0 +1,6 @@
+session : afm18367_260324_0
+file    : \\gpfs.corp.brain.mpg.de\stem\data\Project_Motor\NPX\00_data\260324_AFM-18367\260324_afm18367_g0\260324_afm18367_g0_imec0\260324_afm18367_g0_t0.imec0.ap_260324_afm18367_g0_t0.imec0.ap_PPN_CUN_margin120um_IRC_jrc.mat
+verdict : PASS
+nClu=226  nSpk=24492402
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSuspect=0  worstDepthGapUm=0
