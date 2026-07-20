@@ -52,6 +52,25 @@ file-open.
 
 ---
 
+### 2b. "%wrong" is a label-mismatch, not a science-loss count (forensic)
+
+The `%wrong` column counts spikes whose two label systems *disagree*, which **overstates** how much
+of the spike *grouping* is actually lost. A forensic on all 22 files
+(`logs/jrc_scan_desync_forensic/DESYNC_PERMUTATION_ANALYSIS.md`; tool `matlab/analyze_desync.m`)
+classifies each cluster as **CLEAN** (a whole cluster merely *renumbered* — same spikes stay
+together, grouping preserved) vs **PARTIAL / MIXED** (a cluster split across cache entries, or a
+cache entry holding spikes from >1 label — grouping genuinely altered, the *compounded* core).
+
+Result: **54–92 % of spikes in each corrupted file sit in CLEAN, just-renumbered clusters** — those
+units are intact (only their cluster *number* is inconsistent between `viClu` and the cache/metadata).
+**But every one of the 22 is also compounded** — 3–299 MIXED clusters each, `cleanPerm=0` for all, and
+several **double-count spikes** (`cover` > 100 %). So no file is a *pure* permutation that could be
+safely relabelled; the compounded minority is real, unrecoverable regrouping. That — plus the
+per-cluster metadata (waveforms/positions) sitting on the *permuted* index while `viClu` keeps the old
+labels — is why **re-sort remains the safe fix**, even though the *bulk* of each file's groupings
+survive as a renumbering. Triage by lowest `sciPreserved` (worst: 241213 54 %, 241129 59 %, afm18349
+260324 62 %; mildest: 241024 92 %, 260320 90 %).
+
 ## 3. Method
 
 - **Definitive test** (identical to `S_clu_assert_synced_`): for every cluster *i*,
