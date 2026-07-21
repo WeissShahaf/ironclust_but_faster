@@ -24,7 +24,7 @@ if ~isempty(lines) && (strcmpi(strtrim(lines{1}),'session,jrc') || strcmpi(strtr
 
 cache = containers.Map('KeyType','char','ValueType','any');
 fid = fopen(vcCsvOut, 'w');
-fprintf(fid, 'session,sort_file,cache_index,viclu_label,n_spikes,status\n');
+fprintf(fid, 'session,sort_file,cache_index,viclu_label,n_spikes,status,labels_in_entry\n');
 nRow = 0; nSessSkip = 0;
 for k = 1:numel(lines)
     ix = find(lines{k}==',', 1, 'first');
@@ -35,7 +35,7 @@ for k = 1:numel(lines)
     C = cache(f);                       % struct with .base, .idx, .dom, .ni, .status, .ok
     if ~C.ok, nSessSkip=nSessSkip+1; continue; end
     for j = 1:numel(C.idx)
-        fprintf(fid, '%s,%s,%d,%d,%d,%s\n', sess, C.base, C.idx(j), C.dom(j), C.ni(j), C.status{j});
+        fprintf(fid, '%s,%s,%d,%d,%d,%s,%s\n', sess, C.base, C.idx(j), C.dom(j), C.ni(j), C.status{j}, C.labels{j});
         nRow = nRow + 1;
     end
 end
@@ -47,7 +47,7 @@ end
 
 %--------------------------------------------------------------------------
 function C = classify_(f)
-C = struct('base','', 'idx',[], 'dom',[], 'ni',[], 'status',{{}}, 'ok',false);
+C = struct('base','', 'idx',[], 'dom',[], 'ni',[], 'status',{{}}, 'labels',{{}}, 'ok',false);
 [~,nm,ex] = fileparts(f); C.base = [nm ex];
 if exist(f,'file')~=2, return; end
 try, L = load(f, 'S_clu'); catch, return; end
@@ -55,14 +55,20 @@ if ~isfield(L,'S_clu') || ~isfield(L.S_clu,'viClu') || ~isfield(L.S_clu,'cviSpk_
 S = L.S_clu; viClu = double(S.viClu(:)); cvi = S.cviSpk_clu; nClu = numel(cvi); nSpk = numel(viClu);
 if nClu==0 || nSpk==0, return; end
 mx = max(max(viClu), nClu); vn = accumarray(viClu(viClu>=1), 1, [mx,1]);
-idx = (1:nClu)'; dom = zeros(nClu,1); ni = zeros(nClu,1); status = cell(nClu,1);
+idx = (1:nClu)'; dom = zeros(nClu,1); ni = zeros(nClu,1); status = cell(nClu,1); labels = cell(nClu,1);
 for i = 1:nClu
     vi = double(cvi{i}(:)); vi = vi(vi>=1 & vi<=nSpk); ni(i) = numel(vi);
-    if ni(i)==0, dom(i)=0; status{i}='empty'; continue; end
-    lb = viClu(vi); d = mode(lb); dom(i) = d; p = mean(lb==d);
+    if ni(i)==0, dom(i)=0; status{i}='empty'; labels{i}=''; continue; end
+    lb = viClu(vi);
+    [u,~,ic] = unique(lb); cnt = accumarray(ic,1); [cnt,si] = sort(cnt,'descend'); u = u(si);
+    d = u(1); dom(i) = d; p = cnt(1)/ni(i);
+    nTop = min(6, numel(u));
+    parts = arrayfun(@(kk) sprintf('%d(%d)', u(kk), cnt(kk)), 1:nTop, 'UniformOutput', 0);
+    s = strjoin(parts, ';'); if numel(u) > nTop, s = sprintf('%s;+%dmore', s, numel(u)-nTop); end
+    labels{i} = s;
     if p < 1, status{i} = 'mixed';
     elseif d>=1 && d<=mx && ni(i)==vn(d), status{i} = 'clean';
     else, status{i} = 'partial'; end
 end
-C.idx = idx; C.dom = dom; C.ni = ni; C.status = status; C.ok = true;
+C.idx = idx; C.dom = dom; C.ni = ni; C.status = status; C.labels = labels; C.ok = true;
 end
