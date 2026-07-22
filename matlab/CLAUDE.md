@@ -184,6 +184,19 @@ change must **preserve**:
 - **Not yet run:** a full end-to-end `irc('sort', …)` on a real recording — recommended before relying
   on the detection-pipeline changes in production.
 
+### Testing existing sorts for the desync — read-only diagnostics (2026-07-20)
+
+`matlab/check_jrc_sync.m` (+ `check_jrc_one.m`) tests any `_jrc.mat`/`.prm`/folder/list for the
+`viClu`⇄`cviSpk_clu` desync (`all(viClu(cviSpk_clu{i})==i)`); `scan_jrc_report.m` batches a
+`label,jrc` manifest → per-session logs + an `AFFECTED_REPORT.md`; `analyze_desync.m` reports
+clean-permutation-vs-compounded (how much grouping survives); `export_desync_clusters.m` emits a
+per-(session,cluster) CSV. **All strictly read-only — they only `load()`, never write a `_jrc.mat`.**
+A field scan of both projects' paths CSVs found **22 corrupted sorts** (afm17307/17313/17372 in
+Project_hierarchy; afm18349/18367 in cuniform_NPX), all DESYNC-SEVERE → **re-sort** (see
+`logs/DATASET_INTEGRITY_REPORT.md` and `logs/jrc_scan_*/`). A DESYNC verdict is not repairable; a
+`PASS` means "currently self-consistent", not "never corrupted"; the DI-01 `[U]` wrong-merge is
+undetectable by these tools (internally consistent).
+
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)
 - Page-based loading for large files
