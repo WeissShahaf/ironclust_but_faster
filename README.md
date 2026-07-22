@@ -117,8 +117,18 @@ irc2 clear `path_to_prm_file`
 ## What's different from upstream IronClust
 
 This fork tracks `flatironinstitute/ironclust` (diverged at upstream `master`, commit
-`2d7b56c`) and adds the following. Items marked *(default change)* alter out-of-the-box
-behaviour relative to upstream; everything else is additive or a bug fix.
+`2d7b56c`, frozen 2022) and adds the following. Items marked *(default change)* alter
+out-of-the-box behaviour relative to upstream; everything else is additive or a bug fix.
+At the function level: **`matlab/irc.m` gains 44 functions and removes 0** (+2,948 / −262
+lines); no upstream function was deleted.
+
+![Pipeline differences: this fork vs upstream IronClust](logs/WORKFLOW_diff_vs_upstream.png)
+
+*Stage-by-stage view of what this fork changes across **detection · sorting · merging ·
+curation** — grey = inherited upstream core (unchanged), blue = fork additions. Editable
+source: [`logs/WORKFLOW_diff_vs_upstream.drawio`](logs/WORKFLOW_diff_vs_upstream.drawio) ·
+vector: [`logs/WORKFLOW_diff_vs_upstream.svg`](logs/WORKFLOW_diff_vs_upstream.svg) · full
+written diff: [`logs/COMPARISON_vs_upstream.md`](logs/COMPARISON_vs_upstream.md).*
 
 ### New clustering methods
 - **Per-site, label-based clustering** — `vcCluster = 'kmeans' | 'hdbscan' | 'isosplit6'`.
@@ -140,11 +150,13 @@ behaviour relative to upstream; everything else is additive or a bug fix.
 - **Per-site spike cap** — `maxSpk_persite_clust` bounds the O(n²) kNN/clustering cost on huge
   (usually noise) sites by clustering a random subsample and assigning the rest to the nearest
   member. `[]` = off (byte-identical to upstream). Example: a 1.1 M-spike site drops from
-  ~80 min to ~90 s at `m = 50000`.
+  ~80 min to ~90 s at `m = 50000`. See
+  [`logs/plan_persite_spike_cap.md`](logs/plan_persite_spike_cap.md) and
+  [`logs/investigation_maxSpk_persite_clust.md`](logs/investigation_maxSpk_persite_clust.md).
 - **I/O and detection tuning** — larger load blocks (`MAX_LOAD_SEC = 10`, larger `nPad_filt`),
-  Wiener detection filter by default, plus GUI/plot performance work. Details in
-  `matlab/GUI_PERFORMANCE_OPTIMIZATIONS.md`, `matlab/MERGE_OPTIMIZATIONS.md`,
-  `matlab/FIND_OPTIMIZATION_ANALYSIS.md`, and `matlab/GPU_USAGE_ANALYSIS.md`.
+  Wiener detection filter by default, plus GUI/plot performance work. The parameter values are
+  the authoritative source: see the annotated defaults in
+  [`matlab/default.prm`](matlab/default.prm) and the dated change logs under [`logs/`](logs/).
 
 ### Robustness & bug fixes
 - Hardened the **post-merge and per-site paths** against empty / single-spike / gappy-label
@@ -154,6 +166,42 @@ behaviour relative to upstream; everything else is additive or a bug fix.
   `post_merge_wav_`).
 - Fixed cluster **merge / delete** bugs and added defensive sizing of cluster-quality arrays in
   manual curation.
+
+### Data integrity & cluster-identity hardening
+
+A large share of this fork's fixes target **silent data corruption / loss** in manual curation
+and persistence — bugs that could write a bad `_jrc.mat` with no error raised. All are additive
+guards: a healthy run is byte-identical to upstream.
+
+- **`viClu` ⇄ `cviSpk_clu` desync (CID-01…15).** The `[O]` "reorder by coordinates" and the
+  delete/merge paths could permute the per-cluster spike-index cache without remapping the
+  authoritative per-spike labels (`viClu`), silently corrupting cluster identity on save.
+  `reorder_clu_by_coords_` now remaps `viClu` in lockstep, and `S_clu_assert_synced_` verifies
+  the invariant `all(viClu(cviSpk_clu{i}) == i)` at both load and commit.
+- **Multi-group `[U]` merge (DI-01).** Applying ≥2 queued merge groups at once re-indexed the
+  later groups incorrectly and merged the wrong clusters (the result was internally consistent,
+  so it was undetectable after the fact). `execute_pending_and_update_` now reconciles the
+  not-yet-processed groups after each in-group delete.
+- **Cross-shank merge guard.** `block_cross_shank_` / `shank_clu_` prevent merging clusters that
+  live on different shanks — in both the automated post-merge and manual `[M]`/`[U]`.
+- **Atomic saves (DI-02/05).** `struct_save_` writes to a temp file, renames it into place, keeps
+  a `.bak`, and refuses to commit an empty temp; `save0_` blocks and reports on failure instead
+  of reporting false success. This guards a good `_jrc.mat` against crash / lock truncation.
+- **Strict I/O on the feature path (DI-03/04/07).** `fread_` / `load_bin_` gain a strict mode so a
+  truncated `_spkfet.jrc` errors out instead of silently misaligning clustering features;
+  `write_spk_` returns a success flag and guards its file handle; the dimensions template is built
+  from the first non-empty chunk so a quiet tail no longer zeroes dims.
+
+The full 22-item audit is in
+[`logs/ISSUE_TRACKER_data_integrity.md`](logs/ISSUE_TRACKER_data_integrity.md); the
+cluster-identity family is tracked in
+[`logs/ISSUE_TRACKER_cluster_identity.md`](logs/ISSUE_TRACKER_cluster_identity.md).
+
+**Read-only diagnostics for existing sorts.** Because the desync predates its fix, this fork ships
+tools to test already-sorted `_jrc.mat` files for it — `check_jrc_sync.m`, `scan_jrc_report.m`,
+`analyze_desync.m`, `export_desync_clusters.m` (all strictly read-only — they never write a
+`_jrc.mat`). A DESYNC verdict is **not repairable — re-sort.** See
+[`logs/DATASET_INTEGRITY_REPORT.md`](logs/DATASET_INTEGRITY_REPORT.md).
 
 ### Manual curation / GUI
 - **Deferred-edit workflow** — queue merges/deletes and apply them together with `u` (cancel
