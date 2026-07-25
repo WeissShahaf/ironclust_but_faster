@@ -192,10 +192,47 @@ change must **preserve**:
 clean-permutation-vs-compounded (how much grouping survives); `export_desync_clusters.m` emits a
 per-(session,cluster) CSV. **All strictly read-only — they only `load()`, never write a `_jrc.mat`.**
 A field scan of both projects' paths CSVs found **22 corrupted sorts** (afm17307/17313/17372 in
-Project_hierarchy; afm18349/18367 in cuniform_NPX), all DESYNC-SEVERE → **re-sort** (see
-`logs/DATASET_INTEGRITY_REPORT.md` and `logs/jrc_scan_*/`). A DESYNC verdict is not repairable; a
-`PASS` means "currently self-consistent", not "never corrupted"; the DI-01 `[U]` wrong-merge is
-undetectable by these tools (internally consistent).
+Project_hierarchy; afm18349/18367 in cuniform_NPX), all DESYNC-SEVERE (see
+`logs/DATASET_INTEGRITY_REPORT.md` and `logs/jrc_scan_*/`). A `PASS` means "currently
+self-consistent", not "never corrupted"; the DI-01 `[U]` wrong-merge is undetectable by these tools
+(internally consistent). **The old "not repairable → re-sort" verdict is superseded** — the
+write-side tools below remediated all 22 without a re-sort (2026-07-25).
+
+### Remediating the desync — write-side recovery tools (2026-07-25)
+
+Companions to the read-only diagnostics (`matlab/`, committed `56389c0`) that fix a desynced
+`_jrc.mat` **without a full re-sort** — detection artifacts (`_spkfet/_spkraw/_spkwav`) and the kNN
+graph (`rho/delta/miKnn`) are cached on disk, so only the fast clustering-finalize is redone:
+
+- **`recover_from_snapshot.m`** — reset `S_clu.viClu = viClu_premerge` (pristine write-once snapshot)
+  and re-run `post_merge_` → synced clustering + all per-cluster fields rebuilt. **Discards curation
+  (renumbers to a clean AUTO baseline).** DPC regenerates `viClu` from the density graph; label-based
+  re-merges. Use when the curated `viClu` is genuinely broken (many fusions).
+- **`resync_clu.m`** — **keeps** the curated `viClu` numbering; rebuilds `cviSpk_clu` + waveforms +
+  positions + **quality** from it (stays aligned with the exported spike-times CSV). Fixes
+  `_quality.csv` and the `_jrc.mat` desync (→ PASS) without renumbering. **Gotchas:** `S_clu_update_`
+  **crashes** on a desynced start (it rebuilds `mrWavCor`); instead call `S_clu_refresh_(S_clu,0)`
+  (keep empties) then `S_clu_wav_`, `S_clu_position_`, `S_clu_quality_` **with `viClu_update` omitted**
+  (full-rebuild branch — passing `1:nClu` hits the incremental branch, which also crashes); empty
+  (all-deleted) clusters get `viSite_clu=NaN` from `mode([])` → set a placeholder site (1) before
+  `S_clu_wav_`.
+- **`exclude_flagged_units.m`** — set CSV column-2 (viClu unit id) of flagged fusion units to **-2**
+  (deleted marker; atomic + `.bak`). **`reexport_csv.m`** — re-export `[time,viClu,site]` from the
+  current sort (`irc export-csv`, no waveform load).
+- **`assess_viclu.m` / `assess_viclu_detail.m`** — read-only; group spikes **by `viClu`** (the CSV
+  source) and flag two-neuron-fusion units (bimodal depth, time-interleaved); detail emits the unit
+  ids (= CSV column 2).
+
+**Load-bearing fact:** `export_csv_` writes **`viClu`** directly (irc.m:10341), *not* `cviSpk_clu` —
+so a DESYNC-SEVERE `_jrc.mat` does **not** by itself invalidate the exported **spike-times** CSV
+(correctness == `viClu` coherence). But `export_quality_` reads the **cache-derived** per-cluster
+fields, so `_quality.csv` **is** wrong on a desynced file and needs `resync_clu`.
+
+**Field remediation (2026-07-25):** all 22 corrupt sorts remediated, PASS-verified on disk, backups
+kept — see `logs/REMEDIATION_desync_field_20260725.md`. Project_hierarchy Dylan=1 (afm17307/17313/
+17372): 241209 recovered; 241030/241129/241206 + 10 LIKELY-CLEAN resynced; fusion units `-2`-excluded
+in spike-times CSVs; then `preprocess_all` (shaf branch, `recompute_analyzers=True`) re-run. cuniform:
+pilot recovered, other 4 assessed `viClu`-coherent.
 
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)

@@ -80,3 +80,21 @@ with a compounded minority → **re-sort** (not repairable). Per-session survivi
   reliance.
 - DI-04 raw/spk display path, DI-14 TOCTOU, and DI-08/09 structural spike-drop remain as noted
   residuals in the tracker.
+
+## Field remediation of the 22 corrupt sorts (2026-07-25) — supersedes "→ re-sort" above
+
+The "not repairable → re-sort" conclusion (line ~70) was **overturned**: all 22 were fixed in place
+**without a re-sort**. Key realizations: detection artifacts + kNN graph are cached on disk;
+`viClu_premerge`/`viClu_auto` are pristine write-once snapshots; and `export_csv_` writes `viClu`
+(irc.m:10341), not the cache — so exported **spike-times** CSVs were never built from the corrupt
+cache (only `_quality.csv`, which is cache-derived, was wrong).
+
+Write-side tools added (committed `56389c0`, `matlab/`): `recover_from_snapshot.m` (→ clean auto
+baseline, discards curation), `resync_clu.m` (keeps curated numbering; rebuilds cache+waveforms+
+quality → PASS), `exclude_flagged_units.m` (fusion units → CSV col-2 = -2), `reexport_csv.m`,
+`assess_viclu.m`/`assess_viclu_detail.m` (read-only fusion assessment).
+
+Applied to the Project_hierarchy Dylan=1 set (241209 recovered; 241030/241129/241206 + 10
+LIKELY-CLEAN resynced; fusion units -2-excluded) and the cuniform pilot; all PASS on disk with
+backups. Downstream `preprocess_all` (shaf branch) re-run with `recompute_analyzers=True`. Full
+record + per-file table + the exact `preprocess_all` config: **`REMEDIATION_desync_field_20260725.md`**.

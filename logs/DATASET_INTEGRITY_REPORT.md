@@ -4,6 +4,12 @@
 (`StempelLab/Project_hierarchy` and `StempelLab/cuniform_NPX`). **Method:** read-only —
 no `_jrc.mat` was modified. **Branch:** `rewind`.
 
+> **REMEDIATED 2026-07-25 (supersedes the "re-sort" recommendation below).** All 22 were fixed in
+> place **without a re-sort** — recover-from-snapshot / resync + spike-times CSV `-2` exclusion, all
+> PASS-verified on disk with backups, then `preprocess_all` re-run. Full record:
+> [`REMEDIATION_desync_field_20260725.md`](REMEDIATION_desync_field_20260725.md). The scan findings
+> below are the pre-remediation state.
+
 ---
 
 ## 1. Executive summary
