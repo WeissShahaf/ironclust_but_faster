@@ -61,6 +61,115 @@ afm17372 `["241125_0","241125_1","241125_2","241127_1","241129_1","241129_2","24
 (Restore lines 82-83/165 to their originals afterward: `animal="afm17365"`, `sessions=["241219_01"]`,
 `recompute_analyzers="no"`.)
 
+## Follow-ups closed later the same day (2026-07-25 evening)
+
+**1. `_quality.csv` must be excluded in step with the spike-times CSV.** `preprocessFunctions.load_IRC`
+(line ~2195) builds its `clusters` list from quality-CSV rows with **`note == 'single'`**. A unit
+excluded only in the spike-times CSV (label → `-2`) therefore stayed in `clusters` with **zero**
+spikes, tripping `preprocess_all.py:2384`'s `array_equal(unique(spike_clusters), sort(clusters))`
+check → `UserWarning: something wrong with spike_clusters or clusters`, and putting a zero-spike
+phantom unit into the SpikeInterface analyzer (all-zero template → NaN centre-of-mass). Downstream
+`extract_spike_times_from_sorting(..., remove_empty=True)` drops it again, so it is not fatal — but
+the analyzer is built with it. Fixed by setting `note='excluded'` (atomic write, `.bak_note` kept):
+afm17307 241030 unit **663**; afm17372 241129 unit **107**. 241129 unit **165** was already `multi`
+(outside `good_clusters`) and was left as-is so its original label survives. Only `note=='single'` /
+`str.contains('single')` is ever consumed, so `excluded` is inert everywhere else.
+
+**2. 241206 — the pipeline reads a different sort than the one that was excluded.** `paths-Copy.csv`
+points 241206_0/_1 at **`shortwaves_histo_afm17372_241206_0_g0_…ap_IRC.csv`**, not the base
+`afm17372_241206_0_g0_…ap_IRC.csv` that was re-exported and had unit 67 set to `-2`. The
+`shortwaves_histo` sort was in the batch-resync set (LIKELY-CLEAN, no flagged fusions) and is PASS,
+so **no exclusion is needed there** and nothing is missing downstream; the base-sort work is simply
+not on the pipeline's path. Always resolve the sort via `paths-Copy.csv`, not by session name.
+
+**3. Post-save PASS verification from disk.** The 10 batch-resynced Project_hierarchy files were
+re-loaded from disk and re-checked: **10/10 PASS**, `desync=0` (previously only verified in memory
+pre-save).
+
+**4. cuniform `_quality.csv` resolved.** The 4 non-recovered cuniform files
+(`test260317_afm18367`, `260320_afm18349`, `260320_afm18367`, `260324_afm18349`) were resynced —
+curated `viClu` numbering preserved, cache + waveforms + positions + quality rebuilt, `_quality.csv`
+re-exported. Re-verified from disk: **4/4 PASS** (36 / 259 / 138 / 190 clusters). All 5 cuniform
+files are now PASS; backups kept.
+
+## ⚠ `recover_from_snapshot` destroys the downstream unit selection — prefer `resync_clu` (2026-07-26)
+
+**`note == 'single'` in `_quality.csv` is the ONLY gate that selects units downstream** — both projects
+(`preprocessFunctions.load_IRC` ~line 2195; cuniform `load_irc_to_spi.py:170`,
+`preprocessFunctions*.py`). Those notes come from `S_clu.csNote_clu`, i.e. the curator's labels.
+`recover_from_snapshot` renumbers to a clean AUTO baseline and therefore **discards them**, so a
+recovered file exports a `_quality.csv` with **every note blank** → `good_clusters` is empty →
+**zero neurons downstream**. This was not visible in the `_jrc.mat` PASS check, which only tests the
+`viClu`⇄`cviSpk_clu` invariant.
+
+Both recovered files were reverted to the `resync` path (restore `.corrupt_orig` → `resync_clu` →
+re-export CSVs); the recovered versions are kept as `_jrc.mat.recovered_bak` / `.csv.recovered_bak`:
+
+| file | recovered (wrong) | resynced (now) |
+|---|---|---|
+| afm17372 241209 | 564 clu, **0 single** | 384 clu, **177 single** + 21 multi, desync=0 |
+| cuniform 260317_afm18349 | 185 clu, quality CSV never re-exported (stale at 209 rows) | 209 clu, **84 single** + 13 multi, desync=0 |
+
+**Rule going forward:** use `recover_from_snapshot` only when the curated `viClu` is genuinely
+unusable *and* the loss of all `note` labels is acceptable (i.e. the file will be re-curated).
+For anything feeding a `note=='single'` pipeline, **`resync_clu` is the correct tool** — it keeps
+numbering *and* notes, and still clears the desync.
+
+### Companion issue: zero-spike `single` units (pre-existing, unrelated to the desync)
+
+Curator-**deleted** clusters (negative label in `viClu`) keep their old `note`. A row with
+`note=='single'` and `nSpikes==0` therefore enters `good_clusters` contributing nothing → the
+`preprocess_all.py:2384` `array_equal` warning + a zero-spike phantom unit in the analyzer.
+Swept all 15 Dylan=1 quality CSVs (`scan_empty_single.py`): **20 units across 8 sessions** set to
+`note='excluded'` (afm17307 241031 · afm17313 241029 · afm17372 241125/241127/241129/241202/
+241206-shortwaves/241213), plus **17 more** in the resynced 241209.
+
+**Residual, benign:** the same warning also fires when a `single` unit is simply silent inside a
+trial's `[t1_s, tend_s]` window (verified on afm17313: unit 164, zero spikes in both trial windows
+but present in the recording). That is inherent to per-trial windowing and is cleaned up downstream
+by `extract_spike_times_from_sorting(..., remove_empty=True)`. Nothing to fix.
+
+## `preprocess_all` recompute — completed 2026-07-26
+
+All three animals re-run with `recompute_analyzers = True` (analyzer rebuilt from the corrected
+spike-times CSVs, not loaded from cache):
+
+| animal | sessions | runtime |
+|---|---|---|
+| afm17307 | 6/6 | 4h 43m |
+| afm17313 | 2/2 | 16m |
+| afm17372 | 14/14 (in 3 passes) | ~3h + partials |
+
+**afm17372 needed `BORIS_required = False`** (`preprocess_all.py:100`) for 6 of its 14 sessions.
+Those sessions fail `resolve_loom_times` with a BORIS-vs-Bonsai **loom count mismatch** — a
+pre-existing behavioural-annotation backlog, *not* related to the sorting remediation: the
+2026-07-02 rerun log (`logs/rerun_logs/local_afm17372.log` in the Project_hierarchy repo) records
+the **identical six mismatches with identical counts**, as `[LOOM][WARN]` because that run also had
+the flag off. Commit `eb81afc` (2026-06-15) introduced the strict/lenient split; `True` is the
+file's stated default, so the same data became fatal.
+
+| session | BORIS | Bonsai |
+|---|---|---|
+| 241125_0 | 1 | 2 |
+| 241129_1 | 11 | 9 |
+| 241206_1 | 6 | 17 |
+| 241209 | 15 | 18 |
+| 241210 | 35 | 34 |
+| 241213 | 31 | 33 |
+
+`resolve_loom_times` still snaps loom *timing* to the photodiode, so timing stays hardware-anchored;
+only the count reconciliation is deferred. **`241206_1`'s 6-vs-17 gap is the one to look at first**
+(11 unmatched, several clustered within seconds — possible Bonsai double-counting). The flag was
+restored to `True` after the run, so these six will fail loudly again until the annotations are fixed.
+
+**End-to-end confirmation on 241209** (the file that went recover → revert → resync): 384 clusters,
+155 curated `single` after exclusions → **153 neurons** in the rebuilt analyzer (2 dropped as silent
+inside the trial window by `remove_empty=True`). Under the recovered version it would have been **0**.
+
+`recompute_analyzers` was deliberately **left at `True`** rather than restored to `"no"`: the cached
+path is silent, so a future spike-data change would otherwise produce stale quality metrics with no
+warning — the exact failure mode caught mid-run here.
+
 ## Not repairable by curation — still true
 Curating a *still-desynced* file in the GUI compounds the damage; `recover`/`resync` fix it first.
 Do not re-curate any un-remediated file in `irc manual` without a resync.

@@ -208,6 +208,13 @@ graph (`rho/delta/miKnn`) are cached on disk, so only the fast clustering-finali
   and re-run `post_merge_` → synced clustering + all per-cluster fields rebuilt. **Discards curation
   (renumbers to a clean AUTO baseline).** DPC regenerates `viClu` from the density graph; label-based
   re-merges. Use when the curated `viClu` is genuinely broken (many fusions).
+  > **⚠ It also wipes `csNote_clu`, and that breaks downstream selection.** Both consumer pipelines
+  > (Project_hierarchy `preprocessFunctions.load_IRC`, cuniform `load_irc_to_spi.py`) select units
+  > **solely** by `_quality.csv` `note == 'single'`. A recovered file exports every note blank →
+  > `good_clusters` empty → **zero neurons downstream**, and the `_jrc.mat` PASS check cannot see it
+  > (it only tests the `viClu`⇄`cviSpk_clu` invariant). Both files recovered on 2026-07-25 were
+  > reverted to `resync_clu` for exactly this reason. **Prefer `resync_clu` unless the file will be
+  > re-curated by hand.** See `logs/REMEDIATION_desync_field_20260725.md`.
 - **`resync_clu.m`** — **keeps** the curated `viClu` numbering; rebuilds `cviSpk_clu` + waveforms +
   positions + **quality** from it (stays aligned with the exported spike-times CSV). Fixes
   `_quality.csv` and the `_jrc.mat` desync (→ PASS) without renumbering. **Gotchas:** `S_clu_update_`
@@ -222,6 +229,18 @@ graph (`rho/delta/miKnn`) are cached on disk, so only the fast clustering-finali
 - **`assess_viclu.m` / `assess_viclu_detail.m`** — read-only; group spikes **by `viClu`** (the CSV
   source) and flag two-neuron-fusion units (bimodal depth, time-interleaved); detail emits the unit
   ids (= CSV column 2).
+
+**Excluding a unit takes TWO edits, not one.** Setting a unit's spike-times CSV label to `-2`
+(`exclude_flagged_units.m`) does **not** remove it from `_quality.csv`, where `note` still says
+`single` — so it stays in `good_clusters` with zero spikes, trips
+`preprocess_all.py:2384`'s `array_equal(unique(spike_clusters), sort(clusters))` check, and puts a
+zero-spike phantom unit (all-zero template → NaN centre-of-mass) into the SpikeInterface analyzer.
+Always also set that row's `note` to something other than `single` (`'excluded'` is inert — only
+`== 'single'` / `contains('single')` is ever read). Same applies to **curator-deleted** clusters,
+which keep their old `note`: a `note=='single'` row with `nSpikes==0` is the same bug (37 such units
+found and fixed across the Dylan=1 set, 2026-07-26). A unit that is merely **silent inside a trial's
+`[t1_s, tend_s]` window** also trips the warning; that one is benign and inherent to per-trial
+windowing — `extract_spike_times_from_sorting(..., remove_empty=True)` drops it.
 
 **Load-bearing fact:** `export_csv_` writes **`viClu`** directly (irc.m:10341), *not* `cviSpk_clu` —
 so a DESYNC-SEVERE `_jrc.mat` does **not** by itself invalidate the exported **spike-times** CSV
