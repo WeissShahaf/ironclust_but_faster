@@ -204,8 +204,8 @@ Companions to the read-only diagnostics (`matlab/`, committed `56389c0`) that fi
 `_jrc.mat` **without a full re-sort** — detection artifacts (`_spkfet/_spkraw/_spkwav`) and the kNN
 graph (`rho/delta/miKnn`) are cached on disk, so only the fast clustering-finalize is redone:
 
-- **`recover_from_snapshot.m`** — reset `S_clu.viClu = viClu_premerge` (pristine write-once snapshot)
-  and re-run `post_merge_` → synced clustering + all per-cluster fields rebuilt. **Discards curation
+- **`recover_from_snapshot.m`** — reset `S_clu.viClu = viClu_premerge` (but see the write-once
+  correction below) and re-run `post_merge_` → synced clustering + all per-cluster fields rebuilt. **Discards curation
   (renumbers to a clean AUTO baseline).** DPC regenerates `viClu` from the density graph; label-based
   re-merges. Use when the curated `viClu` is genuinely broken (many fusions).
   > **⚠ It also wipes `csNote_clu`, and that breaks downstream selection.** Both consumer pipelines
@@ -215,6 +215,48 @@ graph (`rho/delta/miKnn`) are cached on disk, so only the fast clustering-finali
   > (it only tests the `viClu`⇄`cviSpk_clu` invariant). Both files recovered on 2026-07-25 were
   > reverted to `resync_clu` for exactly this reason. **Prefer `resync_clu` unless the file will be
   > re-curated by hand.** See `logs/REMEDIATION_desync_field_20260725.md`.
+
+> ### ⚠ CORRECTION (2026-08-02): `viClu_premerge` is **NOT** write-once
+>
+> This file previously called it a "pristine write-once snapshot". That is **wrong**.
+> `post_merge_` assigns `S_clu.viClu_premerge = S_clu.viClu` **unconditionally, every time**
+> (`irc.m`, immediately before the `csNote_clu` reset).
+>
+> - **DPC sorts are safe**: `postCluster_` regenerates `viClu` from the density graph first, so
+>   what gets stored is a genuine auto baseline.
+> - **Label-based sorts are NOT**: `postCluster_` is skipped when `fLabelClu`
+>   (kmeans/hdbscan/isosplit/classix), so `viClu` at that point is still the **curated** labelling.
+>   Every `post_merge_` + save therefore overwrites the snapshot with curated labels and
+>   **permanently disables `recover_from_snapshot.m` for that file** — silently.
+>
+> Practical rule: on a label-based sort, treat `viClu_premerge` as "whatever the last recompute
+> saw", not as a pristine baseline. Verify it before relying on it. Reaching the recompute branch —
+> via `irc manual` → "No", or `irc recurate` — is what triggers the overwrite; `irc recurate` warns
+> about this in its consent dialog when the sort is label-based.
+> Full write-up: `logs/ISSUE_viClu_premerge_not_write_once.md`.
+
+### `irc recurate` — curation GUI without the load prompt (2026-08-02)
+
+`irc('recurate', prm)` opens the same GUI as `irc manual` but **always** takes the recompute branch,
+skipping the "Load last saved or recompute?" dialog. It is the `'no'` answer with no chance of
+mis-clicking `'yes'` — implemented as a fourth `vcMode` in `manual_` alongside
+`'normal'`/`'debug'`/`'groundtruth'`; the `'normal'` path is untouched.
+
+It is **destructive** and gated behind an OK/Cancel consent dialog (`confirm_recurate_`) that names
+every consequence: merges/splits/deletes discarded, `csNote_clu` reset (→ zero neurons downstream
+until re-curated, see the quality-CSV note gate above), `<prm>_log.mat` removed, and — for
+label-based sorts only — `viClu_premerge` overwritten.
+
+- **`backup_log_file_`** copies `<prm>_log.mat` → `<prm>_log.mat.bak_recurate` first. `clear_log_`
+  deletes that file *immediately*, before the user ever reaches the GUI's save prompt, and it is the
+  only record of `csNote_clu`/`viClu` outside the `_jrc.mat` (`save_log_` writes both).
+- Buttons are **OK/Cancel, not Yes/No, on purpose**: `questdlg_` returns `'Yes'` whenever the global
+  `fDebug_ui==1`, which with Yes/No would mean *proceed destructively* in a headless run. `'Yes'`
+  matches neither button, so it falls through to Cancel.
+- The dispatch case **must** end in `return;` — same as `manual-gt`/`manual-test`. The alias
+  `manual-recurate` was deliberately **not** added: it contains the substring `'manual'` and would
+  be re-caught by the greedy `contains_` fallback, re-opening the GUI with the very dialog the
+  command exists to skip.
 - **`resync_clu.m`** — **keeps** the curated `viClu` numbering; rebuilds `cviSpk_clu` + waveforms +
   positions + **quality** from it (stays aligned with the exported spike-times CSV). Fixes
   `_quality.csv` and the `_jrc.mat` desync (→ PASS) without renumbering. **Gotchas:** `S_clu_update_`

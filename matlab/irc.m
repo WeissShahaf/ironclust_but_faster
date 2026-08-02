@@ -214,6 +214,7 @@ fError = 0;
 switch lower(vcCmd)  
     case 'localize', localize_(P); return;
     case 'manual-gt', manual_(P, 'groundtruth'); return;
+    case 'recurate', manual_(P, 'recurate'); return; % 'return' is load-bearing: it matches manual-gt/manual-test and keeps the command out of the greedy contains_ fallback below
     case 'plot-clupairs', plot_clu_pairs_(P);
     case 'preview', preview_(P); 
     case 'preview-test', preview_(P, 1); gui_test_(P, 'Fig_preview');
@@ -444,6 +445,9 @@ csHelp = {...
     '    Run the manual clustering GUI ';
     '  irc auto-manual myparams.prm';
     '    Run the auto clustering and do the manual clustering next';        
+    '  irc recurate myparams.prm';
+    '    Manual GUI starting from a fresh automatic clustering (no load prompt).';
+    '    Asks for confirmation, then DISCARDS the saved curation, unit notes and log.';
     '  irc plot-activity myparams.prm';
     '    Show firing rate as a function of time and depth';         
     '  irc verify myparams.prm';
@@ -6066,6 +6070,16 @@ switch lower(vcMode)
                 S0 = set0_(P); %update the P structure
                 S0.S_clu = S_clu_update_wav_(S0.S_clu, P);
         end
+
+    case 'recurate'
+        % 'irc recurate': skip the load-vs-recompute prompt and ALWAYS recompute, i.e. the
+        % same two statements as the 'normal' -> 'no' branch above, behind explicit consent.
+        % Destructive: post_merge_ resets csNote_clu (the note=='single' labels that gate all
+        % downstream unit selection) and clear_log_ DELETES <prm>_log.mat from disk.
+        if ~confirm_recurate_(P), return; end
+        backup_log_file_(P);  % <prm>_log.mat holds csNote_clu/viClu; keep a copy before clear_log_
+        [S_clu, S0] = post_merge_(S0.S_clu, P);
+        S0 = clear_log_(S0);
         
     case 'debug'
         fDebug_ui = 1;
@@ -6112,6 +6126,57 @@ save_log_('start', S0); %crash proof log
 % Finish up
 close_(hMsg);
 fprintf('UI creation took %0.1fs\n', toc(t1));
+end %func
+
+
+%--------------------------------------------------------------------------
+% Consent gate for 'irc recurate'. Returns TRUE only on an explicit OK.
+% Buttons are OK/Cancel rather than Yes/No on purpose: questdlg_ returns 'Yes' whenever the
+% global fDebug_ui==1, which with Yes/No would silently mean "proceed" in a headless/test run.
+% 'Yes' matches neither button here, so the answer falls through to Cancel (fail-safe).
+function fOk = confirm_recurate_(P)
+vcFile_log = strrep(P.vcFile_prm, '.prm', '_log.mat');
+% fLabelClu sorts skip postCluster_ in post_merge_, so viClu there is still the CURATED
+% labelling and viClu_premerge (irc.m: 'S_clu.viClu_premerge = S_clu.viClu') gets overwritten
+% with it -- which disables a later recover_from_snapshot. Warn only when that applies.
+fLabelClu = ismember(lower(get_set_(P, 'vcCluster', '')), ...
+    {'kmeans', 'hdbscan', 'isosplit', 'isosplit5', 'isosplit6', 'classix'});
+vcMsg = sprintf(['RECURATE discards the saved curation and restarts from the automatic clustering.\n\n', ...
+    'This will be lost:\n', ...
+    '  - all manual merges, splits and deletes\n', ...
+    '  - all unit notes (single/multi/noise). NOTE: note==''single'' is the only\n', ...
+    '    label that selects units for downstream analysis - a recurated sort exports\n', ...
+    '    zero neurons until it is curated again.\n', ...
+    '  - the curation log %s\n', ...
+    '    (a copy is kept as <..>_log.mat.bak_recurate)\n\n'], vcFile_log);
+if fLabelClu
+    vcMsg = [vcMsg, sprintf(['WARNING: this is a "%s" (label-based) sort, so recomputing also\n', ...
+        'OVERWRITES S_clu.viClu_premerge with the current labels - recover_from_snapshot\n', ...
+        'will no longer be able to restore a pristine baseline for this file.\n\n'], ...
+        get_set_(P, 'vcCluster', ''))];
+end
+vcMsg = [vcMsg, sprintf(['Sort: %s\n\n', ...
+    'The _jrc.mat is only overwritten if you save in the GUI. Continue?'], P.vcFile_prm)];
+fOk = strcmpi(questdlg_(vcMsg, 'Recurate - discard saved curation?', 'OK', 'Cancel', 'Cancel'), 'OK');
+if ~fOk, fprintf('recurate cancelled by user.\n'); end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Copy <prm>_log.mat aside before clear_log_ deletes it. The log is the only record of
+% csNote_clu/viClu outside the _jrc.mat (see save_log_), and clear_log_ removes it from disk
+% immediately -- before the user ever reaches the GUI's save prompt.
+function backup_log_file_(P)
+vcFile_log = strrep(P.vcFile_prm, '.prm', '_log.mat');
+if exist_file_(vcFile_log)
+    vcFile_bak = [vcFile_log, '.bak_recurate'];
+    try
+        copyfile(vcFile_log, vcFile_bak, 'f');
+        fprintf('recurate: backed up curation log -> %s\n', vcFile_bak);
+    catch
+        fprintf(2, 'recurate: WARNING could not back up %s (%s)\n', vcFile_log, lasterr());
+    end
+end
 end %func
 
 
