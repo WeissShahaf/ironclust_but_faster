@@ -8345,12 +8345,16 @@ if isempty(S_fig)
     % cycle among them with the [C] key (see keyPressFcn_FigMap_).
     S_fig.csLabelMode = site_label_modes_(P);
     S_fig.iLabelMode = 1;
+    S_fig.vcColorSrc = '';  % '' = follow the label mode; [V] sets 'vpp' or 'region'
+    S_fig.fZoomSite = 0;    % 0 = whole shank (default); [B] zooms to the cluster site +/-5 sites
     csText = S_fig.csLabelMode(1).csText;
     S_fig.hText = text(P.mrSiteXY(:,1) + 20, P.mrSiteXY(:,2), csText, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
     xlabel('X Position (\mum)');
     ylabel('Y Position (\mum)');
     S_fig.csHelp = { ...
         '[C] cycle site labels: channel #, site #, region', ...
+        '[V] toggle box color: amplitude (Vpp) <-> region', ...
+        '[B] toggle zoom: current site +/-5 sites <-> whole shank', ...
         '[H] help', ...
         '------------------', ...
         'Region labels are read from the CSV named by the', ...
@@ -8358,11 +8362,15 @@ if isempty(S_fig)
     set(hFig, 'KeyPressFcn', @keyPressFcn_FigMap_);
 end
 try
-    iShank1 = P.viShank_site(S_clu.viSite_clu(S0.iCluCopy));
-    axis_(S_fig.hAx, S_fig.cell_alim{iShank1});
+    iSite1 = S_clu.viSite_clu(S0.iCluCopy);
+    S_fig.iSite_clu = iSite1; % center site for the [B] zoom
+    iShank1 = P.viShank_site(iSite1);
+    % [B] zoom: frame the cluster's site +/-5 sites, else the whole shank (default)
+    axis_(S_fig.hAx, FigMap_alim_(S_fig, P, iShank1));
     vcTitle = sprintf('Max: %0.1f uVpp (Shank %d)', max(vrVpp), iShank1);
 catch
-    axis_(S_fig.hAx, S_fig.alim);
+    % No shank info: full-probe extent (as before), still honoring the [B] zoom.
+    axis_(S_fig.hAx, FigMap_alim_(S_fig, P, 0));
     vcTitle = sprintf('Max: %0.1f uVpp', max(vrVpp));
 end
 S_fig.vcTitle_base = vcTitle;
@@ -8456,7 +8464,8 @@ end %func
 
 
 %--------------------------------------------------------------------------
-% Probe-map (FigMap) key handler: [C] cycles the site labels, [H] shows help.
+% Probe-map (FigMap) key handler: [C] cycles the site labels, [V] toggles the
+% box color source (amplitude <-> region), [B] toggles the site zoom, [H] help.
 function keyPressFcn_FigMap_(hObject, event)
 hFig = hObject;
 S_fig = get(hFig, 'UserData');
@@ -8464,8 +8473,157 @@ if isempty(S_fig), return; end
 switch lower(event.Key)
     case 'c' % cycle site labels: channel # -> site # -> region
         cycle_FigMap_label_(hFig, S_fig);
+    case 'v' % toggle box color: amplitude (Vpp) <-> region
+        toggle_FigMap_color_(hFig, S_fig);
+    case 'b' % toggle zoom: current site +/-5 sites <-> whole shank
+        toggle_FigMap_zoom_(hFig, S_fig);
     case 'h'
         msgbox_(get_set_(S_fig, 'csHelp', {'[C] cycle site labels'}), 1);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% [V] in the probe map: flip the box color source between the selected
+% cluster's amplitude (Vpp, jet) and the categorical region palette,
+% independently of the [C] label mode. No-op (with a note) when the recording
+% has no region labels, which also covers a stale/foreign S_fig.
+function S_fig = toggle_FigMap_color_(hFig, S_fig)
+if nargin<2, S_fig = get(hFig, 'UserData'); end
+if isempty(get_(S_fig, 'hPatch')), return; end
+if isempty(figmap_region_mode_(S_fig))
+    fprintf(2, 'toggle_FigMap_color_: no region labels (set ''vcFile_site_region'' in the .prm).\n');
+    return;
+end
+if strcmpi(figmap_color_src_(S_fig), 'region')
+    S_fig.vcColorSrc = 'vpp';
+else
+    S_fig.vcColorSrc = 'region';
+end
+apply_FigMap_color_(S_fig, get_set_(S_fig, 'vrVpp', []));
+title_(S_fig.hAx, FigMap_title_(S_fig));
+set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% [B] in the probe map: toggle between the whole-shank view (default) and a
+% zoom centered on the selected cluster's site (+/-5 sites in depth order).
+function S_fig = toggle_FigMap_zoom_(hFig, S_fig)
+if nargin<2, S_fig = get(hFig, 'UserData'); end
+if isempty(get_(S_fig, 'hAx')), return; end
+S_fig.fZoomSite = ~get_set_(S_fig, 'fZoomSite', 0);
+try
+    P = get0_('P');
+    iSite1 = get_set_(S_fig, 'iSite_clu', []);
+    iShank1 = 1;
+    if ~isempty(iSite1)
+        viShank_site = get_set_(P, 'viShank_site', []);
+        if ~isempty(viShank_site) && iSite1 <= numel(viShank_site)
+            iShank1 = viShank_site(iSite1);
+        end
+    end
+    axis_(S_fig.hAx, FigMap_alim_(S_fig, P, iShank1));
+catch
+    axis_(S_fig.hAx, get_set_(S_fig, 'alim', axis(S_fig.hAx)));
+end
+title_(S_fig.hAx, FigMap_title_(S_fig));
+set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Axis limits for the probe map: the [B] zoom window when fZoomSite is set and
+% a center site is known, otherwise the shank's full extent (the default).
+function alim = FigMap_alim_(S_fig, P, iShank)
+alim = [];
+try
+    cell_alim = get_(S_fig, 'cell_alim');
+    if ~isempty(cell_alim) && iShank>=1 && iShank<=numel(cell_alim)
+        alim = cell_alim{iShank};
+    end
+catch
+end
+if isempty(alim), alim = get_set_(S_fig, 'alim', []); end
+if ~get_set_(S_fig, 'fZoomSite', 0), return; end
+iSite1 = get_set_(S_fig, 'iSite_clu', []);
+if isempty(iSite1), return; end
+alim1 = get_lim_site_(P, iSite1, 5, alim);
+if ~isempty(alim1), alim = alim1; end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Zoom window around iSite: keep the shank's X range (column geometry stays
+% put) and restrict Y to the nSite_pad sites above and below iSite in DEPTH
+% order (site numbering is not guaranteed monotonic in depth). Clipped at the
+% probe ends. Padding matches get_lim_shank_. Returns [] if it cannot resolve.
+function alim = get_lim_site_(P, iSite, nSite_pad, alim_shank)
+if nargin<3 || isempty(nSite_pad), nSite_pad = 5; end
+if nargin<4, alim_shank = []; end
+alim = [];
+try
+    vrSiteHW = get_set_(P, 'vrSiteHW', [12,12]);
+    nSites = size(P.mrSiteXY,1);
+    if isempty(iSite) || iSite<1 || iSite>nSites, return; end
+    viShank_site = get_set_(P, 'viShank_site', ones(nSites,1));
+    if isempty(viShank_site) || numel(viShank_site)~=nSites
+        viShank_site = ones(nSites,1);
+    end
+    viSite1 = find(viShank_site == viShank_site(iSite)); % sites on this shank
+    [~, viSrt] = sort(P.mrSiteXY(viSite1,2));            % depth order
+    viSite1 = viSite1(viSrt);
+    iRank = find(viSite1 == iSite, 1, 'first');
+    if isempty(iRank), return; end
+    viSite2 = viSite1(max(1,iRank-nSite_pad) : min(numel(viSite1),iRank+nSite_pad));
+    dy = abs(vrSiteHW(1));
+    ylim1 = [min(P.mrSiteXY(viSite2,2)), max(P.mrSiteXY(viSite2,2))] + [-1,2] * dy;
+    if isempty(alim_shank) || numel(alim_shank)~=4
+        dx = abs(vrSiteHW(2));
+        vrX1 = P.mrSiteXY(viSite1,1);
+        xlim1 = [min(vrX1), max(vrX1)] + [-1,2] * dx;
+    else
+        xlim1 = alim_shank(1:2); % keep the shank's X range
+    end
+    alim = [xlim1, ylim1];
+catch
+    alim = [];
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Return the region-label mode entry of S_fig.csLabelMode (the only one
+% carrying viColor/mrColormap), or [] when the recording has no region CSV.
+% The isfield test is at the struct-array level on purpose: without a region
+% CSV, site_label_modes_ builds a 2-element array where viColor is not a field
+% at all, so per-element dot-access would error.
+function S_mode = figmap_region_mode_(S_fig)
+S_mode = [];
+csLabelMode = get_(S_fig, 'csLabelMode');
+if isempty(csLabelMode) || ~isfield(csLabelMode, 'viColor'), return; end
+for iMode = 1:numel(csLabelMode)
+    if ~isempty(csLabelMode(iMode).viColor)
+        S_mode = csLabelMode(iMode);
+        return;
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Effective probe-map color source: the explicit [V] override when set,
+% otherwise the historical rule (region when the active label mode carries
+% region colors, else the selected cluster's Vpp).
+function vcSrc = figmap_color_src_(S_fig)
+vcSrc = get_set_(S_fig, 'vcColorSrc', '');
+if ~isempty(vcSrc), return; end
+vcSrc = 'vpp';
+csLabelMode = get_(S_fig, 'csLabelMode');
+if isempty(csLabelMode) || ~isfield(csLabelMode, 'viColor'), return; end
+iMode = get_set_(S_fig, 'iLabelMode', 1);
+if iMode>=1 && iMode<=numel(csLabelMode) && ~isempty(csLabelMode(iMode).viColor)
+    vcSrc = 'region';
 end
 end %func
 
@@ -8498,6 +8656,16 @@ iMode = get_set_(S_fig, 'iLabelMode', 1);
 if ~isempty(csLabelMode) && iMode>=1 && iMode<=numel(csLabelMode)
     vcTitle = sprintf('%s [%s]', vcTitle, csLabelMode(iMode).name);
 end
+% Only annotate the non-default states, so the historical title is unchanged.
+vcColorSrc = get_set_(S_fig, 'vcColorSrc', '');
+if strcmpi(vcColorSrc, 'vpp')
+    vcTitle = sprintf('%s (color: Vpp)', vcTitle);
+elseif strcmpi(vcColorSrc, 'region')
+    vcTitle = sprintf('%s (color: region)', vcTitle);
+end
+if get_set_(S_fig, 'fZoomSite', 0)
+    vcTitle = sprintf('%s (zoom +/-5 sites)', vcTitle);
+end
 end %func
 
 
@@ -8506,11 +8674,10 @@ end %func
 % mode is active, otherwise by the selected cluster's Vpp (jet colormap).
 function apply_FigMap_color_(S_fig, vrVpp)
 if nargin<2, vrVpp = get_set_(S_fig, 'vrVpp', []); end
-csLabelMode = get_(S_fig, 'csLabelMode');
-iMode = get_set_(S_fig, 'iLabelMode', 1);
+% Decide the color source first ([V] override, else the label mode), then draw.
 S_mode = [];
-if ~isempty(csLabelMode) && iMode>=1 && iMode<=numel(csLabelMode)
-    S_mode = csLabelMode(iMode);
+if strcmpi(figmap_color_src_(S_fig), 'region')
+    S_mode = figmap_region_mode_(S_fig); % [] when no region CSV -> falls back to Vpp
 end
 if ~isempty(S_mode) && isfield(S_mode, 'viColor') && ~isempty(S_mode.viColor)
     % region mode: one categorical color per region (direct colormap index)
