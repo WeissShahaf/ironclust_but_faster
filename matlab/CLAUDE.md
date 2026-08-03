@@ -191,6 +191,36 @@ change must **preserve**:
 `label,jrc` manifest → per-session logs + an `AFFECTED_REPORT.md`; `analyze_desync.m` reports
 clean-permutation-vs-compounded (how much grouping survives); `export_desync_clusters.m` emits a
 per-(session,cluster) CSV. **All strictly read-only — they only `load()`, never write a `_jrc.mat`.**
+
+`matlab/repair_clu_sync.m` belongs to this group **in practice**: it has a write mode, but on every
+file observed so far it refuses to use it, so treat it as a diagnostic.
+
+```matlab
+repair_clu_sync(vcFile_jrc)                  % DRY RUN — reports only, writes nothing
+S = repair_clu_sync(vcFile_jrc);             % same, returns the diagnostics struct
+repair_clu_sync(vcFile_jrc, vcFile_out)      % WRITE — only if the dry-run VERDICT is clean
+```
+
+- One arg = dry run; two args = write a **new** file (it errors if in == out). `irc.m` must be on
+  the path — it reaches `S_clu_assert_synced_` via `irc('call', …)`, and `assert_ran_` errors rather
+  than let an **un-run** check read as a pass (`test_` swallows dispatch errors and returns `[]`).
+- It rebuilds **`viClu` FROM `cviSpk_clu`** — the opposite direction from `S_clu_refresh_`, which
+  rebuilds the cache from `viClu`. Never "repair" a desync with `S_clu_refresh_`: it locks the
+  corruption in irreversibly.
+- **The only non-circular block in its output is PURITY** ("cache entries spanning >1 viClu label").
+  `>0` means cache and `viClu` are *different partitions* and no relabelling reconciles them. The
+  **DIRECTION CHECK is circular by construction** — `viSite_clu`/`vnSpk_clu`/`vrPosY_clu` all derive
+  from the cache, so they agree with it whether it is pristine or garbage; it cannot fail. The
+  after-repair `S_clu_assert_synced_` is likewise near-vacuous (it checks what the function just
+  forced to agree).
+- Write mode hard-refuses on any of: unconverged, mixed partitions, duplicate-claimed spikes, lost
+  deletions, **resurrected** deleted spikes (negative `viClu` still sitting in a cache entry),
+  orphans, out-of-range indices, `nClu ~= numel(cviSpk_clu)`, or a failed direction check.
+- **Status: the repair path does not work on any observed file** (overlapping cache → not a
+  partition; 413k orphans; deleted clusters resurrected) and correctly refuses — see
+  `logs/investigation_split_root_cause.md`. For an actual fix use `resync_clu.m` (preferred) or
+  `recover_from_snapshot.m` below.
+
 A field scan of both projects' paths CSVs found **22 corrupted sorts** (afm17307/17313/17372 in
 Project_hierarchy; afm18349/18367 in cuniform_NPX), all DESYNC-SEVERE (see
 `logs/DATASET_INTEGRITY_REPORT.md` and `logs/jrc_scan_*/`). A `PASS` means "currently

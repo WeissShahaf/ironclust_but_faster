@@ -200,8 +200,33 @@ cluster-identity family is tracked in
 **Read-only diagnostics for existing sorts.** Because the desync predates its fix, this fork ships
 tools to test already-sorted `_jrc.mat` files for it — `check_jrc_sync.m`, `scan_jrc_report.m`,
 `analyze_desync.m`, `export_desync_clusters.m` (all strictly read-only — they never write a
-`_jrc.mat`). A DESYNC verdict is **not repairable — re-sort.** See
-[`logs/DATASET_INTEGRITY_REPORT.md`](logs/DATASET_INTEGRITY_REPORT.md).
+`_jrc.mat`). See [`logs/DATASET_INTEGRITY_REPORT.md`](logs/DATASET_INTEGRITY_REPORT.md).
+
+```matlab
+check_jrc_sync('path\to\recording_jrc.mat')   % PASS / DESYNC verdict for one file, folder or list
+```
+
+A `PASS` means "currently self-consistent", not "never corrupted".
+
+**Repairing a desynced sort.** A DESYNC verdict *is* recoverable without a full re-sort — detection
+artifacts (`_spkfet` / `_spkraw` / `_spkwav`) and the kNN graph are cached on disk, so only the fast
+clustering-finalize is redone:
+
+- **`resync_clu.m`** *(preferred)* — keeps the curated `viClu` numbering and rebuilds the
+  `cviSpk_clu` cache, waveforms, positions and quality from it. Curation and cluster annotations
+  survive, and the result stays aligned with the exported spike-times CSV.
+- **`recover_from_snapshot.m`** — resets `viClu` to the pre-merge snapshot and re-runs the automated
+  post-merge. **Discards all manual curation**, including the per-cluster notes that downstream
+  pipelines use to select units, so only use it on a file that will be curated again by hand.
+- **`repair_clu_sync.m`** — rebuilds `viClu` *from* the cache. Dry run by default
+  (`repair_clu_sync(jrc_file)`); pass a second path to write a repaired copy. In practice it
+  **refuses to write** on every file observed so far — overlapping cache entries, orphaned spikes
+  and resurrected deleted clusters mean the two sides describe different partitions, not a
+  relabelling — so treat it as a **diagnostic**. Note that its "direction check" is circular by
+  construction and proves nothing; only the *purity* block is informative.
+
+Never repair a desync with `S_clu_refresh_`: it rebuilds the cache from `viClu` — the opposite
+direction — and locks the corruption in irreversibly.
 
 ### Manual curation / GUI
 - **Deferred-edit workflow** — queue merges/deletes and apply them together with `u` (cancel
