@@ -149,8 +149,9 @@ written diff: [`logs/COMPARISON_vs_upstream.md`](logs/COMPARISON_vs_upstream.md)
   `nWorkers_clust`.
 - **Per-site spike cap** — `maxSpk_persite_clust` bounds the O(n²) kNN/clustering cost on huge
   (usually noise) sites by clustering a random subsample and assigning the rest to the nearest
-  member. `[]` = off (byte-identical to upstream). Example: a 1.1 M-spike site drops from
-  ~80 min to ~90 s at `m = 50000`. See
+  member. *(default change: now `100000`; set to `[]` for the upstream byte-identical
+  no-cap behaviour)*. Applies to `kmeans`/`hdbscan`/`isosplit6` only — not to DPC or
+  `classix`. Example: a 1.1 M-spike site drops from ~80 min to ~90 s at `m = 50000`. See
   [`logs/plan_persite_spike_cap.md`](logs/plan_persite_spike_cap.md) and
   [`logs/investigation_maxSpk_persite_clust.md`](logs/investigation_maxSpk_persite_clust.md).
 - **I/O and detection tuning** — larger load blocks (`MAX_LOAD_SEC = 10`, larger `nPad_filt`),

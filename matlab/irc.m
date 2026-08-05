@@ -2427,7 +2427,7 @@ end %func
 %   - Tail/giant-site handling: a few noise/artifact channels can hold 30x the median
 %     spike count, and both the kNN graph (O(n^2)) and the clustering grow steeply, so
 %     those sites dominate the run (measured: kNN ~= 90% of the per-site cost, clean
-%     O(n^2)). The optional per-site spike cap (maxSpk_persite_clust, off by default)
+%     O(n^2)). The per-site spike cap (maxSpk_persite_clust, default 100000; [] disables)
 %     bounds this: a site with more than maxSpk spikes clusters a random subsample
 %     (clustering -> maxSpk points, kNN graph -> O(maxSpk^2)) and assigns the rest to
 %     the nearest subset member (cluster_site_capped_). The only residual cost that
@@ -2680,8 +2680,9 @@ end
 X = double(X);
 % --- optional per-site spike cap: on huge (usually noise) channels, cluster a
 %     random subsample of maxSpk spikes and propagate the result to the rest.
-%     Bounds BOTH the O(n1^2) kNN graph and the clustering cost. Off by default
-%     (maxSpk_persite_clust = []); only sites with n1 > maxSpk are affected. ---
+%     Bounds BOTH the O(n1^2) kNN graph and the clustering cost. default.prm sets
+%     maxSpk_persite_clust = 100000 ([] disables); only sites with n1 > maxSpk are
+%     affected. The [] fallback below applies only to a P built without default.prm. ---
 maxSpk = get_set_(P, 'maxSpk_persite_clust', []);
 if ~isempty(maxSpk) && n1 > maxSpk && maxSpk >= max(2, min_count)
     [viLabel, miKnn1, vrRho1, nLabel, t_clu, t_knn] = ...
