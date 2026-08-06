@@ -294,12 +294,30 @@ Templates rebuilt at three sizes, then `mrWavCor` recomputed and compared agains
 baseline. Filtered and raw waveforms are loaded one at a time (~7 GB and ~14 GB), exactly as
 `S_clu_wav_` does:
 
-| `nSamples_max` | loop time | |Δ`mrWavCor`| over scored pairs (med / p99 / max) | **near threshold** (±0.05, ~990 pairs) med / max | pairs ≥ 0.985 | decision flips |
-|---|---|---|---|---|---|
-| full (current) | **171.7 s** | — | — | 102 | — |
-| 4000 | 23.6 s | 0.0015 / 0.035 / 0.115 | **0.00066 / 0.0136** | 100 | 8 (**7.8%**) |
-| 1000 | 7.0 s | 0.0037 / 0.060 / 0.127 | **0.0016 / 0.030** | 93 | 19 (**18.6%**) |
-| 500 | 3.7 s | 0.0055 / 0.084 / 0.176 | **0.0025 / 0.056** | 82 | 26 (**25.5%**) |
+| `nSpk_max_clu_wav` | loop time | **spikes medianed** | clusters capped | near-threshold \|Δ\| med / max | merges kept | flips | \|ΔVmin\| max |
+|---|---|---|---|---|---|---|---|
+| 0 = full (default) | 77.1 s | 16,876,663 (100%) | 0/661 | — | 102 | — | — |
+| 1000 | 3.0 s | 552,885 (3.3%) | 527/661 | 0.00159 / 0.030 | 93 | 19 | 29.9% |
+| 4000 | 10.2 s | 2,018,147 (12.0%) | 454/661 | 0.00066 / 0.0136 | 100 | 8 | 2.4% |
+| **10000** | **20.6 s** | **4,283,434 (25.4%)** | **303/661** | **0.00024 / 0.0112** | **101** | **3** | **1.1%** |
+| 20000 | 30.9 s | 6,566,860 (38.9%) | 185/661 | 0.00000 / 0.0049 | 101 | 5 | 0.76% |
+| 40000 | 42.9 s | 9,323,932 (55.2%) | 103/661 | 0.00000 / 0.0038 | 101 | 1 | 0.41% |
+
+Absolute loop times vary 2× with page-cache state (this sweep's full baseline measured 77.1 s where
+an earlier run measured 171.7 s); the **spikes medianed** column is the cache-independent measure of
+how much work each cap removes. The |Δ| and flip columns are deterministic and reproduced exactly
+across runs.
+
+**Two cautions about reading this table.**
+
+*The flip count is a noisy statistic.* `nSpk_max = 20000` shows **more** flips (5) than 10000 (3)
+despite a strictly smaller perturbation everywhere. That is not an error: a flip is a threshold
+crossing, so a pair sitting within 0.0001 of 0.985 flips on the *sign* of the perturbation, not its
+magnitude. With ~990 pairs packed against the cutoff, 3-vs-5 is noise. The reliable signal is the
+**merge count converging to 101 from 10000 upward**.
+
+*The cap only bites the tail.* At 10000, 303 of 661 clusters are capped — but that removes 74.6% of
+the median work, because a handful of clusters hold hundreds of thousands of spikes each.
 
 **Get the denominators right.** Of 218,130 cluster pairs, only **6,967 are scored at all** (3.2%) —
 `mrWavCor` scores only pairs that share sites. Of those, **102** clear the merge threshold. So a
@@ -331,13 +349,52 @@ subsampling would make sorts non-deterministic does not apply.
 cluster — worse than the max at 500 (5.5%). A single badly-behaved cluster, but it propagates into
 SNR and unit selection.
 
-**Verdict: do not change the default, and if it ships, 4000 rather than 1000.**
+**Verdict: default stays off (0); the recommended value if enabled is 10000.**
 
-At `nSamples_max = 4000` you keep 100 of 102 merges, near-threshold error is 0.00066, amplitude
-error is bounded at 2.4%, and the loops still fall 171.7 s → 23.6 s — which would take
-`post_merge_` from 179 s to roughly 110 s. At 1000 you trade one merge decision in five for a
-further 16 seconds, which is a poor exchange. Either way it belongs behind an explicit, documented
-opt-in carrying these numbers, never folded into a commit labelled "optimization".
+10000 keeps 101 of 102 merges, cuts near-threshold error 3× versus 4000, halves amplitude error to
+1.1%, and is still **3.7× faster** than the full median. 20000 and 40000 cost 50-110% more time for
+no change in merge count.
+
+*An earlier draft of this section recommended 4000.* That was wrong, and the error is worth naming:
+4000 was the best of three sizes (500/1000/4000) chosen to **stress-test** the idea, not to locate
+an operating point. Recommending from that range was extrapolation of exactly the kind this
+document criticises elsewhere. Measuring 10000/20000/40000 moved the answer. 4000 loses 2 merges
+and flips 8 pairs where 10000 loses 1 and flips 3, for about 10 s more.
+
+### 3.7b End-to-end at `nSpk_max_clu_wav = 10000` — the clustering does not change
+
+The sweep above is a **template-level** measurement: it holds the cluster set fixed and asks how
+far `mrWavCor` moves. The end-to-end run is the stronger test, because a changed merge decision
+would alter the cluster set and every later template with it.
+
+Full in-memory `post_merge_`, compared against the same golden:
+
+| | golden (full median) | `nSpk_max_clu_wav = 10000` |
+|---|---|---|
+| `post_merge_` runtime | 178 s | **113 s (−36.5%)** |
+| `nClu` | 430 | **430** |
+| assigned spikes | 16,875,718 | **16,875,718** |
+| `viClu`, `cviSpk_clu`, `vnSpk_clu`, `viSite_clu` | — | **identical** |
+| `mrPos_clu`, `viSite_min_clu`, `vrPosX/Y_clu`, `vrIsoDist/IsiRatio/LRatio_clu` | — | **identical** |
+| `mrWavCor`, the five waveform tensors, `vrVmin_clu`, `vrSnr_clu` | — | differ |
+
+**The clustering is byte-identical.** Every spike lands in the same cluster with the same
+numbering. What changes is the stored templates, the correlation matrix and SNR.
+
+**Why the sweep over-predicted the harm — a flaw in that measurement.** It ran `S_clu_wav_` on
+`S0.S_clu`, the **661-cluster pre-merge state**, and counted flips among the 102 pairs that are
+merge-eligible *there*. In the real pipeline the merging has already happened in the mode-17 kernel
+by the time these templates are built, and `post_merge_` calls `post_merge_wav_(S_clu, 0, P)` —
+`fMerge = 0` (`irc.m:4023`) — so the `if fMerge` merge block is skipped. With the duplicate-removal
+block also unreachable (the `ndims` guard, §5), **nothing inside `post_merge_` consumes `mrWavCor`
+to merge anything.** §3.7 measured a matrix at a stage where it is an output and reported its flips
+as if they were merge decisions.
+
+**This does not make the setting free.** `mrWavCor` *is* a merge input for the curation GUI's
+auto-merge (`post_merge_wav_` with `fMerge = 1`), so a curator pressing auto-merge would get
+different results. `vrSnr_clu` changes, which flows into the quality CSV and any SNR-based unit
+selection. And this is one recording and one configuration — a `post_merge_mode` that drives
+merging from `S_clu_wavcor_` would behave differently, and would need its own measurement.
 
 **Two other effects to weigh, beyond `mrWavCor`.** The template also drives
 `find_peakSite_snr_clu_` (`irc.m:4435`), which deletes units whose template peak site sits further

@@ -12403,7 +12403,6 @@ end %func
 function [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0)
 if nargin<4, S0 = get(0, 'UserData'); end
 fUseCenterSpk = 0; % set to zero to use all spikes
-nSamples_max = 1000;
 fMedian = strcmpi(get_set_(S0.P, 'vcCluWavMode', 'median'), 'median');
 fh1 = ifeq_(fMedian, @median, @mean);
 
@@ -12417,12 +12416,33 @@ if fUseCenterSpk
     viSpk_clu1 = viSpk_clu1(vlCentered_spk1);
     viSite_spk1 = viSite_spk1(vlCentered_spk1);
 end
+% OPT-IN: cap how many spikes the median below is taken over. 0 (the default) means "every
+% spike", i.e. byte-identical to the previous behaviour -- this is off unless a .prm asks for it.
+% The template built here is not a leaf output: tmrWav_raw_clu feeds S_clu_wavcor_ (irc.m:18934,
+% fWavRaw_merge=1) and mrWavCor >= maxWavCor decides merges, so this trades accuracy for speed at
+% the merge boundary. Measured on 260324_afm18349_g0 (661 clusters, largest 745k spikes), against
+% the full-median baseline -- see logs/ironclust_post_merge_followup_2026-08-06.md section 3.7:
+%
+%   value    loop time (spk+raw)    |d mrWavCor| near threshold    merges kept
+%   0/full            171.7 s       --                            102/102
+%   4000               23.6 s       median 0.00066, max 0.0136    100/102
+%   1000                7.0 s       median 0.0016,  max 0.030      93/102
+%    500                3.7 s       median 0.0025,  max 0.056      82/102
+%
+% Near the threshold the templates stay accurate to ~0.2% even at 1000; the flips come from
+% maxWavCor being a hard cutoff with ~990 candidate pairs packed against it. subsample_vr_ is
+% deterministic, so a given setting is reproducible run to run.
+nSamples_max = get_set_(S0.P, 'nSpk_max_clu_wav', 0);
+if nSamples_max > 0 && numel(viSpk_clu1) > nSamples_max
+    viSpk_clu1 = subsample_vr_(viSpk_clu1, nSamples_max);
+    viSite_spk1 = S0.viSite_spk(viSpk_clu1);   % keep the two in step for callers that use it
+end
 if isempty(tnWav_)
     get_wav_ = @(x)pc2wav_([],[],x);
 else
     get_wav_ = @(x)single(tnWav_(:,:,x));
 end
-if isempty(viSpk_clu1), return; end  
+if isempty(viSpk_clu1), return; end
 
 % viSpk_clu2 = spk_select_mid_(viSpk_clu1, S0.viTime_spk, S0.P); 
 mrWav_clu1 = fh1(get_wav_(viSpk_clu1), 3);
