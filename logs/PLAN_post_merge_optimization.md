@@ -172,6 +172,17 @@ remaining optimizable slice inside it is a fraction of that. **If end-to-end `ir
 goal, `S_clu_wav_` is the target, not this file.** That is a separate investigation and is out of
 scope here.
 
+> **UPDATE (2026-08-06): that investigation was carried out, and it paid.** `S_clu_wav_`'s cost is
+> almost entirely its two per-cluster median loops — the `get_spkwav_` loads measure 0.0 s on the
+> second call, because the data is already resident. Between `post_merge_`'s two `S_clu_wav_` calls
+> only `S_clu_refrac_` changes membership, and only for 13 of 430 clusters. Making the second call
+> incremental cut `post_merge_` from **247 s to 179 s (−27.5%)** with byte-identical output.
+> It required first fixing `S_clu_sort_`, which reordered clusters through a hand-maintained
+> seven-name list that omitted every waveform and quality field — harmless in `post_merge_` (the
+> full recompute overwrote it) but saved straight to `_jrc.mat` by `import_ksort_`. Commits
+> `2ad7efb` and `b75dee2`; full write-up in `logs/ironclust_post_merge_followup_2026-08-06.md` §4.2
+> and §4.3.
+
 Timing caveat: absolute numbers vary 2-3x with page-cache state (unmodified code measured 90.5 s and
 31.2 s total on different runs). Only compare like-for-like runs; the ratios are stable.
 

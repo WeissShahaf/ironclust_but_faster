@@ -28,14 +28,24 @@ not optimized and why**.
    flagged `HIGHEST` (12, "textbook parfor target") and the pairwise `O(nClu²)` loops that the
    whole optimization effort was aimed at turned out to be **~7% of the merge kernel**. The real
    cost was an unflagged `find(viClu == iClu)` scan.
-2. **One optimization was implemented and proven bit-identical**: replacing that scan with the
-   `cviSpk_clu` cache. Merge kernel **31.2 s → 21.6 s (−31%)**; its dominant phase **−42%**.
-3. **Everything else was measured and dropped**, with reasons recorded. Two changes originally
-   labelled "bit-identical" would in fact have silently altered merge behaviour.
-4. **The merge kernel is not where the time is.** It is **8%** of `post_merge_`. `S_clu_wav_`
+2. **Everything else in the merge kernel was measured and dropped**, with reasons recorded. Two
+   changes originally labelled "bit-identical" would in fact have silently altered merge behaviour.
+3. **The merge kernel is not where the time is.** It is **8%** of `post_merge_`. `S_clu_wav_`
    (`irc.m:12266`) is **69%**. Optimizing merge modes cannot materially change `irc auto` runtime.
-5. **A separate, larger defect was found and fixed**: `min_count` was **never enforced** on
+   Acting on that is what produced the largest win here (point 5).
+4. **A separate, larger defect was found and fixed**: `min_count` was **never enforced** on
    label-based sorts. That is why clusters with 8 spikes survived a `min_count = 50` setting.
+5. **Three optimizations shipped, each proven byte-identical on the real recording:**
+
+| # | Change | Effect | Commit |
+|---|---|---|---|
+| 1 | Read the `cviSpk_clu` cache instead of rescanning `viClu` | merge kernel **31.2 s → 21.6 s (−31%)** | `83ffb5a` |
+| 2 | `S_clu_sort_` permutes waveform/quality fields (**correctness**) | output unchanged; closes an `import_ksort_` desync | `2ad7efb` |
+| 3 | Second `S_clu_wav_` recomputes only refrac-changed clusters | `post_merge_` **247 s → 179 s (−27.5%)** | `b75dee2` |
+
+6. **Changes 2 and 3 are one finding, not two.** The unconditional full recompute at `irc.m:4026`
+   was what silently repaired the mis-ordering change 2 fixes — so the bug *was* the 68 seconds.
+   The carried fields could not be trusted, therefore all of them had to be rebuilt every pass.
 
 ---
 
@@ -191,6 +201,32 @@ Full in-memory run, current code, flag off (control), 661 clusters in:
 | `S_clu_wavcor_` — "Computing waveform correlation" ×2 | 2.2 s | 0.6% |
 | **Total** | **379 s** | |
 
+### 3.3b Inside `S_clu_wav_` — where its 69% goes
+
+`S_clu_wav_` is four pieces, not one: a `get_spkwav_` load and an `nClu` loop for filtered
+waveforms, then the same again for raw (`fSkipRaw` is forced to 0 at `irc.m:12275`, so the raw
+half always runs — hence ~2×nClu progress dots per call). Timers added to each:
+
+```
+call 1   loads 4.9s | loop spk 35.4s | loop raw 39.7s  ->  80.0s
+call 2   loads 0.0s | loop spk 35.6s | loop raw 39.4s  ->  75.0s
+```
+
+**The `get_spkwav_` loads are effectively free inside `post_merge_`** — 0.0 s on the second call,
+because the data is already resident. A separate cold-start measurement showed 12.4 s + 8.7 s, so
+anyone profiling `S_clu_wav_` in isolation will over-attribute cost to I/O. **The per-cluster
+median loops are essentially the entire cost**, which is what made change 3 worth doing: only the
+loops shrink under `viClu_update`.
+
+The work inside `clu_wav_` (`irc.m:12361`) is one line:
+
+```matlab
+mrWav_clu1 = fh1(get_wav_(viSpk_clu1), 3);   % median over EVERY spike in the cluster
+```
+
+with `get_wav_ = @(x) single(tnWav_(:,:,x))`. For the largest cluster (745,482 spikes) that
+materialises roughly 18 × 9 × 745,482 × 4 B ≈ **480 MB** and takes a median across it.
+
 ### 3.4 A correction to the original document's "common tail" table
 
 The original correctly identified `post_merge_wav_ → S_clu_wavcor_` and
@@ -227,7 +263,9 @@ phase 1 → `miSpk_drift_clu` → phase 2 → `ctrWav_clu` → phase 3.
 
 ## 4. What was OPTIMIZED
 
-### The one change: read `cviSpk_clu` instead of rescanning `viClu`
+Three changes, each proven byte-identical on the real recording before being committed.
+
+### 4.1 Read `cviSpk_clu` instead of rescanning `viClu` — `83ffb5a`
 
 Phase 1 was executing `find(viClu_spk == iClu)` once per cluster — a full O(nSpk) scan over 16.9 M
 spikes, 661 times, when `S_clu.cviSpk_clu` already holds exactly that answer.
@@ -277,6 +315,60 @@ designed. Desync suite: **6/6 pass**, covering healthy-accepted, swapped-rejecte
 truncated-rejected (the case a membership-only check would miss), short-cache-rejected, the
 byte-identity test, and the `S_clu_merge_small_` post-check.
 
+### 4.2 `S_clu_sort_` now permutes waveform and quality fields — `2ad7efb` (correctness)
+
+`S_clu_sort_` remaps `viClu`, then reordered per-cluster fields through a **hand-maintained list of
+seven names**: `cviSpk_clu, vrPosX_clu, vrPosY_clu, vnSpk_clu, viSite_clu, cviTime_clu,
+csNote_clu`. Every waveform and quality field was missing from it — `tmrWav_spk_clu`,
+`trWav_spk_clu`, `tmrWav_raw_clu`, `trWav_raw_clu`, `tmrWav_clu`, `mrPos_clu`, `vrVmin_clu`,
+`viSite_min_clu`, `mrWavCor`, `vrSnr_clu`, `vrIsoDist_clu`, `vrIsiRatio_clu`, `vrLRatio_clu` — so
+after a sort those stayed in the **pre-sort** numbering while `viClu`/`cviSpk_clu` had moved to the
+**post-sort** numbering.
+
+Two call sites, two very different outcomes:
+
+| Call site | Outcome |
+|---|---|
+| `post_merge_` (`irc.m:4024`) | **Masked.** `S_clu_update_wav_` at `:4026` recomputes all of those fields unconditionally, overwriting the mis-ordering before anything reads it. Masked by accident, not by design. |
+| `import_ksort_` (`irc.m:13434`) | **Not masked.** `S_clu_new_` computes the fields, the sort renumbers without permuting them, and `save0_` writes the result to `_jrc.mat` — every unit carrying another unit's waveform, SNR and `mrWavCor` row. |
+
+Fixed by reordering through **`S_clu_select_`**, which reindexes per-cluster fields by pattern
+(`v*_clu`/`t*_clu`/`c*_clu`/`m*_clu`), remaps `mrWavCor` across both cluster axes via
+`S_clu_wavcor_remap_`, and detects `[X × nClu]` vs `[nClu × X]` orientation. Its contract
+(`irc.m:20561`) is that the caller remaps `viClu` first — which `S_clu_sort_` already did. No list
+left to rot. That header comment names this exact failure mode: *"reorder_clu_by_coords_ omitted it
+and produced a silent, saved viClu/cviSpk_clu desync."*
+
+**Verified:** `post_merge_` output unchanged — 20 fields compared, 20 same, 0 differ. It has to be
+unchanged, since every affected field is recomputed downstream regardless; that is what makes this
+a safe correctness fix rather than a behavioural one.
+
+### 4.3 Second `S_clu_wav_` recomputes only refrac-changed clusters — `b75dee2`
+
+`post_merge_` called `S_clu_wav_` twice over **every** cluster. Between the two calls only
+`S_clu_refrac_` changes membership, and it only zeroes labels and shrinks `cviSpk_clu`/`vnSpk_clu`
+in place (`irc.m:12599-12602`) — it never renumbers and never drops a cluster. So every cluster it
+does not touch still holds exactly the waveforms the first pass computed. On this recording it
+touched **13 of 430**.
+
+`S_clu_wav_` has always supported `viClu_update` for this. Nothing used it because §4.2's
+mis-ordering meant the carried fields could not be trusted — the full recompute *was* the repair.
+
+- `S_clu_update_wav_` takes an optional 4th argument; `[]` (what all four existing callers get)
+  means "recompute everything".
+- `post_merge_` snapshots `vnSpk_clu` around `S_clu_refrac_` and passes the clusters whose count
+  changed. Since refrac can only shrink a cluster, a count change is a **complete** signal — so
+  `S_clu_refrac_` itself needed no modification.
+- Falls back to `[]` if refrac changed nothing or the count vector changes length. The failure
+  mode is "slower", never "wrong".
+
+| | Before | After | Δ |
+|---|---|---|---|
+| `post_merge_` end-to-end | 247 s | **179 s** | **−27.5%** |
+| 2nd `S_clu_wav_` | 75.0 s | ~7 s | 13/430 clusters |
+
+**Verified:** same golden, same 20 fields, 20 same / 0 differ.
+
 ---
 
 ## 5. What was NOT optimized — and why
@@ -300,7 +392,10 @@ was examined and declined **on measurement**, not on effort.
 | **Mode 2 (the only GPU mode)** | "Low-med" | Not exercised by this configuration; not measured, not touched. |
 | **`accumarray` at `post_merge_knn1.m:54`** | still sound | **Specified but not implemented.** Targets mode 11, which this configuration does not run, so it cannot be verified on real data. `post_merge_knn1.m` is unmodified. |
 | **Slice-fusion in `post_merge_knn1.m`** | replaces the unsafe max-fusion | **Specified but not implemented**, same reason. It is a memory-scaling fix, not a speed fix. |
-| **`S_clu_wav_` (261 s, 69%)** | — | **The real target — deliberately out of scope.** This effort was scoped to merge modes. Flagged for a separate investigation. |
+| **`S_clu_wav_` (261 s, 69%)** | — | **Was** out of scope; subsequently taken up — see §4.2 and §4.3, which removed 27.5% of `post_merge_`. What remains below is what was declined *within* it. |
+| **Subsampling in `clu_wav_`** | — | **Declined — it is a quality decision, not an optimization.** `nSamples_max = 1000` is declared at `irc.m:12364` and never used, while the neighbouring `mean_wav_lo_hi_` does apply `subsample_vr_(..., nSamples_max)`, so subsampling was clearly intended here once. It would be a large further win — the median currently runs over all 745k spikes of the largest cluster. But it changes `tmrWav_clu`, and therefore `S_clu_wavcor_`, merge decisions, `vrVmin_clu` and SNR. Not something to slip in under the heading "optimization". |
+| **Re-enabling the `fWavRaw_merge` gate** | — | **Declined — behaviour change.** `irc.m:12275` forces `fSkipRaw = 0`; the line above it, gating on `fWavRaw_merge`, is commented out. Re-enabling it would skip the raw loop (~40 s per pass, ~80 s total), but raw waveforms feed quality and display. A user-facing default, not a refactor. |
+| **First `S_clu_wav_` pass (80 s)** | — | Not touched. It runs inside `post_merge_wav_` after a merge has just changed cluster membership wholesale, so there is no small "changed set" to exploit as there is for the second pass. Now the single largest item in `post_merge_`. |
 
 ---
 
@@ -343,30 +438,44 @@ Neither would have been caught without running on a real recording.
 
 ---
 
-## 7. Files changed (uncommitted)
+## 7. Files changed — committed to `rewind`, 2026-08-06
 
-| File | Change |
+| Commit | Contents |
 |---|---|
-| `matlab/irc.m` | `S_clu_merge_small_` (4461), `get_cviSpk_clu_checked_` (4575), `merge_small_verify_` (4614); call site 4022; §4 change at 3 sites |
-| `matlab/clu_wave_similarity_paged.m` | §4 change; phase timers and sub-timers; pair counters; three-phase structure documented |
-| `matlab/post_merge_knnwav.m` | §4 change |
-| `matlab/default.prm` | new `fEnforce_min_count = 0`; `fDiscard_count` marked live; `min_count` comment records the label-sort caveat |
-| `matlab/CLAUDE.md` | two new sections: `min_count` not enforced on label-based sorts; how to read `cviSpk_clu` safely |
-| `logs/PLAN_post_merge_optimization.md` | rewritten with the review corrections, the measured results, and the re-ranked worklist |
+| `83ffb5a` | `min_count` enforcement + the `cviSpk_clu` fast path. `irc.m` (`S_clu_merge_small_` 4461, `get_cviSpk_clu_checked_` 4575, `merge_small_verify_` 4614, call site 4022, §4.1 at 3 sites), `clu_wave_similarity_paged.m`, `post_merge_knnwav.m`, `default.prm`, `CLAUDE.md` |
+| `330ea6e` | docs: the rewritten plan and this follow-up |
+| `2ad7efb` | §4.2 — `S_clu_sort_` permutes waveform/quality fields; `S_clu_wav_` instrumentation |
+| `b75dee2` | §4.3 — incremental second `S_clu_wav_` |
 
 `matlab/post_merge_knn1.m` is **unmodified** (see §5).
 
 ## 8. Open decisions
 
-1. **Nothing is committed.**
-2. **The `_jrc.mat` is untouched at 661 clusters.** Putting the 430-cluster result on disk requires
+1. **The `_jrc.mat` is untouched at 661 clusters.** Putting the 430-cluster result on disk requires
    `irc auto` + save, which resets `csNote_clu`. Since `note == 'single'` is the only downstream
    unit selector, that would discard existing curation notes.
-3. **`irc.m` changed on disk.** Any manual-curation GUI opened before these edits holds stale
+2. **`irc.m` changed on disk.** Any manual-curation GUI opened before these edits holds stale
    function handles and its callbacks will fail. Relaunch it.
+3. **Re-running affected sorts.** §4.2 fixes a desync that only bites `import_ksort_`. Any
+   `_jrc.mat` produced by that path carries per-unit waveform/SNR/`mrWavCor` values belonging to
+   other units and should be re-imported. Sorts produced through `post_merge_` are unaffected —
+   there the mis-ordering was always overwritten before use.
 
 ## 9. Recommended next step
 
-Not more merge-mode work. **`S_clu_wav_` (`irc.m:12266`) is 69% of `post_merge_`, runs twice, and
-is serial with no GPU** — while the `fParfor` flag accelerates a neighbouring 2.2-second step. That
-is where end-to-end `irc auto` time actually is.
+`post_merge_` is now **179 s**, down from 247 s. The profile has shifted, so the old advice
+("go after `S_clu_wav_`") is spent — §4.3 took the cheap 27.5%, and what is left in `S_clu_wav_`
+is guarded by quality decisions rather than engineering ones.
+
+The remaining items, in order of size:
+
+1. **First `S_clu_wav_` pass — 80 s, now the largest single item.** No small changed-set to
+   exploit. Real options are subsampling or parallelism, both listed as declined in §5 for
+   reasons that still hold.
+2. **`post_merge_wav_` template merge — ~35 s.** Never profiled.
+3. **`clu_wav_`'s median over all spikes.** The largest lever remaining, and the one that needs a
+   decision from the user rather than a measurement: is a 1000-spike median an acceptable
+   substitute for a 745,000-spike median, given it feeds merge decisions and SNR?
+
+Note that the `fParfor` observation in §3.4 still stands and is still unaddressed: the flag
+parallelises `S_clu_wavcor_` (2.2 s) and not `S_clu_wav_` (now ~86 s).
