@@ -325,6 +325,85 @@ kept — see `logs/REMEDIATION_desync_field_20260725.md`. Project_hierarchy Dyla
 in spike-times CSVs; then `preprocess_all` (shaf branch, `recompute_analyzers=True`) re-run. cuniform:
 pilot recovered, other 4 assessed `viClu`-coherent.
 
+### `min_count` is NOT enforced on label-based sorts (2026-08-06)
+
+`min_count` is applied **only** inside `postCluster_` — `dpclus_remove_count_` (irc.m:11897/11902/
+11907) and `S_clu_remove_count_` (irc.m:11893, its *sole* caller). `post_merge_` skips
+`postCluster_` entirely when `fLabelClu` (irc.m:3964), so on `vcCluster =
+kmeans|hdbscan|isosplit|isosplit6|classix` **min_count does nothing at all**.
+
+Nothing downstream substitutes for it: `cluster_site_` gates on the **site's** spike total, never
+on each label it returns (its "pruned later if tiny" comment refers to the `postCluster_` pruning
+that never runs); `S_clu_from_labels_` applies no count filter; `S_clu_remove_empty_` removes only
+**empty** clusters. `S_clu_refrac_` (irc.m:4020) runs after merging and only **shrinks** clusters,
+with no count re-check — which makes the symptom look like a merge artifact when the origin is
+per-site clustering. **Merging never creates small clusters; it only grows them.**
+
+Measured on `260324_afm18349` (`min_count = 50`, isosplit, mode 17): **68 of 661 clusters below
+threshold, smallest 8 spikes**, holding 1221 spikes (0.01% of assigned).
+
+**`fDiscard_count` was a dead parameter** — present in `default.prm`, `rhs32_template.prm`,
+`sample_sample_merge.prm` promising *"set to zero to absorb to the nearest cluster"*, and read by
+**no `.m` file**. It is now live, but **only** via the new opt-in:
+
+- **`fEnforce_min_count`** (default **0** = off ⇒ `post_merge_` byte-identical to before) enables
+  `S_clu_merge_small_`, called just before `post_merge_wav_` (irc.m:4018) so every per-cluster
+  field downstream is rebuilt against the final cluster set.
+- With it on, **`fDiscard_count`** picks the action: `1` = spikes to noise (`viClu = 0`, the DPC
+  semantics), `0` = **absorb into the nearest surviving cluster** by centroid distance
+  (median `mrPos_spk`, the same metric `post_merge_wav4_` uses — a sub-threshold cluster's mean
+  waveform is noise-dominated), capped at `maxDist_site_um`.
+- Targets are drawn only from clusters **at or above** `min_count`, so there is no chaining and the
+  result is order-independent. A small cluster with no surviving neighbour in range is **left
+  alone** — never force-merged, never discarded.
+- Strict `<`, unlike `S_clu_remove_count_`'s `<=`. `fEnforce_min_count` had to be a *separate* flag
+  because `fDiscard_count` ships as `1` everywhere: honouring it directly would have made every
+  existing label-based sort start deleting clusters it currently keeps.
+- Verified on the real recording (`260324_afm18349`), both standalone and through a full in-memory
+  `post_merge_`: off ⇒ `viClu` byte-identical; absorb ⇒ 68 clusters folded in, min size 8→61, none
+  left below threshold, cache/`viClu` in sync, all per-cluster fields sized to the new `nClu`.
+  End-to-end the merge ran 661→500→498 first, then absorbed 68 → **430**.
+- **`S_clu_merge_small_` conserves spikes exactly, but the pipeline around it does not — and that is
+  correct.** `S_clu_refrac_` (irc.m:4025) runs *after* the absorb and drops spikes violating
+  `spkRefrac_merge_ms` **within** a cluster. Folding a small cluster into a neighbour turns
+  previously-legal spike pairs into genuine refractory violations, so a few more get removed
+  (measured: 945 vs 939, i.e. 6 extra out of 16.88 M). Assert conservation on the **function**, not
+  on end-to-end assigned-spike counts. Every merge has this property, including the ordinary
+  template merges.
+
+### Reading `cviSpk_clu` as a fast path — `get_cviSpk_clu_checked_` (2026-08-06)
+
+Several post-merge template loops used `find(S_clu.viClu == iClu)` inside `for iClu`, i.e. an
+O(nClu · nSpk) scan. On the reference recording (661 clusters × 17.6 M spikes) that was **~66% of
+`clu_wave_similarity_paged`'s runtime**. `S_clu.cviSpk_clu` already holds exactly these lists.
+
+**Do NOT read the cache directly for this.** It is derived state and can go stale; building
+templates from a stale cache and then merging on them yields a *self-consistent but wrong*
+clustering — the DI-01 class that no sync checker can detect after the fact. `viClu` is
+authoritative; the cache is only an accelerator.
+
+`get_cviSpk_clu_checked_(S_clu, vcCaller)` returns the cache **only if it provably equals
+`find(viClu==i)` for every cluster**, else `{}` (caller falls back to `find`) plus a stderr warning.
+It reconstructs a labelling from the cache alone and compares it to `viClu`, and also compares total
+entry counts — catching wrong members, missing spikes, extra spikes and cross-cluster duplicates.
+A *length* test would not: `S_clu_select_` force-fits wrong-length fields (see above).
+
+Cost is **one O(nSpk) pass** versus the O(nClu · nSpk) scan it replaces — ~0.15% of the work saved.
+
+Call sites: `clu_wave_similarity_paged.m:30`, `post_merge_knnwav.m:49`,
+`waveform_similarity_clu_`, `templateMatch_post_burst_`, `graph_merge_` (all in `irc.m`). The two
+standalone files reach it through the usual `irc('call', …)` shim; if the shim itself fails it
+returns `[]`, which lands on the same safe fallback.
+
+Verified on the real recording: healthy cache accepted; swapped, truncated and short caches all
+rejected; and **a deliberately desynced cache produced byte-identical `mrDist_clu` to the healthy
+run** (phase 1 fell back to 23.7 s from 12.2 s, proving the slow path engaged). Measured effect when
+healthy: kernel 31.2 s → 21.6 s (−31%), `isequaln` with the pre-change output.
+
+`S_clu_merge_small_` (which *writes* `viClu`) additionally snapshots and **rolls back** if its
+post-condition fails — `merge_small_verify_`, following `delete_clu_`'s pattern. It checks the
+invariant by content and, for the absorb mode, that no spike was lost.
+
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)
 - Page-based loading for large files

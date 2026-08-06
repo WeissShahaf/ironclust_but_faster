@@ -157,7 +157,8 @@ step_sec_drift = 20;          % compute anatomical similarity every n sec
 nBatch_max_drift = 32;      % max number of batch size
 
 % #Post-cluster auto-merging parameters (run "jrc auto" after change)
-min_count = 30;             % Minimum cluster size (min_count will be set to 2*#features if lower).
+min_count = 30;             % Minimum cluster size (min_count will be set to 2*#features if lower). NOTE: enforced only by postCluster_, which post_merge_ SKIPS for label-based sorts (vcCluster = kmeans/hdbscan/isosplit/classix) -- so on those sorts min_count does nothing unless fEnforce_min_count = 1 below.
+fEnforce_min_count = 0;     % Apply min_count after the automated merge (S_clu_merge_small_). 0 = off (default; behaviour byte-identical to before). 1 = enforce, using fDiscard_count to choose the action. Only does anything on label-based sorts: DPC sorts already applied min_count inside postCluster_. Set to 1 when a per-site label sort leaves clusters far below min_count.
 delta_cut = 1.0;            % Cutoff value for the Delta outlier in KNN-based Rodriguez-Laio clustering
 knn_merge_thresh = 1;       % Number of spikes shared between two peaks to be merged
 post_merge_mode = 1;        % Automated merging mode
@@ -355,7 +356,7 @@ rho_cut = -2.5;             % RL cluster: rho cut-off. Decreasing (more negative
 thresh_merge_clu = 0;       % Pierre Yger's cluster merging criterial based on medium projection of cluster pairs
 thresh_automerge_pca = [];   % posthoc merge based on the eigvec similarity. recommends .998
 thresh_split_clu = 0;       % Split a cluster to two if separation distance > (x) after k-means clustering
-fDiscard_count = 1;         % Discard cluster under minimum count. set to zero to absorb to the nearest cluster
+fDiscard_count = 1;         % Discard cluster under minimum count. set to zero to absorb to the nearest cluster. NO LONGER DEPRECATED (2026-08-06): read by S_clu_merge_small_, but ONLY when fEnforce_min_count = 1 (see above); with fEnforce_min_count = 0 this value is ignored. 1 = move sub-min_count clusters' spikes to noise (viClu = 0, matching the DPC path); 0 = absorb them into the nearest surviving cluster by centroid distance, capped at maxDist_site_um, losing no spikes. Clusters with no surviving neighbour inside that radius are left untouched either way.
 vcCluWavMode = 'median';      % use median to compute average cluster waveform
 frac_equal_knn = .5;        % Fraction of k-nearest neighbors from the same cluster. 
 

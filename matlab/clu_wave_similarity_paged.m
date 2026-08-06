@@ -26,8 +26,20 @@ cviSite_drift_clu = cell(nClu, 1);
 ccviSpk_drift_clu = cell(nClu, 1);
 nDrift = get_set_(P, 'nTime_drift', 64);
 nSpk_min = get_set_(P, 'knn', 30);
+% D5: S_clu.cviSpk_clu already holds exactly these per-cluster spike lists. post_merge_ rebuilds it
+% from viClu immediately before this runs (S_clu_refresh_ at irc.m:3966, and again inside
+% S_clu_sort_ -> irc.m:12315), and vi2cell_ returns the same ascending indices find() would -- so
+% the substitution is exact. It replaces an O(nClu * nSpk) scan (661 x 17.6M here, measured at ~66%
+% of this function's runtime) with a lookup. Falls back to find() when the cache is missing or
+% shorter than nClu, so a stale or partial S_clu degrades rather than erroring.
+% get_cviSpk_clu_checked_ returns {} unless the cache provably equals find(viClu==i) for EVERY
+% cluster, so a desynced S_clu silently falls back to the authoritative viClu instead of building
+% templates from stale spike lists. If the shim itself fails it also returns [] -> empty -> the same
+% safe fallback.
+cviSpk_clu = get_cviSpk_clu_checked_(S_clu, 'clu_wave_similarity_paged');
+fCache = numel(cviSpk_clu) >= nClu;
 for iClu = 1:nClu
-    viSpk1 = find(viClu_spk == iClu);
+    if fCache, viSpk1 = cviSpk_clu{iClu}; else, viSpk1 = find(viClu_spk == iClu); end
     viSpk1 = viSpk1(:);
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
     [vlKeep_clu1, viSite_clu1] = deal(true(nDrift, 1), zeros(nDrift,1));
@@ -63,11 +75,14 @@ fprintf('took %0.1fs\n', toc(t1));
 
 
 % phase 2. load spikes from file (memory paging)
+fprintf('\tPaged loading '); t2=tic;
 vcFile_spkwav = strrep(P.vcFile_prm, '.prm', '_spkwav.jrc');
 [dimm_spk, type_spk] = get0_('dimm_spk', 'type_spk');
 load_spkwav_('open', vcFile_spkwav, dimm_spk, type_spk);
 ctrWav_clu = cell(nClu, 1);
 iiSpk_end = 0;
+% sub-timers: which part of phase 2 actually costs? (measure before optimizing, per P0)
+[t_io, t_find, t_group, t_sum, nRow_page] = deal(0);
 [nLoads, nSpk_load, nSpk_last] = load_spkwav_('plan', MAX_BYTES_LOAD); % give buffer
 for iLoad = 1:nLoads
     if iLoad == nLoads
@@ -75,32 +90,49 @@ for iLoad = 1:nLoads
     else
         nSpk_load1 = nSpk_load;
     end
+    tio_=tic;
     [trWav_spk1, viSpk1] = load_spkwav_('load', nSpk_load1);
-    
+    t_io = t_io + toc(tio_);
+
     iiSpk_start = iiSpk_end + 1;
     iiSpk_end = find(miSpk_drift_clu(:,1) <= viSpk1(end), 1, 'last');
     miSpk_drift_clu1 = miSpk_drift_clu(iiSpk_start:iiSpk_end, :);
-    
+    nRow_page = nRow_page + size(miSpk_drift_clu1,1);
+
     % Accumulate waveforms per cluster per drift
     for iClu = 1:nClu
         trWav11 = ctrWav_clu{iClu};
         nDrift11 = vnDrift_clu(iClu);
         if isempty(trWav11)
-            trWav11 = zeros(dimm_spk(1), dimm_spk(2), nDrift11); 
-        end        
+            trWav11 = zeros(dimm_spk(1), dimm_spk(2), nDrift11);
+        end
+        tf_=tic;
         vii11 = find(miSpk_drift_clu1(:,3) == iClu);
+        t_find = t_find + toc(tf_);
         viiSpk11 = miSpk_drift_clu1(vii11,1) - viSpk1(1) + 1;
         viDrift11 = miSpk_drift_clu1(vii11,2);
-        cviiSpk11 = arrayfun(@(x)viiSpk11(viDrift11==x), 1:nDrift11, 'UniformOutput', 0);        
+        tg_=tic;
+        cviiSpk11 = arrayfun(@(x)viiSpk11(viDrift11==x), 1:nDrift11, 'UniformOutput', 0);
+        t_group = t_group + toc(tg_);
+        ts_=tic;
         cmr_ = arrayfun(@(i)trWav11(:,:,i) + sum(trWav_spk1(:,:,cviiSpk11{i}), 3), ...
                 1:nDrift11, 'UniformOutput', 0);
         ctrWav_clu{iClu} = cat(3, cmr_{:});
-    end 
+        t_sum = t_sum + toc(ts_);
+    end
 end %for
 load_spkwav_('close');
+fprintf('took %0.1fs (%d pages)\n', toc(t2), nLoads);
+fprintf('\t  phase2 breakdown: io %0.1fs | find %0.1fs | group %0.1fs | sum %0.1fs | rows %d (%d x %d cluster-scans)\n', ...
+    t_io, t_find, t_group, t_sum, nRow_page, nLoads, nClu);
 
 
 % phase 3. compute waveform similarity
+% Counters (nPair_*) are diagnostic only -- they measure how often the site-intersection guard
+% below lets a pair through, i.e. how many fh_norm_tr calls the inner loop actually makes.
+% See logs/PLAN_post_merge_optimization.md: the D1 vs D2 ranking depends on this ratio.
+fprintf('\tPairwise similarity '); t3=tic;
+[nPair_total, nPair_site] = deal(0);
 fh_norm = @(x)bsxfun(@rdivide, x, std(x,1)*sqrt(size(x,1)));
 fh_norm_tr = @(x)fh_norm(reshape(x, [], size(x,3)));
 mrDist_clu = nan(nClu, 'single');
@@ -111,10 +143,12 @@ for iClu1 = 1:nClu
     viSite_clu1 = repmat(viSite_clu1(:), numel(viShift), 1);
     vrDist_clu1 = zeros(nClu, 1, 'single');
     for iClu2 = iClu1+1:nClu
+        nPair_total = nPair_total + 1;
         viSite2 = cviSite_drift_clu{iClu2};
         viSite12 = intersect(viSite_clu1, viSite2);
         if isempty(viSite12), continue; end
-        mr2_ = fh_norm_tr(ctrWav_clu{iClu2});   
+        nPair_site = nPair_site + 1;
+        mr2_ = fh_norm_tr(ctrWav_clu{iClu2});
         for iSite12_ = 1:numel(viSite12)
             iSite12 = viSite12(iSite12_);
             mrDist12 = mr2_(:, viSite2==iSite12)' * mr1_(:, viSite_clu1==iSite12);
@@ -124,6 +158,10 @@ for iClu1 = 1:nClu
     mrDist_clu(:, iClu1) = vrDist_clu1;
 %     fprintf('.');
 end %for
+fprintf('took %0.1fs\n', toc(t3));
+fprintf('\tclu_wave_similarity_paged: nClu=%d nDrift=%d nShift=%d | pairs: %d reached, %d shared a site (%.2f%%)\n', ...
+    nClu, nDrift, numel(viShift), nPair_total, nPair_site, 100*nPair_site/max(nPair_total,1));
+fprintf('Automated merging (post-hoc) took %0.1fs\n', toc(t_func));
 end %func
 
 
@@ -269,6 +307,7 @@ end %func
 %==========================================================================
 % call irc.m
 function out1 = get_set_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
+function out1 = get_cviSpk_clu_checked_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = bytesPerSample_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = cellfun_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = subsample_vr_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end

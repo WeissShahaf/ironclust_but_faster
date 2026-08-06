@@ -4015,6 +4015,11 @@ if fLabelClu && get_set_(P, 'maxWavCor', 1) > 0 && get_set_(P, 'maxWavCor', 1) <
     % post_merge_wav4_ refreshes S_clu and recomputes centroids from mrPos_spk internally.
     S_clu = post_merge_wav4_(S_clu, get_set_(P, 'maxDist_site_um', 50), P);
 end
+% Enforce min_count. No-op unless fEnforce_min_count=1 (see S_clu_merge_small_). Placed here,
+% before post_merge_wav_, so every per-cluster field downstream (S_clu_refrac_,
+% S_clu_update_wav_, correlogram_, S_clu_position_, S_clu_quality_) is rebuilt against the
+% final cluster set. On DPC sorts it finds nothing: postCluster_ already applied min_count.
+S_clu = S_clu_merge_small_(S_clu, P);
 S_clu = post_merge_wav_(S_clu, 0, P);
 S_clu = S_clu_sort_(S_clu, 'viSite_clu');
 S_clu = S_clu_refrac_(S_clu, P); % refractory violation removal
@@ -4432,6 +4437,199 @@ vrThresh_site = get0_('vrThresh_site');
 mrMin_clu = double(mrMin_clu) ./ double(vrThresh_site(:));
 mrMin_clu(vrThresh_site==0,:) = nan;
 [~,viSite_min] = min(mrMin_clu);
+end %func
+
+
+%--------------------------------------------------------------------------
+% 2026-08-06: enforce min_count on LABEL-BASED sorts (kmeans/hdbscan/isosplit/classix).
+%
+% Why this exists: min_count is applied only inside postCluster_ (dpclus_remove_count_
+% 11897/11902/11907 and S_clu_remove_count_ 11893, its sole caller), and post_merge_ skips
+% postCluster_ entirely when fLabelClu (irc.m ~3964). cluster_site_ gates on the SITE's
+% total spike count, not on each label it returns, so isosplit can emit a handful-of-spikes
+% label; the comment at cluster_site_ ("pruned later if tiny") refers to that never-run
+% pruning. Result: label-based sorts keep clusters far below min_count. Measured on
+% 260324_afm18349 (min_count=50): 68/661 clusters below threshold, smallest 8 spikes.
+%
+% fDiscard_count has documented this choice in default.prm for years ("Discard cluster under
+% minimum count. set to zero to absorb to the nearest cluster") but was read by NO code --
+% it is given its documented meaning here.
+%
+% OFF BY DEFAULT. fDiscard_count defaults to 1 in every shipped .prm, so honouring it
+% unconditionally would make label-based sorts start DELETING clusters they currently keep.
+% fEnforce_min_count (default 0) is the opt-in; fDiscard_count then selects the action.
+function S_clu = S_clu_merge_small_(S_clu, P)
+if ~get_set_(P, 'fEnforce_min_count', 0), return; end   % default: byte-identical to before
+% An explicitly EMPTY min_count means "no count filtering", matching postCluster_ (irc.m ~11816
+% maps [] -> 0, which makes both dpclus_remove_count_ and S_clu_remove_count_ no-ops). This has
+% to be tested on P directly: get_set_ substitutes its default for [], so an isempty() check
+% AFTER the get_set_ call can never fire.
+if isfield(P, 'min_count') && isempty(P.min_count), return; end
+min_count = get_set_(P, 'min_count', 30);
+if min_count < 2, return; end
+fDiscard = get_set_(P, 'fDiscard_count', 1);
+
+% Rollback snapshot. This function REWRITES viClu, which is the field the desync family of bugs
+% corrupts, so it follows delete_clu_'s reference pattern: snapshot, apply, verify CONTENT, and
+% restore rather than commit anything half-applied. See merge_small_verify_ below.
+S_clu_bak = S_clu;
+
+% Refresh first so nClu/cviSpk_clu/vnSpk_clu agree with viClu (same guard post_merge_wav4_
+% uses before it merges). viClu stays authoritative; the cache is rebuilt FROM it.
+S_clu = S_clu_refresh_(S_clu);
+nClu = S_clu.nClu;
+vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu);
+viClu_small = find(vnSpk_clu(:)' <  min_count);   % strict <: a min_count-spike cluster is kept
+viClu_keep  = find(vnSpk_clu(:)' >= min_count);
+if isempty(viClu_small)
+    fprintf('\tS_clu_merge_small_: no cluster below min_count=%d\n', min_count);
+    return;
+end
+
+if fDiscard
+    % legacy DPC semantics: send them to noise
+    S_clu.viClu(ismember(S_clu.viClu, int32(viClu_small))) = 0;
+    fprintf('\tS_clu_merge_small_: discarded %d/%d clusters (<%d spikes, %d spikes to noise)\n', ...
+        numel(viClu_small), nClu, min_count, sum(vnSpk_clu(viClu_small)));
+    S_clu = S_clu_refresh_(S_clu);
+    S_clu = merge_small_verify_(S_clu, S_clu_bak, 'discard');
+    return;
+end
+
+% --- absorb into the nearest surviving cluster (fDiscard_count = 0) ---
+if isempty(viClu_keep)
+    fprintf(2, '\tS_clu_merge_small_: every cluster is below min_count=%d; nothing to absorb into\n', min_count);
+    return;
+end
+% Cluster centroid: median spike position, as post_merge_wav4_ does. Position is used rather
+% than waveform similarity on purpose -- a sub-min_count cluster's mean waveform is dominated
+% by noise, while the median of its spike positions stays stable. Fall back to the peak-site
+% coordinate when mrPos_spk is unavailable.
+mrPos_spk = get0_('mrPos_spk');
+if isempty(mrPos_spk)
+    mrSiteXY = get_(P, 'mrSiteXY');
+    if isempty(mrSiteXY) || ~isfield(S_clu, 'viSite_clu')
+        fprintf(2, '\tS_clu_merge_small_: no mrPos_spk and no mrSiteXY; skipped\n');
+        return;
+    end
+    viSite_clu = S_clu.viSite_clu(:);
+    viSite_clu(isnan(viSite_clu) | viSite_clu < 1) = 1;   % mode([]) -> NaN on an empty cluster
+    mrPos_clu = mrSiteXY(viSite_clu, :);
+else
+    nPos = size(mrPos_spk, 2);
+    % reshape pins each cell to nPos x 1: median of a 0-row selection can return a scalar NaN
+    % on some releases, which would make cell2mat fail (same fix as post_merge_wav4_).
+    mrPos_clu = cell2mat(cellfun(@(x)reshape(median(mrPos_spk(x,:), 1), nPos, 1), ...
+        S_clu.cviSpk_clu(:)', 'UniformOutput', 0))';
+end
+if size(mrPos_clu,1) < nClu, mrPos_clu(end+1:nClu, :) = nan; end
+
+% squared euclidean without pdist2 (no Statistics Toolbox dependency)
+mrA = double(mrPos_clu(viClu_small,:));
+mrB = double(mrPos_clu(viClu_keep,:));
+mrD2 = bsxfun(@plus, sum(mrA.^2,2), sum(mrB.^2,2)') - 2*(mrA*mrB');
+[vrMin2, viNear] = min(mrD2, [], 2);
+vrDist = sqrt(max(vrMin2, 0));
+
+% Radius ceiling: a small cluster with no surviving neighbour in range is LEFT ALONE -- never
+% force-merged into something far away, and never discarded. NaN centroids fail this test too.
+dist_max = get_set_(P, 'maxDist_site_um', 50);
+vlAbsorb = vrDist <= dist_max;
+
+viClu_src = viClu_small(vlAbsorb);
+viClu_dst = viClu_keep(viNear(vlAbsorb));
+nSpk_moved = 0;
+for ii = 1:numel(viClu_src)
+    viSpk1 = S_clu.cviSpk_clu{viClu_src(ii)};
+    if isempty(viSpk1), continue; end
+    S_clu.viClu(viSpk1) = int32(viClu_dst(ii));   % targets are drawn only from viClu_keep,
+    nSpk_moved = nSpk_moved + numel(viSpk1);      % so no chaining and order does not matter
+end
+fprintf('\tS_clu_merge_small_: absorbed %d/%d clusters (<%d spikes) into nearest, %d spikes moved; %d left (no cluster within %g um)\n', ...
+    numel(viClu_src), nClu, min_count, nSpk_moved, sum(~vlAbsorb), dist_max);
+
+% Rebuild the cache from viClu and drop the now-empty source clusters (renumbers).
+S_clu = S_clu_refresh_(S_clu);
+S_clu = merge_small_verify_(S_clu, S_clu_bak, 'absorb');
+end %func
+
+
+%--------------------------------------------------------------------------
+% Return S_clu.cviSpk_clu ONLY if it provably equals find(viClu==i) for every cluster; otherwise
+% return {} so the caller falls back to the authoritative find(S_clu.viClu == iClu).
+%
+% Why verify instead of trusting the cache (the D5 optimization): cviSpk_clu is derived state and
+% CAN go stale -- that is the entire desync family in matlab/CLAUDE.md. Building templates from a
+% stale cache and then merging on them yields a self-consistent but WRONG clustering, which is the
+% DI-01 class that no sync checker can detect afterwards. viClu is authoritative; the cache is only
+% an accelerator, and must earn its use.
+%
+% Cost: ONE O(nSpk) pass, versus the O(nClu * nSpk) scan it replaces (nClu = 661 on the reference
+% recording), so verification is ~0.15% of the work it saves.
+%
+% Exactness: writing iClu into vi_chk at the cache's indices reconstructs a labelling from the
+% cache alone. If that equals viClu (negatives clamped to 0, matching "unassigned") AND the total
+% entry count matches, the two describe the same partition -- catching missing spikes, extra
+% spikes, cross-cluster duplicates and wrong members alike. A length-only test would not: per
+% matlab/CLAUDE.md, S_clu_select_ actively force-fits wrong-length fields.
+function cviSpk_clu = get_cviSpk_clu_checked_(S_clu, vcCaller)
+cviSpk_clu = {};
+if ~isfield(S_clu, 'cviSpk_clu') || ~isfield(S_clu, 'viClu'), return; end
+c = S_clu.cviSpk_clu; viClu = S_clu.viClu(:);
+nClu = double(max(viClu));
+if nClu < 1 || numel(c) < nClu, return; end
+try
+    vi_chk = zeros(numel(viClu), 1, 'int32');
+    nTot = 0;
+    for iClu = 1:nClu
+        vi = c{iClu};
+        if isempty(vi), continue; end
+        vi_chk(vi) = int32(iClu);          % errors on out-of-range/invalid indices -> caught below
+        nTot = nTot + numel(vi);
+    end
+    fOk = (nTot == sum(viClu > 0)) && isequal(vi_chk, int32(max(double(viClu), 0)));
+catch
+    fOk = false;
+end
+if fOk
+    cviSpk_clu = c;
+else
+    fprintf(2, ['\t%s: cviSpk_clu does NOT match viClu (desync) -- falling back to find(). ' ...
+        'Run check_jrc_sync/resync_clu on this file.\n'], vcCaller);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Post-condition for S_clu_merge_small_: verify the viClu <-> cviSpk_clu invariant by CONTENT and
+% roll back if it fails.
+%
+% Content, not length: S_clu_select_'s reconcile block actively force-fits wrong-length per-cluster
+% fields to nClu (see matlab/CLAUDE.md, "Never trust a LENGTH check on S_clu"), so a length test
+% here would pass on exactly the corruption it is meant to catch. S_clu_valid_ is vacuous for the
+% same reason.
+%
+% Rolling back beats committing: this is delete_clu_'s pattern (irc.m ~9140). On healthy input the
+% check always passes and the guard is dead code, so the normal path is unchanged.
+function S_clu = merge_small_verify_(S_clu, S_clu_bak, vcMode)
+nClu = double(max(S_clu.viClu));
+if numel(S_clu.cviSpk_clu) ~= nClu
+    nBad = -1;   % cache/label count disagree outright
+else
+    nBad = 0;
+    for iClu = 1:nClu
+        viSpk1 = S_clu.cviSpk_clu{iClu};
+        if ~isempty(viSpk1) && ~all(S_clu.viClu(viSpk1) == iClu), nBad = nBad + 1; end
+    end
+end
+% 'absorb' relabels spikes and must never lose one; 'discard' deliberately sends them to noise.
+[nAssigned, nAssigned0] = deal(sum(S_clu.viClu > 0), sum(S_clu_bak.viClu > 0));
+fLost = strcmpi(vcMode, 'absorb') && (nAssigned ~= nAssigned0);
+if nBad ~= 0 || fLost
+    fprintf(2, ['\tS_clu_merge_small_: POST-CHECK FAILED (%s) -- desync=%d, assigned %d->%d. ' ...
+        'ROLLING BACK, no change applied.\n'], vcMode, nBad, nAssigned0, nAssigned);
+    S_clu = S_clu_bak;
+end
 end %func
 
 
@@ -32501,8 +32699,15 @@ nSpk_min = get_set_(P, 'knn', 30);
 fprintf('\tComputing template\n\t'); t_template = tic;
 
 mrMean_site = zeros(nDrift, S_clu.nClu);
+% D5: cviSpk_clu holds exactly these lists and is rebuilt from viClu by S_clu_refresh_ just before
+% post_merge_ reaches here (irc.m:3966, and again via S_clu_sort_ -> :12315); vi2cell_ yields the
+% same ascending indices find() would, so this is exact. Replaces an O(nClu * nSpk) scan -- measured
+% at ~66% of the equivalent loop in clu_wave_similarity_paged.m. Falls back to find() when the cache
+% is missing or short, so a stale S_clu degrades instead of erroring on cviSpk_clu{iClu}.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'post_merge template build');
+fCache_ = ~isempty(cviSpk_clu_);
 for iClu = 1:S_clu.nClu
-    viSpk1 = find(S_clu.viClu == iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu == iClu); end
     viSpk1 = viSpk1(:);
     if isempty(viSpk1), continue; end   % 0-spike cluster: leave empty cells, skip (else viSpk1(vii1) errors)
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
@@ -32793,8 +32998,12 @@ nSpk_min = get_set_(P, 'knn', 30);
 fprintf('\tComputing template\n\t'); t_template = tic;
 
 
+% D5: see waveform_similarity_clu_ -- cviSpk_clu is the same list, rebuilt from viClu by
+% S_clu_refresh_ before post_merge_ reaches here, with a find() fallback if it is short/absent.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'post_merge template build');
+fCache_ = ~isempty(cviSpk_clu_);
 for iClu = 1:S_clu.nClu
-    viSpk1 = find(S_clu.viClu == iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu == iClu); end
     viSpk1 = viSpk1(:);
     if isempty(viSpk1), continue; end   % 0-spike cluster: leave empty cells, skip (else viSpk1(vii1) errors)
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
@@ -32915,8 +33124,11 @@ fh_vec = @(x)x(:);
 cm_miSpk_knn = cell(nDrift, nClu);
 cviSpk_knn = cell(nDrift, nClu);
 vnSpk_clu = zeros(nClu,1);
+% D5: see waveform_similarity_clu_ -- cviSpk_clu is the same list, with a find() fallback.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'graph_merge_');
+fCache_ = ~isempty(cviSpk_clu_);
 for iClu = 1:nClu
-    viSpk1 = find(S_clu.viClu==iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu==iClu); end
     miSpk1 = sort(miKnn(:,viSpk1));
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
     vnSpk_clu = numel(viSpk1);

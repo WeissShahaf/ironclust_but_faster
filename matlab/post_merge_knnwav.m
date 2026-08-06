@@ -45,8 +45,15 @@ nSpk_min = get_set_(P, 'knn', 30);
 fprintf('\tComputing template\n\t'); t_template = tic;
 
 
+% D5: cviSpk_clu holds exactly these lists (verified elementwise, class and order, against
+% find(viClu==i) for every cluster on a real 661-cluster sort). post_merge_ rebuilds it from viClu
+% before this runs. Falls back to find() if the cache is missing or short. Note this loop has no
+% isempty(viSpk1) guard -- unlike irc.m's equivalent -- so a 0-spike cluster already errored here
+% before this change; the fallback keeps that behaviour identical rather than masking it.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'post_merge_knnwav');
+fCache_ = numel(cviSpk_clu_) >= S_clu.nClu;
 for iClu = 1:S_clu.nClu
-    viSpk1 = find(S_clu.viClu == iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu == iClu); end
     viSpk1 = viSpk1(:);
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
     [vlKeep_clu1, viSite_clu1] = deal(true(nDrift, 1), zeros(nDrift,1));
@@ -192,6 +199,7 @@ end %func
 
 function out1 = get_spkwav_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = get_set_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
+function out1 = get_cviSpk_clu_checked_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = shift_trWav_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = ml2map_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
 function out1 = S_clu_refresh_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
