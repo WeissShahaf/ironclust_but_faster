@@ -294,17 +294,34 @@ Templates rebuilt at three sizes, then `mrWavCor` recomputed and compared agains
 baseline. Filtered and raw waveforms are loaded one at a time (~7 GB and ~14 GB), exactly as
 `S_clu_wav_` does:
 
-| `nSamples_max` | loop time (spk+raw) | pairs ≥ 0.985 | decision flips | **% of the 102 merge-eligible pairs** |
-|---|---|---|---|---|
-| full (current) | **171.7 s** | 102 | — | — |
-| 4000 | 23.4 s | 100 | 8 | **7.8%** |
-| 1000 | 7.1 s | 93 | 19 | **18.6%** |
-| 500 | 4.0 s | 82 | 26 | **25.5%** |
+| `nSamples_max` | loop time | |Δ`mrWavCor`| over scored pairs (med / p99 / max) | **near threshold** (±0.05, ~990 pairs) med / max | pairs ≥ 0.985 | decision flips |
+|---|---|---|---|---|---|
+| full (current) | **171.7 s** | — | — | 102 | — |
+| 4000 | 23.6 s | 0.0015 / 0.035 / 0.115 | **0.00066 / 0.0136** | 100 | 8 (**7.8%**) |
+| 1000 | 7.0 s | 0.0037 / 0.060 / 0.127 | **0.0016 / 0.030** | 93 | 19 (**18.6%**) |
+| 500 | 3.7 s | 0.0055 / 0.084 / 0.176 | **0.0025 / 0.056** | 82 | 26 (**25.5%**) |
 
-**Read the denominator carefully.** As a fraction of all 218,130 cluster pairs the flip rate looks
-negligible (0.0087% at 1000) — but almost every pair sits nowhere near the threshold. Only **102**
-pairs are merge-eligible at all. Against that denominator a 1000-spike median changes roughly **one
-merge decision in five**, and nearly all flips are merges that stop happening (102 → 93).
+**Get the denominators right.** Of 218,130 cluster pairs, only **6,967 are scored at all** (3.2%) —
+`mrWavCor` scores only pairs that share sites. Of those, **102** clear the merge threshold. So a
+flip rate quoted against all pairs (0.0087% at 1000) is meaningless; against the pairs that can
+actually merge it is **one decision in five**, nearly all of them merges that stop happening.
+
+**But the near-threshold column is the real finding.** Where the decision is actually made,
+subsampling moves `mrWavCor` by a median of **0.0016** at `nSamples_max = 1000` — about 0.16% — and
+never by more than 0.030. The alarming `max 0.127` occurs among poorly-correlated pairs that are
+nowhere near merging. That is what one would expect: pairs sitting at 0.985 are near-identical,
+high-SNR waveforms whose templates are well determined by far fewer than 745k spikes.
+
+So the honest reading is that **subsampling does not produce bad templates — near the boundary they
+are accurate to ~0.2%. The instability comes from `maxWavCor = 0.985` being a hard threshold with
+~990 candidate pairs packed against it**, 19 of which sit inside a 0.003-wide noise band. That is a
+property of the decision rule, not of the estimator.
+
+This cuts both ways and neither side should be oversold. It weakens "subsampling is dangerous": the
+templates are fine where it counts. It does *not* make the flips harmless: those pairs genuinely
+merge or fail to, changing the cluster set — and a pair that is borderline under the full median is
+not obviously resolved *correctly* by it either. The full-median answer is the incumbent one, not a
+ground truth.
 
 **`subsample_vr_` is deterministic.** Two independent draws at 1000 produced byte-identical
 `mrWavCor` — 0 flips between them. So the choice is reproducible run-to-run; the objection that
@@ -314,14 +331,25 @@ subsampling would make sorts non-deterministic does not apply.
 cluster — worse than the max at 500 (5.5%). A single badly-behaved cluster, but it propagates into
 SNR and unit selection.
 
-**Verdict: do not change the default.** The speed case is overwhelming — 171.7 s → 7.1 s would take
-`post_merge_` from 179 s to well under 100 s — and that is exactly why it needs to be an explicit,
-documented opt-in rather than something folded into a commit labelled "optimization".
+**Verdict: do not change the default, and if it ships, 4000 rather than 1000.**
 
-*Limitation of this measurement:* the median and 99th-percentile columns of |Δ`mrWavCor`| came back
-`NaN` because `mrWavCor` contains NaN entries that were not excluded. The pair counts, flip counts
-and `max |Δ|` (0.127 at 1000) are unaffected — `NaN >= thr` is false on both sides, so no spurious
-flips — but the *typical* perturbation was not captured, only the worst case.
+At `nSamples_max = 4000` you keep 100 of 102 merges, near-threshold error is 0.00066, amplitude
+error is bounded at 2.4%, and the loops still fall 171.7 s → 23.6 s — which would take
+`post_merge_` from 179 s to roughly 110 s. At 1000 you trade one merge decision in five for a
+further 16 seconds, which is a poor exchange. Either way it belongs behind an explicit, documented
+opt-in carrying these numbers, never folded into a commit labelled "optimization".
+
+**Two other effects to weigh, beyond `mrWavCor`.** The template also drives
+`find_peakSite_snr_clu_` (`irc.m:4435`), which deletes units whose template peak site sits further
+than `maxDist_site_um` from `viSite_clu` — a *second* path from template to cluster count, not
+measured here. And `vrVmin_clu` feeds `vrSnr_clu` and the quality CSV. `mrPos_clu` is **not**
+affected: `S_clu_wav_` computes it from `S0.mrPos_spk` over the full spike list, not via `clu_wav_`.
+
+*A defect in the first run of this measurement:* median and p99 of |Δ`mrWavCor`| came back `NaN`
+because non-finite entries were not excluded. Flip counts, pair counts and `max |Δ|` were never
+affected (`NaN >= thr` is false on both sides), so the original verdict held — but the typical
+perturbation, which is the number that actually reframed the conclusion, was missing until the
+re-run.
 
 ---
 
@@ -543,11 +571,13 @@ The remaining items, in order of size:
 
 1. **First `S_clu_wav_` pass — 80 s, now the largest single item.** No small changed-set to
    exploit: it runs inside `post_merge_wav_` right after a merge has changed membership wholesale.
-2. **Subsampling — measured in §3.7 and declined.** It is by far the biggest lever (171.7 s → 7.1 s
-   of loop time) and it is *not* blocked on further measurement. It is blocked on a judgement:
-   18.6% of merge-eligible pairs change state at `nSamples_max = 1000`, 7.8% at 4000. If that is
-   acceptable, it should ship as an explicit opt-in parameter carrying those numbers in its comment
-   — never as a silent default change.
+2. **Subsampling — measured in §3.7, and the case is better than it first looked.** By far the
+   biggest lever, and *not* blocked on further measurement. Near the merge threshold the templates
+   are accurate to ~0.2% even at `nSamples_max = 1000`; the flips come from `maxWavCor` being a
+   hard threshold with ~990 candidates against it. **4000 is the defensible setting**: 100 of 102
+   merges preserved, 171.7 s → 23.6 s of loop time, `post_merge_` ~179 s → ~110 s. It still needs
+   to be an explicit opt-in, and the second template→cluster-count path
+   (`find_peakSite_snr_clu_`, `irc.m:4435`) should be measured before it ships.
 3. **`post_merge_wav_` template merge — ~35 s.** Never profiled. The only remaining item that might
    still yield a free win.
 
