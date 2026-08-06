@@ -12312,10 +12312,19 @@ else
 end
 
 % Compute spkwav
+% INSTRUMENTATION (measurement only, no logic change): S_clu_wav_ is ~69% of post_merge_ and
+% runs twice, but nothing distinguished the two get_spkwav_ loads from the two per-cluster
+% loops. Needed before deciding whether a viClu_update (incremental) second call is worth it,
+% since the loads happen either way. Timers are gated on fVerbose, like the existing prints.
+[t_io_spk, t_loop_spk, t_io_raw, t_loop_raw, nUpdated] = deal(0);
+t_ = tic;
 tnWav_ = get_spkwav_(P, 0);
+t_io_spk = toc(t_);
 % if isempty(tnWav_), return; end
-for iClu=1:nClu       
+t_ = tic;
+for iClu=1:nClu
     if vlClu_update(iClu)
+        nUpdated = nUpdated + 1;
         [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0);
         if isempty(mrWav_clu1), continue; end
         [tmrWav_spk_clu(:,viSite_clu1,iClu), trWav_spk_clu(:,:,iClu)] = deal(bit2uV_(mrWav_clu1, P));
@@ -12325,21 +12334,26 @@ for iClu=1:nClu
             disperr_();
         end
         if fVerbose, fprintf('.'); end
-    end    
+    end
 end %clu
+t_loop_spk = toc(t_);
 
 % Compute spkraw
 if ~isempty(tmrWav_raw_clu)
     tnWav_ = []; % clear memory
+    t_ = tic;
     tnWav_ = get_spkwav_(P, 1);
-    for iClu=1:nClu       
+    t_io_raw = toc(t_);
+    t_ = tic;
+    for iClu=1:nClu
         if vlClu_update(iClu)
-            [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0);   
-            if isempty(mrWav_clu1), continue; end       
+            [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0);
+            if isempty(mrWav_clu1), continue; end
             [tmrWav_raw_clu(:,viSite_clu1,iClu), trWav_raw_clu(:,:,iClu)] = deal(mrWav_clu1 * P.uV_per_bit);
             if fVerbose, fprintf('.'); end
         end
     end %clu
+    t_loop_raw = toc(t_);
 end
 
 tmrWav_clu = tmrWav_spk_clu; %meanSubt_ after or before?
@@ -12352,7 +12366,11 @@ viSite_min_clu = viSite_min_clu(:);
 S_clu = struct_add_(S_clu, vrVmin_clu, viSite_min_clu, mrPos_clu, tmrWav_clu, ...
     trWav_spk_clu, tmrWav_spk_clu);
 if ~isempty(tmrWav_raw_clu), S_clu = struct_add_(S_clu, trWav_raw_clu, tmrWav_raw_clu); end
-if fVerbose, fprintf('\n\ttook %0.1fs\n', toc(t1)); end
+if fVerbose
+    fprintf('\n\ttook %0.1fs\n', toc(t1));
+    fprintf('\t  S_clu_wav_ breakdown: get_spkwav_ spk %0.1fs | loop spk %0.1fs | get_spkwav_ raw %0.1fs | loop raw %0.1fs | %d/%d clusters updated\n', ...
+        t_io_spk, t_loop_spk, t_io_raw, t_loop_raw, nUpdated, nClu);
+end
 end %func
 
 
@@ -12507,9 +12525,25 @@ switch vcField_sort
     otherwise
         [~, viCluSort] = sort(S_clu.(vcField_sort), 'ascend');
 end
+% viClu must be remapped BEFORE S_clu_select_ -- that is S_clu_select_'s documented contract
+% (irc.m ~20561): it reindexes per-cluster fields only and cannot remap the per-spike labels.
 S_clu.viClu = mapIndex_(S_clu.viClu, viCluSort); % fixed
-S_clu = struct_reorder_(S_clu, viCluSort, ...
-    'cviSpk_clu', 'vrPosX_clu', 'vrPosY_clu', 'vnSpk_clu', 'viSite_clu', 'cviTime_clu', 'csNote_clu');
+% Reorder EVERY per-cluster field, not the seven that used to be hand-listed here. The old
+% struct_reorder_ list omitted all waveform and quality fields -- tmrWav_spk_clu, trWav_spk_clu,
+% tmrWav_raw_clu, trWav_raw_clu, tmrWav_clu, mrPos_clu, vrVmin_clu, viSite_min_clu, mrWavCor,
+% vrSnr_clu, vrIsoDist_clu, ... -- leaving them in the PRE-sort cluster order while viClu and
+% cviSpk_clu had already moved to the post-sort order.
+%   - In post_merge_ (irc.m:4024) that was masked: S_clu_update_wav_ at :4026 recomputes every
+%     one of those fields unconditionally, so the mis-ordering was overwritten before anything
+%     read it. Masked by accident, not by design -- and it forced that full recompute to stay
+%     full, because the carried-over fields could not be trusted.
+%   - In import_ksort_ (irc.m:13434) it was NOT masked: save0_ wrote the mis-ordered fields
+%     straight into _jrc.mat, so every unit's waveform, SNR and mrWavCor row belonged to a
+%     different unit than its viClu/cviSpk_clu.
+% S_clu_select_ reindexes by pattern (v*_clu / t*_clu / c*_clu / m*_clu), handles mrWavCor's
+% two cluster axes via S_clu_wavcor_remap_, and detects [X x nClu] vs [nClu x X] orientation --
+% i.e. exactly this operation, without a list that can rot again.
+S_clu = S_clu_select_(S_clu, viCluSort);
 S_clu = S_clu_refresh_(S_clu);
 end %func
 
