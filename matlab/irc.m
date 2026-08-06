@@ -4022,8 +4022,29 @@ end
 S_clu = S_clu_merge_small_(S_clu, P);
 S_clu = post_merge_wav_(S_clu, 0, P);
 S_clu = S_clu_sort_(S_clu, 'viSite_clu');
+% S_clu_wav_ runs twice in post_merge_ (once inside post_merge_wav_ above, once below) and each
+% pass is ~30% of this function -- all of it in the per-cluster median loops; the get_spkwav_
+% loads are free once resident. But S_clu_refrac_ only zeroes labels and shrinks cviSpk_clu /
+% vnSpk_clu in place (irc.m:12599-12602): it never renumbers, never drops a cluster. So every
+% cluster it does NOT touch still holds exactly the waveforms computed above, and typically it
+% touches ~10 of ~500.
+% Snapshot vnSpk_clu and pass only the changed clusters, rather than teaching S_clu_refrac_ to
+% report them -- refrac can only shrink a cluster, so a count change is a complete signal.
+% This is only safe because S_clu_sort_ (just above) now permutes the waveform fields with the
+% cluster order; while it did not, the carried-over fields were mis-indexed and the full
+% recompute here was what silently repaired them.
+% Fall back to [] (recompute everything) if refrac changed nothing or the counts look unexpected.
+vnSpk_clu_pre = S_clu.vnSpk_clu(:);
 S_clu = S_clu_refrac_(S_clu, P); % refractory violation removal
-S_clu = S_clu_update_wav_(S_clu, P);
+viClu_refrac = [];
+if numel(S_clu.vnSpk_clu) == numel(vnSpk_clu_pre)
+    viClu_refrac = reshape(find(S_clu.vnSpk_clu(:) ~= vnSpk_clu_pre), 1, []);
+end
+if ~isempty(viClu_refrac)
+    fprintf('\tS_clu_update_wav_: %d/%d clusters changed by S_clu_refrac_\n', ...
+        numel(viClu_refrac), numel(vnSpk_clu_pre));
+end
+S_clu = S_clu_update_wav_(S_clu, P, [], viClu_refrac);
 S_clu.mrCC = correlogram_(S_clu, get0('viTime_spk'), P);
 
 % set diagonal element
@@ -5226,11 +5247,14 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S_clu = S_clu_update_wav_(S_clu, P, S0)
+function S_clu = S_clu_update_wav_(S_clu, P, S0, viClu_update)
+% viClu_update: clusters whose membership actually changed. [] (the default, and what every
+% pre-existing caller passes) means "recompute every cluster", i.e. the original behaviour.
 if nargin<2, P = get0_('P'); end
-if nargin<3, S0 = get(0, 'UserData'); end
+if nargin<3 || isempty(S0), S0 = get(0, 'UserData'); end
+if nargin<4, viClu_update = []; end
 
-S_clu = S_clu_wav_(S_clu, [], [], S0);
+S_clu = S_clu_wav_(S_clu, viClu_update, [], S0);
 
 % compute raw waveform if not done yet
 if isempty(get_(S_clu, 'tmrWav_raw_clu'))
