@@ -218,7 +218,7 @@ anyone profiling `S_clu_wav_` in isolation will over-attribute cost to I/O. **Th
 median loops are essentially the entire cost**, which is what made change 3 worth doing: only the
 loops shrink under `viClu_update`.
 
-The work inside `clu_wav_` (`irc.m:12361`) is one line:
+The work inside `clu_wav_` (`irc.m:12403`) is one line:
 
 ```matlab
 mrWav_clu1 = fh1(get_wav_(viSpk_clu1), 3);   % median over EVERY spike in the cluster
@@ -258,6 +258,70 @@ Phase 2 accumulates `ctrWav_clu{iClu}` **across pages** (`paged.m:120`, inside `
 every page. No cluster's template is complete before the last page. Phase 3 cannot start early for
 any cluster, and phase 2's `for iClu` is not trivially parallel either. Dependency chain:
 phase 1 → `miSpk_drift_clu` → phase 2 → `ctrWav_clu` → phase 3.
+
+### 3.7 Subsampling `clu_wav_`'s median — measured, and it changes merge decisions
+
+The largest remaining lever, measured rather than assumed. `clu_wav_` medians over every spike in a
+cluster (745,482 for the largest here; 527 of 661 clusters hold more than 1000 spikes), while
+`nSamples_max = 1000` sits declared-and-unused at `irc.m:12406`.
+
+**On that `nSamples_max = 1000` — do not read it as a disabled feature.** The name is a recycled
+local, reused across `irc.m` with two unrelated meanings and no shared state (they are separate
+function-local variables, so nothing collides):
+
+| Meaning | Where | Status |
+|---|---|---|
+| time samples per file-read chunk | `plan_load_` / `partition_load_` (1382-1402), GPU chunking (~5412) | live |
+| spike cap before an expensive per-cluster op, via `subsample_vr_` | `S_clu_subsample_spk_` (12514) → called from `S_clu_position_` | **live** |
+| " | `load_wav_med_` (32543) → called from `ui_show_all_chan_`, a GUI display path | **live** |
+| " | `driftMatch_post_` (32643) | live in mode 3 only |
+| " | `mean_wav_lo_hi_` (12434), `spk_select_pos_` (12496), `S_clu_wav_pair_` (19016) | **dead — 0 callers each** |
+| " | **`clu_wav_` (12406)** | **declared, never referenced** |
+
+Three of the six spike-cap uses are dead code. Every use that is *live* sits in a position or
+display helper, where subsampling is cheap and inconsequential — **not one of them feeds the merge
+criterion.** So the `1000` in `clu_wav_` reads as a copy-paste remnant of a house idiom, not as
+evidence that subsampling was designed for this path. An earlier draft of this document argued the
+opposite from the presence of `mean_wav_lo_hi_`; that inference was wrong, because
+`mean_wav_lo_hi_` is itself never called.
+
+**Why this is a merge question, not a display question.** `S_clu_wavcor_` builds `mrWavCor` from
+**`tmrWav_raw_clu`** when `fWavRaw_merge = 1` (`irc.m:18932-18937`) — the default, and this
+configuration's setting. `mrWavCor >= maxWavCor` is what decides merges. So subsampling the median
+directly perturbs the merge criterion.
+
+Templates rebuilt at three sizes, then `mrWavCor` recomputed and compared against the full-median
+baseline. Filtered and raw waveforms are loaded one at a time (~7 GB and ~14 GB), exactly as
+`S_clu_wav_` does:
+
+| `nSamples_max` | loop time (spk+raw) | pairs ≥ 0.985 | decision flips | **% of the 102 merge-eligible pairs** |
+|---|---|---|---|---|
+| full (current) | **171.7 s** | 102 | — | — |
+| 4000 | 23.4 s | 100 | 8 | **7.8%** |
+| 1000 | 7.1 s | 93 | 19 | **18.6%** |
+| 500 | 4.0 s | 82 | 26 | **25.5%** |
+
+**Read the denominator carefully.** As a fraction of all 218,130 cluster pairs the flip rate looks
+negligible (0.0087% at 1000) — but almost every pair sits nowhere near the threshold. Only **102**
+pairs are merge-eligible at all. Against that denominator a 1000-spike median changes roughly **one
+merge decision in five**, and nearly all flips are merges that stop happening (102 → 93).
+
+**`subsample_vr_` is deterministic.** Two independent draws at 1000 produced byte-identical
+`mrWavCor` — 0 flips between them. So the choice is reproducible run-to-run; the objection that
+subsampling would make sorts non-deterministic does not apply.
+
+**Amplitude:** at 1000, `vrVmin_clu` shifts by a median of 0.375% but a maximum of **29.9%** on one
+cluster — worse than the max at 500 (5.5%). A single badly-behaved cluster, but it propagates into
+SNR and unit selection.
+
+**Verdict: do not change the default.** The speed case is overwhelming — 171.7 s → 7.1 s would take
+`post_merge_` from 179 s to well under 100 s — and that is exactly why it needs to be an explicit,
+documented opt-in rather than something folded into a commit labelled "optimization".
+
+*Limitation of this measurement:* the median and 99th-percentile columns of |Δ`mrWavCor`| came back
+`NaN` because `mrWavCor` contains NaN entries that were not excluded. The pair counts, flip counts
+and `max |Δ|` (0.127 at 1000) are unaffected — `NaN >= thr` is false on both sides, so no spurious
+flips — but the *typical* perturbation was not captured, only the worst case.
 
 ---
 
@@ -393,8 +457,8 @@ was examined and declined **on measurement**, not on effort.
 | **`accumarray` at `post_merge_knn1.m:54`** | still sound | **Specified but not implemented.** Targets mode 11, which this configuration does not run, so it cannot be verified on real data. `post_merge_knn1.m` is unmodified. |
 | **Slice-fusion in `post_merge_knn1.m`** | replaces the unsafe max-fusion | **Specified but not implemented**, same reason. It is a memory-scaling fix, not a speed fix. |
 | **`S_clu_wav_` (261 s, 69%)** | — | **Was** out of scope; subsequently taken up — see §4.2 and §4.3, which removed 27.5% of `post_merge_`. What remains below is what was declined *within* it. |
-| **Subsampling in `clu_wav_`** | — | **Declined — it is a quality decision, not an optimization.** `nSamples_max = 1000` is declared at `irc.m:12364` and never used, while the neighbouring `mean_wav_lo_hi_` does apply `subsample_vr_(..., nSamples_max)`, so subsampling was clearly intended here once. It would be a large further win — the median currently runs over all 745k spikes of the largest cluster. But it changes `tmrWav_clu`, and therefore `S_clu_wavcor_`, merge decisions, `vrVmin_clu` and SNR. Not something to slip in under the heading "optimization". |
-| **Re-enabling the `fWavRaw_merge` gate** | — | **Declined — behaviour change.** `irc.m:12275` forces `fSkipRaw = 0`; the line above it, gating on `fWavRaw_merge`, is commented out. Re-enabling it would skip the raw loop (~40 s per pass, ~80 s total), but raw waveforms feed quality and display. A user-facing default, not a refactor. |
+| **Subsampling in `clu_wav_`** | — | **Measured, then declined — it changes merge decisions.** See §3.7 for the numbers: at `nSamples_max = 1000` the loops drop from 171.7 s to 7.1 s, but **18.6% of merge-eligible pairs change state**. Even at 4000 it is 7.8%. This is a scientific choice about what a cluster template is, not an optimization. |
+| **Re-enabling the `fWavRaw_merge` gate** | — | **Declined — and more load-bearing than it looks.** `irc.m:12275` forces `fSkipRaw = 0`; the line above it, gating on `fWavRaw_merge`, is commented out. Skipping the raw loop would save ~40 s per pass — but `S_clu_wavcor_` reads **`tmrWav_raw_clu`** when `fWavRaw_merge = 1` (`irc.m:18932-18937`), which is the default and this configuration's setting. The raw waveforms *are* the merge criterion, not just quality/display. Skipping them without also setting `fWavRaw_merge = 0` would break merging outright. |
 | **First `S_clu_wav_` pass (80 s)** | — | Not touched. It runs inside `post_merge_wav_` after a merge has just changed cluster membership wholesale, so there is no small "changed set" to exploit as there is for the second pass. Now the single largest item in `post_merge_`. |
 
 ---
@@ -433,8 +497,16 @@ noted here because it was initially written as an assertion and reported a false
   `get_set_`.
 - With `maxDist_site_um = 0.01` one cluster was still absorbed — two clusters share an identical
   median position, distance exactly 0. The code was right; the test assertion was too strict.
+- The §3.7 subsampling measurement reported `median` and `p99` of |Δ`mrWavCor`| as `NaN`, because
+  `mrWavCor` contains NaN entries that were not excluded. Flip counts, pair counts and `max |Δ|`
+  are unaffected, so the conclusion held — but the typical perturbation went unmeasured.
+- Argued that subsampling "was clearly intended" in `clu_wav_` from the neighbouring
+  `mean_wav_lo_hi_`. That function has **zero callers**. Inferring intent from adjacent code
+  without checking whether the adjacent code is reachable is exactly the trap this codebase sets:
+  `irc.m` carries a lot of dead code, and three of the six `nSamples_max` spike-cap uses are dead.
 
-Neither would have been caught without running on a real recording.
+Neither of the first two would have been caught without running on a real recording; the last two
+were caught by re-reading rather than by running.
 
 ---
 
@@ -470,12 +542,20 @@ is guarded by quality decisions rather than engineering ones.
 The remaining items, in order of size:
 
 1. **First `S_clu_wav_` pass — 80 s, now the largest single item.** No small changed-set to
-   exploit. Real options are subsampling or parallelism, both listed as declined in §5 for
-   reasons that still hold.
-2. **`post_merge_wav_` template merge — ~35 s.** Never profiled.
-3. **`clu_wav_`'s median over all spikes.** The largest lever remaining, and the one that needs a
-   decision from the user rather than a measurement: is a 1000-spike median an acceptable
-   substitute for a 745,000-spike median, given it feeds merge decisions and SNR?
+   exploit: it runs inside `post_merge_wav_` right after a merge has changed membership wholesale.
+2. **Subsampling — measured in §3.7 and declined.** It is by far the biggest lever (171.7 s → 7.1 s
+   of loop time) and it is *not* blocked on further measurement. It is blocked on a judgement:
+   18.6% of merge-eligible pairs change state at `nSamples_max = 1000`, 7.8% at 4000. If that is
+   acceptable, it should ship as an explicit opt-in parameter carrying those numbers in its comment
+   — never as a silent default change.
+3. **`post_merge_wav_` template merge — ~35 s.** Never profiled. The only remaining item that might
+   still yield a free win.
 
 Note that the `fParfor` observation in §3.4 still stands and is still unaddressed: the flag
 parallelises `S_clu_wavcor_` (2.2 s) and not `S_clu_wav_` (now ~86 s).
+
+**A caution for whoever picks this up.** `irc.m` contains a lot of unreachable code — this session
+found `mean_wav_lo_hi_`, `spk_select_pos_`, `S_clu_wav_pair_` and `maddist2_` with zero callers,
+and `fDiscard_count` documented in four `.prm` files while read by none. Do not infer intent from
+neighbouring code without first checking that the neighbour is reachable. Two of the errors listed
+in §6 came from exactly that.
