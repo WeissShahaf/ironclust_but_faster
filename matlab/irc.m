@@ -4667,7 +4667,13 @@ FRAC_NEAR = 1/2; % 1/2 is better than 1/4
 vcMode_dist = 'space'; % time, space, spacetime
 fUseFirstBurst = 1; % 9/14/2018 JJJ: only use the first spike in burst to compute ave waveform
 
+% INSTRUMENTATION (timers only, no logic change). The "Merged N waveforms ... took Xs" line at
+% the bottom reports toc(t1) with t1 started AFTER all of this setup, so the setup has always
+% been silent time. post_merge_wav4_ is ~31% of post_merge_ on the test recording and merges very
+% few clusters, so it is worth knowing which half is expensive.
+t_setup_ = tic;
 tnWav_spk = get_spkwav_(P, 0); % use raw waveform
+t_io_ = toc(t_setup_);
 [viSite_spk, mrPos_spk, dimm_fet, viTime_spk] = ...
     get0_('viSite_spk', 'mrPos_spk', 'dimm_fet', 'viTime_spk');
 viTime_spk = viTime_spk(:);
@@ -4685,7 +4691,9 @@ cviSpk_sub_clu = cellfun(@(x)subsample_vr_(x,MAX_SAMPLE), cviSpk_burst0_clu, 'Un
 cviSite_sub_clu = cellfun(@(x)viSite_spk(x), cviSpk_sub_clu, 'UniformOutput', 0);
 cmrPos_sub_clu = cellfun(@(x)mrPos_spk(x,:), cviSpk_sub_clu, 'UniformOutput', 0);
 cvrPos_sub_clu = cellfun(@(x)sum(x'.^2), cmrPos_sub_clu, 'UniformOutput', 0);
+t_wav_ = tic;
 ctrWav_sub_clu = cellfun(@(vi_)single(tnWav_spk(:,:,vi_)), cviSpk_sub_clu, 'UniformOutput', 0);
+t_build_ = toc(t_wav_);   % materialises up to MAX_SAMPLE spikes per cluster as single
 cviTime_sub_clu = cellfun(@(vi_)viTime_spk(vi_), cviSpk_sub_clu, 'UniformOutput', 0);
 
 % determine cluster centers
@@ -4702,7 +4710,9 @@ end
 mrDist_clu = squareform(pdist(mrPos_clu));
 % NaN distances (from empty/invalid clusters) will never match <= dist_merge_um
 
+t_setup_all_ = toc(t_setup_);
 t1=tic;
+[nPair_reached_, nPair_skip_, nPair_cmp_] = deal(0);
 mlWavCor_clu = set_diag_(false(nClu), true(nClu,1));
 miSites = P.miSites;
 diff_rat_ = @(x,y)abs(x-y)/max(x,y);
@@ -4720,19 +4730,28 @@ for iClu1 = 1:nClu
     [mrPos1_T, vrPos1] = deal(cmrPos_sub_clu{iClu1}', cvrPos_sub_clu{iClu1});
     vlWavCor1 = mlWavCor_clu(:,iClu1);
     
-    for iClu2_ = 1:numel(viClu2)            
+    for iClu2_ = 1:numel(viClu2)
         iClu2 = viClu2(iClu2_);
+        nPair_reached_ = nPair_reached_ + 1;
         vlWavCor2 = mlWavCor_clu(:,iClu2) | mlWavCor_clu(iClu2,:)';
         vlWavCor2 = any(mlWavCor_clu(:,vlWavCor2),2);
         vlWavCor1 = any(mlWavCor_clu(:,vlWavCor1),2);
         if any(vlWavCor2 & vlWavCor1)
             vlWavCor1(vlWavCor2) = true;
+            nPair_skip_ = nPair_skip_ + 1;
             continue;
-        end              
-        
+        end
+        nPair_cmp_ = nPair_cmp_ + 1;
+
         [viSpk2, viSite_spk2, trWav_spk2] = ...
             deal(cviSpk_sub_clu{iClu2}, cviSite_sub_clu{iClu2}, ctrWav_sub_clu{iClu2});
         [mrPos2, vrPos2] = deal(cmrPos_sub_clu{iClu2}, cvrPos_sub_clu{iClu2});
+        % PROFILED 2026-08-07: this matrix is 57% of the pair loop -- 22.2e9 single elements
+        % materialised across 3676 pairs (~6.05M, i.e. ~2460x2460, per pair) at ~24MB a time,
+        % purely to feed the two min() calls below. Only the row-minima and column-minima are
+        % ever used; the matrix itself is discarded. Bandwidth-bound, not compute-bound.
+        % Fixable exactly (min is order-independent, so column-blocking is bit-identical) --
+        % see logs/ironclust_post_merge_followup_2026-08-06.md section 3.8.
         switch vcMode_dist
             case 'space'
                 mrDist21 = bsxfun(@plus, vrPos1, bsxfun(@minus, vrPos2', 2*mrPos2*mrPos1_T));
@@ -4785,6 +4804,9 @@ S_clu = S_clu_map_index_(S_clu, viMap_clu);
 S_clu = S_clu_refresh_(S_clu);
 nClu_post = numel(unique(viMap_clu));
 fprintf('\nMerged %d waveforms (%d->%d), took %0.1fs\n', nClu-nClu_post, nClu, nClu_post, toc(t1));
+fprintf(['\tpost_merge_wav4_ breakdown: setup %0.1fs (get_spkwav_ %0.1fs, ctrWav_sub build %0.1fs) ' ...
+    '+ pair loop %0.1fs | pairs: %d reached, %d skipped by transitive guard, %d compared | MAX_SAMPLE=%d\n'], ...
+    t_setup_all_, t_io_, t_build_, toc(t1), nPair_reached_, nPair_skip_, nPair_cmp_, MAX_SAMPLE);
 end %func
 
 

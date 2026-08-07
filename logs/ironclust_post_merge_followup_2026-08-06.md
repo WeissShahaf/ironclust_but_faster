@@ -432,6 +432,62 @@ affected (`NaN >= thr` is false on both sides), so the original verdict held —
 perturbation, which is the number that actually reframed the conclusion, was missing until the
 re-run.
 
+### 3.8 `post_merge_wav4_` profiled — now the largest item, and 57% of it is one discarded matrix
+
+After §4.1-4.3 and `nSpk_max_clu_wav = 10000`, `post_merge_` is ~121 s and the profile has moved:
+
+| step | time | share |
+|---|---|---|
+| **`post_merge_wav4_`** (`irc.m:4658`, called at `:4016`) | **43.9 s** | **36%** |
+| mode-17 merge kernel | 23.2 s | 19% |
+| `S_clu_wav_` #1 | 22.8 s | 19% |
+| `S_clu_wav_` #2 (incremental) | ~2 s | 2% |
+| `templateMatch_post_` merge | 1.5 s | 1% |
+| correlogram / self-corr / quality | ~10 s | 8% |
+
+Optimising `S_clu_wav_` promoted the next bottleneck: it fell 80 s → 22.8 s, so `post_merge_wav4_`
+is now on top. **It spends 43.9 s to merge 2 clusters out of 500.**
+
+Note the existing "Merged N waveforms … took Xs" print starts its timer *after* all setup
+(`t1 = tic` at `:4705`), so 7.6 s of `get_spkwav_` and preparation was never in that number.
+
+```
+post_merge_wav4_: setup 7.6s (get_spkwav_ 4.8s, ctrWav_sub build 0.6s) + pair loop 48.2s
+                  pairs: 3676 reached, 0 skipped by transitive guard, 3676 compared
+pair-loop split:  dist 27.3s | sort 8.2s | select 5.4s | corr 3.9s
+                  dist elements 2.22e+10  (6,050,440 per pair)
+```
+
+**The finding: 57% of the pair loop builds a matrix that is immediately discarded.**
+
+```matlab
+mrDist21 = bsxfun(@plus, vrPos1, bsxfun(@minus, vrPos2', 2*mrPos2*mrPos1_T));
+[viSpk1_, viiSpk1_] = sortby_(viSpk1, min(mrDist21,[],1), 'ascend');
+[viSpk2_, viiSpk2_] = sortby_(viSpk2, min(mrDist21,[],2), 'ascend');
+```
+
+Only the row-minima and column-minima are used. Across 3676 pairs that materialises **22.2 billion
+`single` elements** (~2460×2460, ~24 MB, per pair) — on the order of 250 GB of memory traffic for
+what is arithmetically a trivial skinny GEMM. It is bandwidth-bound, not compute-bound.
+
+**A bit-identical fix exists** and is not yet implemented: `min` is order-independent, so the matrix
+can be built in column blocks — take the complete `min` along dim 1 within each block, and carry a
+running `min` along dim 2 across blocks. Same values, same FLOPs, but the working set stays in
+cache instead of streaming 24 MB per pair. Not attempted here; recorded for whoever picks it up.
+
+**A second observation:** the transitive guard at `:4728` skipped **0 of 3676** pairs. It exists to
+avoid re-comparing clusters already linked through a chain, but with only 2 merges no chains form,
+so it costs three `any()` calls per pair and saves nothing on this recording.
+
+*Timing caveat:* the sub-profiled run was slower overall (pair loop 48.2 s vs 36.8 s, `post_merge_`
+142 s vs 121 s) from machine variance plus ~15k added `tic/toc` calls. The **ratios** are the
+reliable part; the per-pair timers were removed afterwards so production does not pay for them.
+
+*A correction:* earlier revisions of this document listed this item as "`post_merge_wav_` template
+merge — ~35 s". It is **`post_merge_wav4_`**, a different function called from a different place.
+`post_merge_wav_` with `fMerge = 0` performs no merging at all — its cost *is* the first
+`S_clu_wav_` call, so the two were being double-counted as separate line items.
+
 ---
 
 ## 4. What was OPTIMIZED
