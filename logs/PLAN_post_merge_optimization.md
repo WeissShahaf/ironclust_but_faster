@@ -182,6 +182,20 @@ scope here.
 > full recompute overwrote it) but saved straight to `_jrc.mat` by `import_ksort_`. Commits
 > `2ad7efb` and `b75dee2`; full write-up in `logs/ironclust_post_merge_followup_2026-08-06.md` §4.2
 > and §4.3.
+>
+> **UPDATE (2026-08-07): the S_clu_wav_ thread is closed and this plan is superseded.** A fourth
+> change (`6072165`, `nSpk_max_clu_wav` — an opt-in, default-off cap on `clu_wav_`'s per-cluster
+> median) took `post_merge_` from 179 s to **113 s, −54% against the 247 s baseline**, clustering
+> byte-identical at every step. The whole chain was then closed out with one complete `irc sort`
+> on a 600 s trim — the first time either new parameter went through detect, save, and the `.prm`
+> round-trip rather than an in-memory replay. That test also surfaced and fixed an **unrelated
+> pre-existing defect that made `irc detect` fail with `fGpu = 1`** (DI-17's `int64` is not
+> supported by gpuArray; followup §6.2).
+>
+> **The largest remaining item is no longer in this plan's scope**: `post_merge_wav4_`'s pair loop
+> at 20.7 s, 57% of which is one discarded distance matrix that can be column-blocked
+> bit-identically. Everything in the re-ranked worklist below is either done or was measured out.
+> Read followup §9 before picking anything up from here.
 
 Timing caveat: absolute numbers vary 2-3x with page-cache state (unmodified code measured 90.5 s and
 31.2 s total on different runs). Only compare like-for-like runs; the ratios are stable.

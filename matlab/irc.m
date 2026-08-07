@@ -14098,7 +14098,17 @@ else
     [viTime, viSite] = deal(gather_(viTime), gather_(viSite)); 
 end
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int64(viTime0), int64(viTime)); % DI-17: int64 avoids int32 index saturation on >~20h untransposed recordings
+% DI-17 (349a0e1) used int64 here to avoid int32 index saturation on >~20h recordings -- int32
+% caps at 2.147e9 while 20h @ 30kHz is 2.16e9, so the concern is real. But gpuArray does NOT
+% support int64 arithmetic, and viTime is moved onto the GPU a few lines above whenever mr is a
+% gpuArray, so int64 broke `irc detect` with fGpu=1: mn2tn_wav_'s catch degraded 383/384 sites to
+% ZERO waveforms and mn2tn_wav_spk2_ then aborted outright. double keeps DI-17's intent (exact for
+% integers to 2^53), is MATLAB's natural index type, works on gpuArray, and is the same 8 bytes.
+% Measured 2026-08-07 over 200k spike times, spkLim [-6 11]: at 600s and 5267s all three types
+% give an ELEMENTWISE IDENTICAL miRange, so this is a no-op on any recording under ~20h; at 20h
+% int32 is wrong in 20880/3.6e6 entries (max drift 1.25e7 samples) while int64 and double agree.
+% On gpuArray: int32 OK, double OK and equal to the CPU result, int64 errors on 'plus'.
+miRange = bsxfun(@plus, double(viTime0), double(viTime));
 miRange = min(max(miRange, 1), N);
 miRange = miRange(:);
 if isempty(viSite)
@@ -17091,7 +17101,9 @@ viTime = gpuArray_(viTime, fGpu);
 spkLim = gpuArray_(spkLim, fGpu);
 
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int64(viTime0), int64(viTime)); % DI-17: int64 avoids int32 index saturation on >~20h untransposed recordings
+% See the note at the sibling site in mr2tr_: DI-17's int64 is unsupported by gpuArray arithmetic,
+% and this function is the GPU path by name. double preserves the anti-saturation intent.
+miRange = bsxfun(@plus, double(viTime0), double(viTime));
 miRange = min(max(miRange, 1), nT);
 tr = zeros([numel(viTime0), numel(viTime), nSites], vcDataType);
 dimm_tr = size(tr);

@@ -13,8 +13,8 @@ not optimized and why**.
 | Branch | `rewind` |
 | Test recording | `E:\scratch\tmp\catgt_260324_afm18349_g0\260324_afm18349_g0_imec0\260324_afm18349_g0_tcat.imec0.ap_irc_all.prm` — 5267.53 s, 121.7 GB, 16.88 M spikes, 661 clusters |
 | Config | `post_merge_mode = 17`, `vcCluster = isosplit`, `fParfor = 0`, `maxWavCor = 0.985`, `min_count = 50`, `nTime_drift = 16` |
-| Method | Full in-memory `post_merge_` on the existing `_jrc.mat`. Nothing was ever saved; the user's sort is untouched. |
-| Status | Changes are on disk, **not committed**. |
+| Method | Full in-memory `post_merge_` on the existing `_jrc.mat` for the optimization work — nothing saved, the user's sort untouched. Closed out with one complete `irc sort` on a separate 600 s trim (§6.1). |
+| Status | Committed to `rewind`. See §7 for the commit list. |
 
 > **Note on the original document's line numbers — they are all stale.**
 > Three functions and one call site were added to `irc.m`, shifting every anchor past line 4022.
@@ -35,17 +35,21 @@ not optimized and why**.
    Acting on that is what produced the largest win here (point 5).
 4. **A separate, larger defect was found and fixed**: `min_count` was **never enforced** on
    label-based sorts. That is why clusters with 8 spikes survived a `min_count = 50` setting.
-5. **Three optimizations shipped, each proven byte-identical on the real recording:**
+5. **Four optimizations shipped, each proven byte-identical on the real recording:**
 
 | # | Change | Effect | Commit |
 |---|---|---|---|
 | 1 | Read the `cviSpk_clu` cache instead of rescanning `viClu` | merge kernel **31.2 s → 21.6 s (−31%)** | `83ffb5a` |
 | 2 | `S_clu_sort_` permutes waveform/quality fields (**correctness**) | output unchanged; closes an `import_ksort_` desync | `2ad7efb` |
 | 3 | Second `S_clu_wav_` recomputes only refrac-changed clusters | `post_merge_` **247 s → 179 s (−27.5%)** | `b75dee2` |
+| 4 | `nSpk_max_clu_wav` — opt-in cap on `clu_wav_`'s median, default off | `post_merge_` **179 s → 113 s**; **−54% overall** | `6072165` |
 
 6. **Changes 2 and 3 are one finding, not two.** The unconditional full recompute at `irc.m:4026`
    was what silently repaired the mis-ordering change 2 fixes — so the bug *was* the 68 seconds.
    The carried fields could not be trusted, therefore all of them had to be rebuilt every pass.
+7. **A pre-existing defect unrelated to this work was found and fixed on the way out**: DI-17
+   (`349a0e1`) had made `irc detect` fail outright with `fGpu = 1`, degrading 383 of 384 sites to
+   zero waveforms first. §6.2. Restoring the GPU path is worth ~2× on detect.
 
 ---
 
@@ -673,6 +677,90 @@ noted here because it was initially written as an assertion and reported a false
 Neither of the first two would have been caught without running on a real recording; the last two
 were caught by re-reading rather than by running.
 
+### 6.1 End-to-end through a real sort — the gap every other check left open
+
+Every verification above ran `post_merge_` **in memory** on an existing `_jrc.mat` and never saved.
+Neither new parameter had been through a real sort or the save path — a parameter can behave
+perfectly in memory and still fail to reach `P` via `.prm` → `loadParam_`, which is exactly the
+class of trap the `_full.prm` mistake in §6 came from.
+
+Closed with a complete `irc sort` (detect → features → cluster → `post_merge_` → `save0_`) on a
+**600 s trim** of the same recording, with both settings active. Written to a separate
+`_irc_trim600_` prm so nothing could touch the curated `_irc_all_` sort:
+
+```
+Detect + feature 459.9 s | Cluster + merge 246.7 s | total 706.6 s (11.8 min)
+nClu = 466   cluster sizes: min 56, median 2022, max 85525
+
+1 no cluster below min_count = 50      : PASS  (min = 56)
+2 viClu / cviSpk_clu synced            : PASS  (0 bad, numel = nClu = 466)
+3 per-cluster fields sized to nClu     : PASS
+4 both new settings present in saved P : PASS  (nSpk_max_clu_wav = 10000, fEnforce_min_count = 1)
+5 waveform tensors present and sized   : PASS
+```
+
+Assertion 1 is the meaningful one for `fEnforce_min_count`: `min_count = 50` and the smallest
+surviving cluster is 56, so it fired during a genuine sort rather than a replayed merge.
+Assertion 4 confirms both parameters survive the `.prm` round-trip and land in the saved `P`.
+
+That run had to be forced to `fGpu = 0` — the GPU path was broken by an unrelated pre-existing
+defect, which is §6.2. After fixing it the same test was re-run with `fGpu = 1`:
+
+| | `fGpu = 0` | `fGpu = 1` (after the §6.2 fix) |
+|---|---|---|
+| detect + feature | 459.9 s | **230.5 s** |
+| cluster + merge | 246.7 s | 273.5 s |
+| total | 706.6 s | **504.0 s** |
+| spikes detected | 2 266 771 | 2 266 769 |
+| ISO-SPLIT clusters | 679 | 654 |
+| final `nClu` | 466 | 464 |
+| cluster sizes | min 56, median 2022, max 85525 | min 56, median 2036, max 85525 |
+| 5 assertions | PASS | **PASS** |
+
+The two runs are not identical, and that is worth stating precisely rather than waving at.
+**Detection differs by 2 spikes in 2.27 M (9e-7).** §6.2 shows the index arithmetic this work
+touched is elementwise identical on CPU and GPU, so the divergence enters upstream of it — in the
+single-precision filter / whiten / threshold path, where GPU and CPU use different reduction
+orders. That path was not modified here and the exact origin was **not** isolated. The 3.7 %
+spread in raw ISO-SPLIT cluster count (679 vs 654) is that 9e-7 input difference amplified by
+per-site iso-split, and it damps back to 0.4 % (466 vs 464) after merging.
+
+---
+
+### 6.2 DI-17 broke `irc detect` on the GPU — diagnosed and fixed
+
+The `fGpu = 1` run above initially could not complete at all. Commit `349a0e1` (DI-17, 2026-07-18)
+had replaced `int32` with `int64` at the two `miRange = bsxfun(@plus, …)` sites — `mr2tr_`
+(`irc.m:14101`) and `mn2tn_gpu_` (`irc.m:17094`) — to stop int32 index saturation on long
+recordings. **gpuArray does not support `int64` arithmetic**, and `mr2tr_` moves `viTime` onto the
+GPU a few lines above, so with `fGpu = 1` the sort degraded 383 of 384 sites to zero waveforms and
+then aborted in `mn2tn_wav_spk2_`.
+
+This is not a fallback. The `try/catch` at `irc.m:9665` prints *"site %d failed … %d spikes get
+zero waveforms"* and continues — there is no CPU retry, so the failure mode is silent corruption
+until an uncaught instance happens to stop the run.
+
+Three candidate types, measured over 200 k spike times at `spkLim = [-6 11]`:
+
+| | 600 s | 5267 s | 20 h (2.16e9 samples) | on gpuArray |
+|---|---|---|---|---|
+| `int32` (pre-DI-17) | identical | identical | **wrong in 20880 / 3.6e6 entries**, max drift 1.25e7 samples | OK |
+| `int64` (DI-17) | identical | identical | correct | **errors on `plus`** |
+| `double` (**shipped**) | identical | identical | correct | OK, and equal to the CPU result |
+
+`double` is not a compromise between the two — it is the only one of the three with both
+properties, at the same 8 bytes as `int64`. DI-17's concern was real (int32 caps at 2.147e9; 20 h
+at 30 kHz is 2.16e9), and the fix keeps it. **At every recording length actually in use the three
+types produce an elementwise identical `miRange`, so this changes no existing result.**
+
+Two things are deliberately left open. **Why production survived** is still unexplained: a sort
+detected 2026-08-05 with `fGpu = 1`, after DI-17, is verifiably clean (0 of 691 clusters all-zero).
+It failed only on the `tlim_load = [0,600]` trim, and the two `.prm`s differ *only* in `tlim_load`
+— but `file_trim_` only changes how many bytes are read, so `tlim_load` as the trigger is
+**unconfirmed** and must not be repeated as fact. And **`irc2.m:1628` still carries the original
+`int32`**, so it still has the saturation bug DI-17 was written to fix; DI-17 was applied to
+`irc.m` only. That is a separate decision, not folded in here.
+
 ---
 
 ## 7. Files changed — committed to `rewind`, 2026-08-06
@@ -683,6 +771,10 @@ were caught by re-reading rather than by running.
 | `330ea6e` | docs: the rewritten plan and this follow-up |
 | `2ad7efb` | §4.2 — `S_clu_sort_` permutes waveform/quality fields; `S_clu_wav_` instrumentation |
 | `b75dee2` | §4.3 — incremental second `S_clu_wav_` |
+| `6072165` | §4.4 — `nSpk_max_clu_wav`, opt-in cap on `clu_wav_`'s median (default 0 = off) |
+| `4e02974` | §3.8 — `post_merge_wav4_` profile + coarse instrumentation |
+| `3c093a2` `7f6c85c` `969271f` `8c2e104` | docs |
+| (this commit) | §6.2 — DI-17 `int64` → `double` at `irc.m` `mr2tr_` and `mn2tn_gpu_`; unrelated to the optimization work, found because it blocked the §6.1 end-to-end test |
 
 `matlab/post_merge_knn1.m` is **unmodified** (see §5).
 
@@ -697,29 +789,40 @@ were caught by re-reading rather than by running.
    `_jrc.mat` produced by that path carries per-unit waveform/SNR/`mrWavCor` values belonging to
    other units and should be re-imported. Sorts produced through `post_merge_` are unaffected —
    there the mis-ordering was always overwritten before use.
+4. **`irc2.m:1628` still has the pre-DI-17 `int32`** (§6.2). It therefore still carries the
+   saturation defect DI-17 was written to fix, on recordings past ~20 h. `irc2` is reachable via
+   `convert_mda.m` / `convert_mda_ui.m`. Applying the same `double` would make the two files
+   consistent; deliberately **not** bundled into the `irc.m` fix.
+5. **Why the production sort survived DI-17 is unexplained** (§6.2). Until that is understood, any
+   sort detected after 2026-07-18 with `fGpu = 1` is worth a one-line check before it is trusted:
+   `sum(squeeze(all(all(S_clu.trWav_spk_clu == 0, 1), 2)))` should be `0`.
 
 ## 9. Recommended next step
 
-`post_merge_` is now **179 s**, down from 247 s. The profile has shifted, so the old advice
-("go after `S_clu_wav_`") is spent — §4.3 took the cheap 27.5%, and what is left in `S_clu_wav_`
-is guarded by quality decisions rather than engineering ones.
+`post_merge_` is now **113 s**, down from 247 s (−54 %), with clustering byte-identical at every
+step. The old advice ("go after `S_clu_wav_`") is spent: §4.3 took the cheap 27.5 %, §4.4 shipped
+the subsampling cap, and what remains in `S_clu_wav_` is guarded by quality decisions rather than
+engineering ones.
 
 The remaining items, in order of size:
 
-1. **First `S_clu_wav_` pass — 80 s, now the largest single item.** No small changed-set to
-   exploit: it runs inside `post_merge_wav_` right after a merge has changed membership wholesale.
-2. **Subsampling — measured in §3.7, and the case is better than it first looked.** By far the
-   biggest lever, and *not* blocked on further measurement. Near the merge threshold the templates
-   are accurate to ~0.2% even at `nSamples_max = 1000`; the flips come from `maxWavCor` being a
-   hard threshold with ~990 candidates against it. **4000 is the defensible setting**: 100 of 102
-   merges preserved, 171.7 s → 23.6 s of loop time, `post_merge_` ~179 s → ~110 s. It still needs
-   to be an explicit opt-in, and the second template→cluster-count path
-   (`find_peakSite_snr_clu_`, `irc.m:4435`) should be measured before it ships.
-3. **`post_merge_wav_` template merge — ~35 s.** Never profiled. The only remaining item that might
-   still yield a free win.
+1. **`post_merge_wav4_`'s pair loop — 20.7 s, now the largest single item** (§3.8). 57 % of it is
+   one discarded distance matrix: ~22.2e9 single elements materialised across 3676 pairs, ~24 MB
+   at a time, purely to feed two `min()` calls. Bandwidth-bound, not compute-bound, and fixable
+   **exactly** — `min` is order-independent, so column-blocking is bit-identical. This is the one
+   remaining item that is both large and provably safe.
+2. **First `S_clu_wav_` pass — now 8.3 s** (was 80 s before §4.3 and §4.4). No small changed-set to
+   exploit: it runs right after a merge has changed membership wholesale. Largely spent.
+3. **Nothing else is worth starting on measurement alone.** The merge kernel is 8 % (§3.3), phase 3
+   is strictly blocked behind phase 2 (§3.6), and the P1–P6 items from the original plan were
+   re-ranked out by §3.1–3.2.
 
 Note that the `fParfor` observation in §3.4 still stands and is still unaddressed: the flag
-parallelises `S_clu_wavcor_` (2.2 s) and not `S_clu_wav_` (now ~86 s).
+parallelises `S_clu_wavcor_` (0.4 s) and not `S_clu_wav_`.
+
+**Settings now recommended for new sorts**, all measured (§3.7, §3.7b, §6.1): `nSpk_max_clu_wav =
+10000`, `fEnforce_min_count = 1`, `fDiscard_count = 0`, `fGpu = 1` (safe again as of §6.2, and
+worth ~2× on detect — 459.9 s → 230.5 s on the 600 s trim).
 
 **A caution for whoever picks this up.** `irc.m` contains a lot of unreachable code — this session
 found `mean_wav_lo_hi_`, `spk_select_pos_`, `S_clu_wav_pair_` and `maddist2_` with zero callers,
