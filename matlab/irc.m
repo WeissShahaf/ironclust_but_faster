@@ -32696,7 +32696,14 @@ function tr = mr2tr4_(mr_T, spkLim, viTime)
 nSpk = numel(viTime);
 
 viTime0 = [spkLim(1):spkLim(end)]';
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime(:)'));
+% DI-17 fixed int32 index saturation in mr2tr_ and mn2tn_gpu_ but MISSED this site, which is
+% more exposed than either: mr_T here is the FULL recording (load_bin_T_ at :32612, :32711) and
+% viTime is the ABSOLUTE viTime_spk (:32619, :32736), where the two DI-17 sites index a loaded
+% chunk. int32 caps at 2.147e9 and 20h @ 30kHz is 2.16e9, so past ~20h the indices wrap and the
+% wrong samples are read -- silently, since these feed medians. double is exact to 2^53. See the
+% note in mr2tr_ for why double rather than int64. miRange is tiny here (<=2^12 spikes), so the
+% wider type costs nothing.
+miRange = bsxfun(@plus, double(viTime0), double(viTime(:)'));
 miRange = min(max(miRange, 1), nSamples);
 tr = mr_T(:, miRange(:));
 tr = reshape(tr, [nChans, numel(viTime0), numel(viTime)]);

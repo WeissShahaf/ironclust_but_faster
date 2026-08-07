@@ -1625,7 +1625,14 @@ else
     [viTime, viSite] = deal(gather_(viTime), gather_(viSite)); 
 end
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime));
+% DI-17 (349a0e1) fixed int32 index saturation in irc.m only -- this sibling was left behind, so
+% irc2 still had the defect DI-17 was written to close. int32 caps at 2.147e9 while 20h @ 30kHz
+% is 2.16e9. Fixed here with double rather than DI-17's int64 because gpuArray does NOT support
+% int64 arithmetic and viTime is moved onto the GPU three lines above -- int64 would break irc2
+% on the GPU exactly as it broke irc detect (see the long note in irc.m mr2tr_). double is exact
+% for integers to 2^53, is MATLAB's natural index type, works on gpuArray, and is 8 bytes as
+% int64 is. Verified elementwise identical to int32 at 600s and 5267s, and correct at 20h.
+miRange = bsxfun(@plus, double(viTime0), double(viTime));
 miRange = min(max(miRange, 1), N);
 miRange = miRange(:);
 if isempty(viSite)
