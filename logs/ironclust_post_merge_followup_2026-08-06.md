@@ -756,13 +756,43 @@ properties, at the same 8 bytes as `int64`. DI-17's concern was real (int32 caps
 at 30 kHz is 2.16e9), and the fix keeps it. **At every recording length actually in use the three
 types produce an elementwise identical `miRange`, so this changes no existing result.**
 
-Two things are deliberately left open. **Why production survived** is still unexplained: a sort
-detected 2026-08-05 with `fGpu = 1`, after DI-17, is verifiably clean (0 of 691 clusters all-zero).
-It failed only on the `tlim_load = [0,600]` trim, and the two `.prm`s differ *only* in `tlim_load`
-— but `file_trim_` only changes how many bytes are read, so `tlim_load` as the trigger is
-**unconfirmed** and must not be repeated as fact. And **`irc2.m:1628` still carries the original
-`int32`**, so it still has the saturation bug DI-17 was written to fix; DI-17 was applied to
-`irc.m` only. That is a separate decision, not folded in here.
+**Why production survived** is still unexplained: a sort detected 2026-08-05 with `fGpu = 1`, after
+DI-17, is verifiably clean (0 of 691 clusters all-zero). It failed only on the `tlim_load = [0,600]`
+trim, and the two `.prm`s differ *only* in `tlim_load` — but `file_trim_` only changes how many
+bytes are read, so `tlim_load` as the trigger is **unconfirmed** and must not be repeated as fact.
+
+### 6.3 DI-17 had missed two more sites — swept and closed (`ade8f4b`)
+
+Fixing the two sites above prompted a sweep for the same pattern. There are **four**, not two, and
+DI-17 had fixed the two *least* exposed:
+
+| site | status | exposure |
+|---|---|---|
+| `irc.m` `mr2tr_` | DI-17, then `9160c51` | indexes a loaded **chunk** |
+| `irc.m` `mn2tn_gpu_` | DI-17, then `9160c51` | indexes a loaded **chunk** |
+| **`irc.m:32699` `mr2tr4_`** | **missed by DI-17; fixed in `ade8f4b`** | indexes the **full recording** (`load_bin_T_`) with **absolute** `viTime_spk` |
+| **`irc2.m:1628` `mr2tr_`** | **missed by DI-17; fixed in `ade8f4b`** | DI-17 was applied to `irc.m` only |
+
+`mr2tr4_` is the most exposed of the four, not the least. Past ~20 h its indices wrap and the wrong
+samples are read — **silently**, because the results feed medians. Two live callers, both passing
+absolute times: the curation GUI's **FigClust** raw-waveform plot (`:32662`) and `driftMatch_post_`,
+i.e. **`post_merge_mode = 3`** (`:4000`).
+
+On `irc2` reachability: `irc.m` references `irc2` exactly once — `:34258`, an `irc2('describe', …)`
+inside `benchmark_` to scrape runtime stats — and that path does not reach `mr2tr_`. So `irc2` is a
+separate entry point (`convert_mda.m`, `convert_mda_ui.m`, `irc2phy.m`, `irc2klusters_v2.m`, or
+direct invocation), and fixing it protects those users rather than `irc.m`.
+
+A fifth match, **`irc.m:11757` `recenter_spk_`, was deliberately left alone**: it has **zero callers**
+anywhere in `matlab/*.m`, so it cannot execute. Its `viTime_off` at `:11762` is also `int32` and
+would need the same treatment if the function is ever revived. Flagged rather than changed blind,
+since nothing can exercise it.
+
+Verified by unit test: both patched functions return output **identical to the `int32` they replace**
+at realistic lengths (`mr2tr4_`'s full tensor; `irc2` `mr2tr_` in both the plain and the `viSite`
+branch, the one `get_spkwav_` actually uses); at 20 h the `int32` arithmetic demonstrably differs
+while `double` stays correct and in range; `irc2` `mr2tr_` runs on `gpuArray` and matches CPU, and
+`int64` still fails there. Both files parse with 0 errors.
 
 ---
 
@@ -777,7 +807,9 @@ It failed only on the `tlim_load = [0,600]` trim, and the two `.prm`s differ *on
 | `6072165` | §4.4 — `nSpk_max_clu_wav`, opt-in cap on `clu_wav_`'s median (default 0 = off) |
 | `4e02974` | §3.8 — `post_merge_wav4_` profile + coarse instrumentation |
 | `3c093a2` `7f6c85c` `969271f` `8c2e104` | docs |
-| (this commit) | §6.2 — DI-17 `int64` → `double` at `irc.m` `mr2tr_` and `mn2tn_gpu_`; unrelated to the optimization work, found because it blocked the §6.1 end-to-end test |
+| `9160c51` | §6.2 — DI-17 `int64` → `double` at `irc.m` `mr2tr_` and `mn2tn_gpu_`; unrelated to the optimization work, found because it blocked the §6.1 end-to-end test |
+| `f59faaa` | docs — reconciled the 113 s / 121 s totals and stopped §9 quoting the 600 s trim next to §3.8's full-recording numbers |
+| `ade8f4b` | §6.3 — the two `int32` index sites DI-17 missed: `irc.m:32699` `mr2tr4_` and `irc2.m:1628` `mr2tr_` |
 
 `matlab/post_merge_knn1.m` is **unmodified** (see §5).
 
@@ -792,13 +824,15 @@ It failed only on the `tlim_load = [0,600]` trim, and the two `.prm`s differ *on
    `_jrc.mat` produced by that path carries per-unit waveform/SNR/`mrWavCor` values belonging to
    other units and should be re-imported. Sorts produced through `post_merge_` are unaffected —
    there the mis-ordering was always overwritten before use.
-4. **`irc2.m:1628` still has the pre-DI-17 `int32`** (§6.2). It therefore still carries the
-   saturation defect DI-17 was written to fix, on recordings past ~20 h. `irc2` is reachable via
-   `convert_mda.m` / `convert_mda_ui.m`. Applying the same `double` would make the two files
-   consistent; deliberately **not** bundled into the `irc.m` fix.
+4. **`irc.m:11757` `recenter_spk_` keeps its `int32`** (§6.3) — dead code, zero callers, so it
+   cannot execute. Line `:11762`'s `viTime_off` is `int32` too. Both need attention only if the
+   function is ever revived.
 5. **Why the production sort survived DI-17 is unexplained** (§6.2). Until that is understood, any
    sort detected after 2026-07-18 with `fGpu = 1` is worth a one-line check before it is trusted:
    `sum(squeeze(all(all(S_clu.trWav_spk_clu == 0, 1), 2)))` should be `0`.
+6. **Recordings past ~20 h detected before `ade8f4b`** may have had `mr2tr4_` read wrong samples
+   (§6.3) — affecting the FigClust GUI plot and `post_merge_mode = 3` only. Nothing in this
+   project's sorts is near that duration (5267 s), so no action is implied here.
 
 ## 9. Recommended next step
 
