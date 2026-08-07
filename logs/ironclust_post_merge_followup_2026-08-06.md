@@ -390,11 +390,35 @@ block also unreachable (the `ndims` guard, §5), **nothing inside `post_merge_` 
 to merge anything.** §3.7 measured a matrix at a stage where it is an output and reported its flips
 as if they were merge decisions.
 
-**This does not make the setting free.** `mrWavCor` *is* a merge input for the curation GUI's
-auto-merge (`post_merge_wav_` with `fMerge = 1`), so a curator pressing auto-merge would get
-different results. `vrSnr_clu` changes, which flows into the quality CSV and any SNR-based unit
-selection. And this is one recording and one configuration — a `post_merge_mode` that drives
-merging from `S_clu_wavcor_` would behave differently, and would need its own measurement.
+### 3.7c `S_clu.mrWavCor` is not a merge input anywhere — a retraction
+
+An earlier version of this section warned that "a curator pressing auto-merge would get different
+results". **That was wrong.** It was assumed rather than traced. `S_clu.mrWavCor` is never used to
+make a merge decision anywhere in `irc.m`. Every `>= maxWavCor` comparison that actually merges
+builds its own similarity matrix:
+
+| Path | merges from |
+|---|---|
+| `post_merge_wav4_` (`irc.m:4658`) — used by `post_merge_` at 4016 **and** by the GUI auto-merge | its own `mrWavCor_cl`, from its own `get_spkwav_` and its own hard-coded **`MAX_SAMPLE = 4000`** (`:4665`, `:4684`) |
+| mode kernels (`templateMatch_post_`, …) | their own `mrDist_clu` |
+| `S_clu_wavcor_merge_` (`irc.m:14657`) — the only function that merges from `S_clu.mrWavCor` | **unreachable**: its sole caller `post_merge_wav1_` has zero callers |
+
+`merge_auto_` (`irc.m:20495`) makes the ordering explicit: it calls `post_merge_wav_(S_clu, 1, …)`,
+which `rmfield_`s the cached templates, then `post_merge_wav4_` decides and performs the merges
+from its own 4000-spike subsample — and only *then* does `S_clu_wav_` rebuild templates at `:4429`.
+`nSpk_max_clu_wav` affects the rebuild, not the decision.
+
+**Corollary worth stating plainly: merge decisions in this codebase have always been made from a
+4000-spike subsample.** A 10000-spike cap on template computation is strictly more conservative
+than what the merging itself already does.
+
+**What the setting does affect**, and what should still be weighed: the stored templates,
+`S_clu.mrWavCor`, `vrVmin_clu` and `vrSnr_clu` — so the quality CSV (relevant because
+`note == 'single'` is the only downstream unit selector), and what a curator sees: plotted
+waveforms, the `FigWavCor` image, the pairwise correlation readout (`:6516`), and which cluster the
+GUI pre-selects as comparison partner (`[~,iCluPaste] = max(mrWavCor(:,iCluCopy))`, `:7342`).
+
+And this remains one recording and one configuration.
 
 **Two other effects to weigh, beyond `mrWavCor`.** The template also drives
 `find_peakSite_snr_clu_` (`irc.m:4435`), which deletes units whose template peak site sits further

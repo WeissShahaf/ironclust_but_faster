@@ -12418,19 +12418,32 @@ if fUseCenterSpk
 end
 % OPT-IN: cap how many spikes the median below is taken over. 0 (the default) means "every
 % spike", i.e. byte-identical to the previous behaviour -- this is off unless a .prm asks for it.
-% The template built here is not a leaf output: tmrWav_raw_clu feeds S_clu_wavcor_ (irc.m:18934,
-% fWavRaw_merge=1) and mrWavCor >= maxWavCor decides merges, so this trades accuracy for speed at
-% the merge boundary. Measured on 260324_afm18349_g0 (661 clusters, largest 745k spikes), against
-% the full-median baseline -- see logs/ironclust_post_merge_followup_2026-08-06.md section 3.7:
+% Recommended value if enabled: 10000.
 %
-%   value    loop time (spk+raw)    |d mrWavCor| near threshold    merges kept
-%   0/full            171.7 s       --                            102/102
-%   4000               23.6 s       median 0.00066, max 0.0136    100/102
-%   1000                7.0 s       median 0.0016,  max 0.030      93/102
-%    500                3.7 s       median 0.0025,  max 0.056      82/102
+% WHAT THIS DOES NOT AFFECT: merge decisions. S_clu.mrWavCor is never a merge input anywhere in
+% this file. Everything that actually merges builds its own similarity matrix -- post_merge_wav4_
+% (used both by post_merge_ and by the GUI auto-merge via merge_auto_ -> post_merge_wav_ with
+% fMerge=1) loads waveforms itself and subsamples with its own MAX_SAMPLE=4000, and the mode
+% kernels use their own mrDist_clu. The one function that does merge from S_clu.mrWavCor,
+% S_clu_wavcor_merge_, is reachable only from post_merge_wav1_, which has no callers.
+% Note the corollary: merge decisions here have ALWAYS come from a 4000-spike subsample, so a
+% 10000 cap on the template is more conservative than what the merging already does.
 %
-% Near the threshold the templates stay accurate to ~0.2% even at 1000; the flips come from
-% maxWavCor being a hard cutoff with ~990 candidate pairs packed against it. subsample_vr_ is
+% WHAT IT DOES AFFECT: the stored templates, S_clu.mrWavCor, vrVmin_clu and vrSnr_clu -- so the
+% quality CSV, and what a curator sees (plotted waveforms, the FigWavCor image, the pairwise
+% correlation readout, and which cluster the GUI pre-selects as comparison partner).
+%
+% Measured on 260324_afm18349_g0 (661 clusters, 16.9M spikes, largest 745k) against a full-median
+% baseline. See logs/ironclust_post_merge_followup_2026-08-06.md sections 3.7 and 3.7b:
+%
+%   value    loop time    spikes medianed    |d mrWavCor| near threshold
+%   0/full      77.1 s    100 %              --
+%   10000       20.6 s     25.4 %            median 0.00024, max 0.0112
+%    4000       10.2 s     12.0 %            median 0.00066, max 0.0136
+%    1000        3.0 s      3.3 %            median 0.0016,  max 0.030
+%
+% End-to-end at 10000: post_merge_ 178s -> 113s and the clustering is BYTE-IDENTICAL (viClu,
+% cviSpk_clu, vnSpk_clu, viSite_clu, nClu, mrPos_clu all unchanged). subsample_vr_ is
 % deterministic, so a given setting is reproducible run to run.
 nSamples_max = get_set_(S0.P, 'nSpk_max_clu_wav', 0);
 if nSamples_max > 0 && numel(viSpk_clu1) > nSamples_max
