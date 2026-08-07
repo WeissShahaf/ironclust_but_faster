@@ -438,7 +438,10 @@ re-run.
 
 ### 3.8 `post_merge_wav4_` profiled — now the largest item, and 57% of it is one discarded matrix
 
-After §4.1-4.3 and `nSpk_max_clu_wav = 10000`, `post_merge_` is ~121 s and the profile has moved:
+After §4.1-4.3 and `nSpk_max_clu_wav = 10000`, the profile has moved. The run this table was taken
+from totalled **121 s**, not the 113 s quoted elsewhere — the same code measures both, and the
+spread is machine variance plus the added `tic/toc` calls (§3.8's caveat below). **Only the shares
+are stable; do not mix the two totals.**
 
 | step | time | share |
 |---|---|---|
@@ -806,12 +809,13 @@ engineering ones.
 
 The remaining items, in order of size:
 
-1. **`post_merge_wav4_`'s pair loop — 20.7 s, now the largest single item** (§3.8). 57 % of it is
-   one discarded distance matrix: ~22.2e9 single elements materialised across 3676 pairs, ~24 MB
-   at a time, purely to feed two `min()` calls. Bandwidth-bound, not compute-bound, and fixable
+1. **`post_merge_wav4_` — 43.9 s, 36 %, now the largest single item** (§3.8). 57 % of it is one
+   discarded distance matrix: ~22.2e9 single elements materialised across 3676 pairs, ~24 MB at a
+   time, purely to feed two `min()` calls. Bandwidth-bound, not compute-bound, and fixable
    **exactly** — `min` is order-independent, so column-blocking is bit-identical. This is the one
-   remaining item that is both large and provably safe.
-2. **First `S_clu_wav_` pass — now 8.3 s** (was 80 s before §4.3 and §4.4). No small changed-set to
+   remaining item that is both large and provably safe. It spends that 43.9 s to merge **2**
+   clusters out of 500, while `templateMatch_post_` does 161 of the 163 merges in 1.5 s.
+2. **First `S_clu_wav_` pass — now 22.8 s, 19 %** (was 80 s before §4.4). No small changed-set to
    exploit: it runs right after a merge has changed membership wholesale. Largely spent.
 3. **Nothing else is worth starting on measurement alone.** The merge kernel is 8 % (§3.3), phase 3
    is strictly blocked behind phase 2 (§3.6), and the P1–P6 items from the original plan were
