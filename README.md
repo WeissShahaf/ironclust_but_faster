@@ -119,7 +119,7 @@ irc2 clear `path_to_prm_file`
 This fork tracks `flatironinstitute/ironclust` (diverged at upstream `master`, commit
 `2d7b56c`, frozen 2022) and adds the following. Items marked *(default change)* alter
 out-of-the-box behaviour relative to upstream; everything else is additive or a bug fix.
-At the function level: **`matlab/irc.m` gains 44 functions and removes 0** (+2,948 / −262
+At the function level: **`matlab/irc.m` gains 55 functions and removes 0** (+3,559 / −296
 lines); no upstream function was deleted.
 
 ![Pipeline differences: this fork vs upstream IronClust](logs/WORKFLOW_diff_vs_upstream.png)
@@ -154,6 +154,15 @@ written diff: [`logs/COMPARISON_vs_upstream.md`](logs/COMPARISON_vs_upstream.md)
   `classix`. Example: a 1.1 M-spike site drops from ~80 min to ~90 s at `m = 50000`. See
   [`logs/plan_persite_spike_cap.md`](logs/plan_persite_spike_cap.md) and
   [`logs/investigation_maxSpk_persite_clust.md`](logs/investigation_maxSpk_persite_clust.md).
+- **Faster automated post-merge — `post_merge_` 247 s → 113 s (−54%)** on a 5267 s / 16.9 M-spike
+  / 661-cluster recording, in three steps, each verified byte-identical on that recording:
+  the merge kernel reads the validated `cviSpk_clu` cache instead of rescanning `viClu`
+  (**31.2 s → 21.6 s**); the second `S_clu_wav_` recomputes only the clusters the refractory
+  pass actually changed (**247 s → 179 s**); and the opt-in `nSpk_max_clu_wav` caps how many
+  spikes the cluster-template median consumes (**179 s → 113 s** at `10000`, *default off*).
+  Measurements, and the longer list of merge-mode optimizations that were measured and
+  **rejected**, are in
+  [`logs/ironclust_post_merge_followup_2026-08-06.md`](logs/ironclust_post_merge_followup_2026-08-06.md).
 - **I/O and detection tuning** — larger load blocks (`MAX_LOAD_SEC = 10`, larger `nPad_filt`),
   Wiener detection filter by default, plus GUI/plot performance work. The parameter values are
   the authoritative source: see the annotated defaults in
@@ -167,6 +176,23 @@ written diff: [`logs/COMPARISON_vs_upstream.md`](logs/COMPARISON_vs_upstream.md)
   `post_merge_wav_`).
 - Fixed cluster **merge / delete** bugs and added defensive sizing of cluster-quality arrays in
   manual curation.
+- **`min_count` was never enforced on label-based sorts.** It is applied only inside
+  `postCluster_`, which `post_merge_` skips for `kmeans`/`hdbscan`/`isosplit6`/`classix` — so
+  those sorts could keep 8-spike clusters under a `min_count = 50` setting. The new opt-in
+  **`fEnforce_min_count`** fixes it; see [Enforcing `min_count`](#enforcing-min_count) below.
+- **`S_clu_sort_` left waveform and quality fields in the pre-sort cluster order**, so a
+  re-sorted `S_clu` could carry per-cluster arrays that no longer lined up with their clusters.
+  They are now permuted with everything else. The bug was masked because `post_merge_`
+  unconditionally rebuilt those fields afterwards — which is also why the rebuild could then be
+  made incremental (the two are one finding).
+- **`irc detect` was broken on the GPU** between 2026-07-18 and 2026-08-07: a data-integrity fix
+  had switched a spike-window index expression to `int64`, which **`gpuArray` does not support**,
+  and the per-site `try/catch` *degraded* instead of stopping — 383 of 384 sites silently produced
+  zero waveforms before the run finally aborted. The index type is now `double` (exact to 2^53,
+  works on `gpuArray`), which keeps the original overflow protection for >20 h recordings; a sweep
+  found and fixed two further sites of the same pattern, one of them in `irc2.m`. Running detect on
+  the GPU again is worth ~2×. If you have a sort detected in that window with `fGpu = 1`, check it
+  with `sum(squeeze(all(all(S_clu.trWav_spk_clu == 0, 1), 2)))` — it should be `0`.
 
 ### Data integrity & cluster-identity hardening
 
@@ -219,6 +245,10 @@ clustering-finalize is redone:
 - **`recover_from_snapshot.m`** — resets `viClu` to the pre-merge snapshot and re-runs the automated
   post-merge. **Discards all manual curation**, including the per-cluster notes that downstream
   pipelines use to select units, so only use it on a file that will be curated again by hand.
+  **Check the snapshot before relying on it:** `post_merge_` rewrites `viClu_premerge` on *every*
+  run, and on a **label-based** sort the value it stores is whatever `viClu` held at that moment —
+  the *curated* labelling, not a clean automatic baseline — because `postCluster_` is skipped and
+  so nothing regenerates `viClu` first. On DPC sorts it is a genuine baseline.
 - **`repair_clu_sync.m`** — rebuilds `viClu` *from* the cache. Dry run by default
   (`repair_clu_sync(jrc_file)`); pass a second path to write a repaired copy. In practice it
   **refuses to write** on every file observed so far — overlapping cache entries, orphaned spikes
@@ -233,12 +263,16 @@ direction — and locks the corruption in irreversibly.
 - **Deferred-edit workflow** — queue merges/deletes and apply them together with `u` (cancel
   with `Esc`).
 - **Drift view shown by default.**
-- **Probe-map site labels & region colouring** — in the probe map (`e`), press `c` to cycle
-  site labels between channel #, site #, and anatomical region; in region mode the boxes are
-  colour-coded by region (region source: `vcFile_site_region`).
+- **Probe-map site labels, region colouring & zoom** — in the probe map (`e`): `c` cycles the
+  site labels between channel #, site # and anatomical region; `v` toggles the box colour
+  between amplitude and region independently of the labels; `b` zooms to the selected cluster's
+  site ±5 sites (region source: `vcFile_site_region`).
   See [Manual curation → Probe map window](#probe-map-window).
 - **Cluster annotations** — `1` / `2` / `3` / `4` mark a unit as single / multi / noise /
   axonal.
+- **`irc recurate`** — reopen the GUI from a fresh automatic clustering without the
+  load-vs-recompute prompt, behind a consent dialog that spells out what it discards. See
+  [Starting over from the automatic clustering](#starting-over-from-the-automatic-clustering--irc-recurate).
 
 ### Changed default parameters *(behaviour changes vs upstream)*
 
@@ -266,12 +300,47 @@ direction — and locks the corruption in irreversibly.
 - **Detection thresholds (opt-in, mostly commented in `default.prm`):** a fixed/global/smoothed
   threshold hierarchy (`fUseGlobalThresh`, `fSmoothThresh`, `vcSmoothMethod`, `nSmoothWindow`,
   `nSmoothOverlap`, `smoothSigma`) and `fDiagnosticMode`.
+- **Post-merge (opt-in, both default off ⇒ behaviour unchanged):** `fEnforce_min_count`
+  (apply `min_count` after the automated merge) and `nSpk_max_clu_wav` (cap the spikes used for
+  each cluster-template median; recommended value `10000` if enabled). `nSpk_max_clu_wav` does
+  **not** change merge decisions — merging computes its own similarity from its own 4000-spike
+  subsample — but it does change stored templates, `mrWavCor`, and the SNR/amplitude columns of
+  the quality CSV, so it changes what a curator sees.
+- **Revived:** `fDiscard_count` shipped in every `.prm` for years but was read by **no** `.m`
+  file. It is now live, and only when `fEnforce_min_count = 1`.
 - **Manual GUI:** `vcFile_site_region` (CSV of site→region for the probe map).
 
 `matlab/default.prm` is the authoritative parameter list with inline docs. Per-topic
 documents live alongside the code
 ([CLUSTERING_METHODS.md](matlab/CLUSTERING_METHODS.md),
 [CLASSIX_USAGE.md](matlab/CLASSIX_USAGE.md)) and dated change logs under [`logs/`](logs/).
+
+### Enforcing `min_count`
+
+`min_count` is applied **only** inside `postCluster_`, and `post_merge_` skips `postCluster_`
+entirely for the label-based methods (`kmeans`, `hdbscan`, `isosplit6`, `classix`). Nothing
+downstream substitutes for it — per-site clustering gates on the *site's* spike total, not on each
+label it returns; `S_clu_remove_empty_` removes only **empty** clusters. So on a label-based sort
+`min_count` does nothing, which is why such sorts can end with clusters far below it (measured:
+68 of 661 clusters under a `min_count = 50` setting, the smallest holding 8 spikes).
+
+Set `fEnforce_min_count = 1` to apply it after the automated merge. `fDiscard_count` then picks
+the action:
+
+| Setting | Action on a cluster below `min_count` |
+|---|---|
+| `fDiscard_count = 1` *(prm default)* | move its spikes to noise (`viClu = 0`) — the same semantics the DPC path already had |
+| `fDiscard_count = 0` | **absorb** it into the nearest surviving cluster, losing no spikes |
+
+Absorption uses **centroid distance** (median spike position), not waveform similarity — a
+sub-threshold cluster's mean waveform is noise-dominated — and is capped at `maxDist_site_um`.
+Targets are drawn only from clusters already at or above `min_count`, so there is no chaining and
+the result is order-independent. **A small cluster with no surviving neighbour inside the radius
+is left untouched** — never force-merged, never discarded — and the count is reported.
+
+`fEnforce_min_count` had to be a separate flag because `fDiscard_count` ships as `1` everywhere:
+honouring it directly would have made every existing label-based sort start deleting clusters it
+currently keeps. With `fEnforce_min_count = 0` (the default) the sort is byte-identical to before.
 
 ## Clustering methods
 
@@ -311,6 +380,27 @@ irc manual [path_to_my_param.prm]
 ```
 The cluster waveform view uses a **deferred-edit** workflow: queue merges/deletes, then apply
 them together with `u` (or cancel with `Esc`). Press `h` in the GUI for built-in help.
+
+### Starting over from the automatic clustering — `irc recurate`
+
+`irc manual` asks whether to load the last saved curation or recompute. `irc recurate` is the
+"recompute" answer with no chance of mis-clicking "load":
+
+```
+irc recurate [path_to_my_param.prm]
+```
+
+**This is destructive** and is gated behind an OK/Cancel dialog that names each consequence
+before anything happens: all merges, splits and deletes are discarded; the per-cluster notes
+(`csNote_clu`) are reset — which matters, because a downstream pipeline selecting units by
+`note == 'single'` in the exported `_quality.csv` will see **none** until the sort is curated
+again; and `<prm>_log.mat`, the only record of the curation outside the `_jrc.mat`, is deleted
+(a copy is kept as `<prm>_log.mat.bak_recurate`).
+
+On **label-based** sorts it additionally overwrites `viClu_premerge`, the snapshot
+`recover_from_snapshot.m` restores from — `post_merge_` rewrites that field on every run, and on
+these sorts the value it stores is the *curated* labelling rather than a clean automatic baseline.
+The dialog says so when it applies.
 
 ### Keyboard shortcuts (cluster waveform view)
 
@@ -352,7 +442,11 @@ cluster's peak-to-peak amplitude. That window has its own controls:
 | Key | Action |
 |---|---|
 | `c` | Cycle the site labels: **channel #** → **site #** → **region** |
+| `v` | Toggle the box **colour** source: amplitude (Vpp) ↔ region — independently of the label mode |
+| `b` | Toggle **zoom**: the selected cluster's site ±5 sites ↔ the whole shank (default) |
 | `h` | Help |
+
+`v` is a no-op (with a message) when the recording has no region labels.
 
 In **region** mode the boxes are colour-coded by anatomical region (one colour per region).
 Region labels are read from a CSV named by the `vcFile_site_region` parameter in your `.prm`:
