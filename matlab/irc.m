@@ -1,6 +1,7 @@
 %--------------------------------------------------------------------------
 % IronClust (irc)
 % James Jun, Flatiron Institute
+% modified by shahaf weiss. MPI for brain research.
 
 function varargout = irc(varargin)
 % Memory-efficient version 
@@ -8695,8 +8696,9 @@ end
 [vnKey, csLabel] = deal(vnKey(1:nRow), csLabel(1:nRow));
 
 csRegion = repmat({'?'}, nSites, 1); % '?' marks sites the CSV does not cover
-% Strategy 1: key = channel number (match against viSite2Chan).
-[vlHit, viLoc] = ismember(viChan(:), vnKey);
+% Strategy 1: key = 0-based channel number. viSite2Chan is 1-based, so
+% subtract 1 before matching the 0-based CSV key column.
+[vlHit, viLoc] = ismember(viChan(:) - 1, vnKey);
 csRegion(vlHit) = csLabel(viLoc(vlHit));
 % Strategy 2: key = 1-based site index (fill sites still uncovered).
 vlBlank = strcmp(csRegion, '?');
@@ -22034,7 +22036,7 @@ function [vcFile_meta, S_meta, vcFile_gt_mat] = raw2meta_(vcFile_raw)
 %     MC_REC file = "E:\MC_Rack Data\20160415\patch_2_MEA.mcd"
 %     Sample rate = 20000
 %     ADC zero = 32768
-%     El = 0.1042�V/AD
+%     El = 0.1042 V/AD
 %     Streams = El_01;El_02;El_03;El_04;El_05;El_06;El_07;El_08;El_09;El_10;El_11;El_12;El_13;El_14;El_15;El_16;El_17;El_18;El_19;El_20;El_21;El_22;El_23;El_24;El_25;El_26;El_27;El_28;El_29;El_30;El_31;El_32;El_33;El_34;El_35;El_36;El_37;El_38;El_39;El_40;El_41;El_42;El_43;El_44;El_45;El_46;El_47;El_48;El_49;El_50;El_51;El_52;El_53;El_54;El_55;El_56;El_57;El_58;El_59;El_60;El_61;El_62;El_63;El_64;El_65;El_66;El_67;El_68;El_69;El_70;El_71;El_72;El_73;El_74;El_75;El_76;El_77;El_78;El_79;El_80;El_81;El_82;El_83;El_84;El_85;El_86;El_87;El_88;El_89;El_90;El_91;El_92;El_93;El_94;El_95;El_96;El_97;El_98;El_99;El_100;El_101;El_102;El_103;El_104;El_105;El_106;El_107;El_108;El_109;El_110;El_111;El_112;El_113;El_114;El_115;El_116;El_117;El_118;El_119;El_120;El_121;El_122;El_123;El_124;El_125;El_126;El_127;El_128;El_129;El_130;El_131;El_132;El_133;El_134;El_135;El_136;El_137;El_138;El_139;El_140;El_141;El_142;El_143;El_144;El_145;El_146;El_147;El_148;El_149;El_150;El_151;El_152;El_153;El_154;El_155;El_156;El_157;El_158;El_159;El_160;El_161;El_162;El_163;El_164;El_165;El_166;El_167;El_168;El_169;El_170;El_171;El_172;El_173;El_174;El_175;El_176;El_177;El_178;El_179;El_180;El_181;El_182;El_183;El_184;El_185;El_186;El_187;El_188;El_189;El_190;El_191;El_192;El_193;El_194;El_195;El_196;El_197;El_198;El_199;El_200;El_201;El_202;El_203;El_204;El_205;El_206;El_207;El_208;El_209;El_210;El_211;El_212;El_213;El_214;El_215;El_216;El_217;El_218;El_219;El_220;El_221;El_222;El_223;El_224;El_225;El_226;El_227;El_228;El_229;El_230;El_231;El_232;El_233;El_234;El_235;El_236;El_237;El_238;El_239;El_240;El_241;El_242;El_243;El_244;El_245;El_246;El_247;El_248;El_249;El_250;El_251;El_252;El_253;El_254;El_255;El_256
 %     EOH
 %     '
