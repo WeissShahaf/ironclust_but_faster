@@ -71,9 +71,16 @@ for iRow = 1:nRow
         iRow, nRow, iMode, maxCor, S_clu2.nClu, vlSync(iRow), sec);
 end
 
+% Restore the in-memory cache to the on-disk state. load_cached_ reuses UserData for the same
+% .prm whenever S_clu is non-empty (irc.m:1149-1171) instead of reloading from disk, so leaving
+% the last swept (unsaved) result here would make a later irc('manual'/'auto', prm) in THIS
+% session silently operate on it rather than the disk _jrc.mat. Restoring the baseline keeps the
+% cache valid (no slow reload) and consistent with disk.
+S0.S_clu = S_clu_base; set(0, 'UserData', S0);
+
 tResult = table(viMode, vrCor, vnClu, vlSync, vrSec, ...
     'VariableNames', {'post_merge_mode','maxWavCor','nClu','synced','sec'});
-fprintf('\n=== sweep done (nothing saved) ===\n');
+fprintf('\n=== sweep done (nothing saved; in-memory cache restored to disk state) ===\n');
 disp(tResult);
 end %func
 
