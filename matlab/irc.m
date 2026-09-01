@@ -248,6 +248,8 @@ switch lower(vcCmd)
         describe_(P.vcFile_prm);
     case {'auto', 'auto-verify', 'auto-manual', 'auto-validate', 'merge', 'merge-validate', 'merge-manual'}
         auto_(P); describe_(P.vcFile_prm);
+    case {'reset-to-premerge', 'reset-premerge'}
+        auto_(P, 1); describe_(P.vcFile_prm);
     case 'manual-test'
         manual_(P, 'debug'); manual_test_(P); return;          
     case 'manual-test-menu'
@@ -17799,8 +17801,14 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S0 = auto_(P)
-if get_set_(P, 'fRepeat_clu', 0) || ~is_sorted_(P) 
+function S0 = auto_(P, fReset_premerge)
+% fReset_premerge (default 0): 'auto' re-merges on TOP of the current viClu and compounds.
+% 'reset-to-premerge' passes 1 to re-merge from the RAW pre-cluster baseline (viClu_premerge)
+% so a changed post_merge_mode/maxWavCor is applied from scratch, not stacked on prior merges.
+% It DISCARDS curation (like a fresh auto). post_merge_ re-stores viClu_premerge from the reset
+% viClu (irc.m ~3973) before merging, so repeating this is idempotent w.r.t. the baseline.
+if nargin<2, fReset_premerge = 0; end
+if get_set_(P, 'fRepeat_clu', 0) || ~is_sorted_(P)
     S0 = sort_(P);
     return;
 end
@@ -17808,6 +17816,25 @@ end
 [S0, P] = load_cached_(P); % load cached data or from file if exists
 S_clu = get_(S0, 'S_clu');
 S_clu.P = P;
+
+if fReset_premerge
+    if ~isfield(S_clu, 'viClu_premerge') || isempty(S_clu.viClu_premerge)
+        error('reset-to-premerge: S_clu.viClu_premerge is absent/empty -- re-sort instead (irc sort).');
+    end
+    nClu_raw = double(max(S_clu.viClu_premerge(:)));
+    nClu_cur = double(max(S_clu.viClu(:)));
+    fprintf('reset-to-premerge: viClu <- viClu_premerge (merged nClu=%d -> raw baseline nClu=%d); curation discarded.\n', ...
+        nClu_cur, nClu_raw);
+    % Heuristic: a label-based sort over-segments, so the raw baseline should hold MANY more
+    % clusters than the merged result. If not, viClu_premerge was likely overwritten by a prior
+    % auto/recurate (rewritten on every post_merge_) -> the baseline may not be the original labels.
+    if nClu_raw <= nClu_cur * 1.05
+        fprintf(2, ['WARNING: viClu_premerge (nClu=%d) is not larger than the merged viClu (nClu=%d). ', ...
+            'It may have been overwritten by a prior auto/recurate; the baseline may not be the ', ...
+            'original clustering. If unsure, run a full irc(''sort'') instead.\n'], nClu_raw, nClu_cur);
+    end
+    S_clu.viClu = S_clu.viClu_premerge;
+end
 
 t_automerge = tic;
 fprintf('Automatic merging...\n');

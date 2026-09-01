@@ -402,6 +402,33 @@ On **label-based** sorts it additionally overwrites `viClu_premerge`, the snapsh
 these sorts the value it stores is the *curated* labelling rather than a clean automatic baseline.
 The dialog says so when it applies.
 
+### Re-running the auto-merge from the raw baseline — `irc reset-to-premerge`
+
+`irc auto` re-runs the automated post-merge **on top of the current `viClu`** — i.e. on the
+already-merged (and any curated) clustering — so it *compounds* merges. To retune the merge
+(`post_merge_mode`, `maxWavCor`, …) you usually want it applied from scratch instead of stacked on
+prior merges. `irc reset-to-premerge` (alias `irc reset-premerge`) does that without a full re-sort:
+
+```
+irc reset-to-premerge [path_to_my_param.prm]
+```
+
+It resets `viClu` to the raw pre-merge baseline (`viClu_premerge`), re-runs `post_merge_` with the
+current `.prm` parameters, and saves — reusing the detection/feature/kNN caches, so it is fast
+(minutes, no re-detect/re-cluster). Like `irc auto`/`irc recurate` **it overwrites the `_jrc.mat`
+and discards curation** (a `.bak` is kept). It is idempotent: `post_merge_` re-stores
+`viClu_premerge` from the reset `viClu`, so repeating it always starts from the same baseline. It
+errors if `viClu_premerge` is absent and warns if that snapshot looks like it was already
+overwritten by a prior `auto`/`recurate` (see the note above).
+
+> **Merge knobs on label-based sorts (`isosplit`/`kmeans`/`hdbscan`/`classix`).** `post_merge_mode0`
+> is read only inside `postCluster_`, which these sorts **skip**, so it has **no effect** — the merge
+> is governed by the scalar `post_merge_mode` (waveform template merge; mode `17` compares clusters
+> across sites via `clu_wave_similarity_paged`, mode `1` only same-site), the `maxWavCor` threshold,
+> and the automatic cross-site `post_merge_wav4_` pass. To iterate these quickly **without** writing
+> to disk, `matlab/sweep_post_merge.m` re-runs `post_merge_` in memory over a list of
+> `[post_merge_mode, maxWavCor]` rows from the raw baseline and prints the resulting cluster counts.
+
 ### Keyboard shortcuts (cluster waveform view)
 
 | Key | Action |

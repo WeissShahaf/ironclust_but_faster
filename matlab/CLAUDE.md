@@ -404,6 +404,40 @@ healthy: kernel 31.2 s → 21.6 s (−31%), `isequaln` with the pre-change outpu
 post-condition fails — `merge_small_verify_`, following `delete_clu_`'s pattern. It checks the
 invariant by content and, for the absorb mode, that no spike was lost.
 
+### `irc reset-to-premerge` — re-merge from the raw baseline without a re-sort (2026-09-01)
+
+`irc('reset-to-premerge', prm)` (alias `reset-premerge`) is `auto_` with **one** change: before
+`post_merge_`, it resets `S_clu.viClu = S_clu.viClu_premerge`. Plain `irc auto` re-merges on top of
+the current (already-merged/curated) `viClu` and **compounds**; reset-to-premerge re-applies the merge
+from the raw pre-cluster baseline, so a changed `post_merge_mode`/`maxWavCor` takes effect from scratch
+using only the cached detect/feature/kNN artifacts (minutes, no re-detect/re-cluster).
+
+- Implemented as an optional 2nd arg `auto_(P, fReset_premerge)` (default 0 ⇒ existing `auto_(P)`
+  byte-identical). Dispatch case at irc.m ~252 calls `auto_(P, 1)`. **It saves** (atomic `save0_`,
+  keeps `.bak`) and **discards curation**, like `auto`/`recurate`.
+- **Idempotent w.r.t. the baseline:** `post_merge_` re-stores `viClu_premerge` from the reset `viClu`
+  (irc.m ~3973) *before* merging, so repeating it always restarts from the same raw labels.
+- Guards: **errors** if `viClu_premerge` is absent/empty; **warns** if `nClu(premerge) ≤ 1.05·nClu(current)`
+  — a label-based sort over-segments, so a baseline that isn't much larger than the merged result was
+  probably overwritten by a prior `auto`/`recurate` (see the "not write-once" correction above).
+- **Overwrites in place on purpose — do NOT add a "new file" mode.** The whole toolchain derives the
+  `_jrc.mat` path from the `.prm` name (`strrep(vcFile_prm,'.prm','_jrc.mat')`), so a side-written
+  `_jrc.mat` is an orphan no `irc` command loads. Keep multiple results by copying the `.prm`.
+
+**Tuning the merge on label-based sorts (`isosplit`/`kmeans`/`hdbscan`/`classix`).** `post_merge_mode0`
+is read **only** inside `assign_clu_count_`, whose sole caller `postCluster_` these sorts **skip**
+(irc.m:3965 gates on `~fLabelClu`; `fet2clu_` also calls `post_merge_(…,0)`), so `post_merge_mode0` is
+**inert** — verified by tracing every `postCluster_` call site. The merge is governed by: the **scalar**
+`post_merge_mode` (mode `1` = same-peak-site `templateMatch_post_` only; mode `8` runs the *shape-blind*
+`post_merge_knn1` first, then same-site templateMatch; mode `17` = cross-site drift-aware
+`clu_wave_similarity_paged` → templateMatch), the `maxWavCor` threshold, and the automatic cross-site
+`post_merge_wav4_` pass (the `fLabelClu && 0<maxWavCor<1` branch at irc.m ~4008). Over-merging of
+*different* shapes is typically `post_merge_knn1` (mode 8, shape-blind, `out_in_ratio_merge` default 1/8);
+under-merging of *similar* shapes is the same-site restriction of mode 1/8 plus a strict `maxWavCor`.
+`matlab/sweep_post_merge.m` re-runs `post_merge_` **in memory** (no save) over a list of
+`[post_merge_mode, maxWavCor]` rows from the raw baseline and prints resulting cluster counts + sync — use
+it to pick settings, then bake in with one `reset-to-premerge` (or `irc sort`).
+
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)
 - Page-based loading for large files
