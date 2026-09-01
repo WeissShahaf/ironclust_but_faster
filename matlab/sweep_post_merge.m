@@ -1,4 +1,4 @@
-function tResult = sweep_post_merge(vcFile_prm, mnSweep)
+function tResult = sweep_post_merge(vcFile_prm, mnSweep, isi_thresh)
 % In-memory post-merge parameter sweep for LABEL-BASED sorts (isosplit/kmeans/hdbscan/classix).
 % For each row, resets viClu to the raw pre-merge baseline (viClu_premerge) and re-runs
 % post_merge_ with the given [post_merge_mode, maxWavCor]. NOTHING is written to disk.
@@ -7,10 +7,24 @@ function tResult = sweep_post_merge(vcFile_prm, mnSweep)
 % compounds. To compare merge settings fairly they must all start from the same baseline --
 % the raw isosplit labels stored in S_clu.viClu_premerge (irc.m:3973).
 %
+% Picking a winner WITHOUT the GUI: nClu alone can't tell a good merge from a bad one, so each
+% row also reports the two quantities that flag the two failure modes, from fields post_merge_
+% already computes:
+%   nRefrac  = # units with ISI refractory-violation ratio > isi_thresh (S_clu.vrIsiRatio_clu).
+%              OVER-merging two neurons into one creates refractory violations -> want this LOW.
+%   nDup     = # cluster pairs still split with waveform corr >= maxWavCor (upper tri of
+%              S_clu.mrWavCor). UNDER-merging leaves near-duplicates -> want this LOW.
+%              NOTE: mrWavCor on label sorts is same-peak-site biased, so nDup is a floor on
+%              cross-site duplicates, not the full count -- use it as a relative signal.
+%   medIsi   = median ISI-violation ratio across units (overall contamination trend).
+% Rank by: fewest nRefrac and fewest nDup at a biologically plausible nClu. Then bake in the
+% winner with irc('reset-to-premerge') and eyeball a few in irc('manual').
+%
 % Usage:
 %   irc('addpath');                              % ensure irc.m is on the path
 %   sweep_post_merge(prm)                        % default sweep (mode 8/17 x maxWavCor 0.985/0.97)
 %   sweep_post_merge(prm, [17 0.985; 17 0.97; 17 0.96; 8 0.985])
+%   sweep_post_merge(prm, [], 0.10)              % stricter refractory threshold
 %
 % Each row: [post_merge_mode (scalar), maxWavCor]. Returns a table of results.
 
@@ -20,6 +34,7 @@ if nargin < 2 || isempty(mnSweep)
                17, 0.970;
                17, 0.960 ];
 end
+if nargin < 3 || isempty(isi_thresh), isi_thresh = 0.2; end   % ISI-violation ratio "bad" cutoff
 
 % ---- load once (the slow part) --------------------------------------------
 So = irc('call', 'loadParam_', {vcFile_prm, 0}, 2);  P = So.out1;
@@ -48,7 +63,7 @@ end
 
 % ---- sweep -----------------------------------------------------------------
 nRow = size(mnSweep,1);
-[viMode, vrCor, vnClu, vlSync, vrSec] = deal(zeros(nRow,1));
+[viMode, vrCor, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec] = deal(zeros(nRow,1));
 for iRow = 1:nRow
     iMode = mnSweep(iRow,1);  maxCor = mnSweep(iRow,2);
     S_clu = S_clu_base;
@@ -63,12 +78,17 @@ for iRow = 1:nRow
     Sm = irc('call', 'post_merge_', {S_clu, P}, 2);  S_clu2 = Sm.out1;
     sec = toc(t1);
 
+    [nRefrac, medIsi] = isi_quality_(S_clu2, isi_thresh);   % over-merge signal
+    nDup = dup_pairs_(S_clu2, maxCor);                       % under-merge signal
     [viMode(iRow), vrCor(iRow)] = deal(iMode, maxCor);
-    vnClu(iRow)  = S_clu2.nClu;
-    vlSync(iRow) = is_synced_(S_clu2);
-    vrSec(iRow)  = sec;
-    fprintf('  [%d/%d] mode=%2d  maxWavCor=%.3f  ->  nClu=%d  synced=%d  (%.1fs)\n', ...
-        iRow, nRow, iMode, maxCor, S_clu2.nClu, vlSync(iRow), sec);
+    vnClu(iRow)    = S_clu2.nClu;
+    vnRefrac(iRow) = nRefrac;
+    vnDup(iRow)    = nDup;
+    vrMedIsi(iRow) = medIsi;
+    vlSync(iRow)   = is_synced_(S_clu2);
+    vrSec(iRow)    = sec;
+    fprintf('  [%d/%d] mode=%2d  maxWavCor=%.3f  ->  nClu=%d  nRefrac=%d  nDup=%d  medIsi=%.3f  synced=%d  (%.1fs)\n', ...
+        iRow, nRow, iMode, maxCor, S_clu2.nClu, nRefrac, nDup, medIsi, vlSync(iRow), sec);
 end
 
 % Restore the in-memory cache to the on-disk state. load_cached_ reuses UserData for the same
@@ -78,10 +98,32 @@ end
 % cache valid (no slow reload) and consistent with disk.
 S0.S_clu = S_clu_base; set(0, 'UserData', S0);
 
-tResult = table(viMode, vrCor, vnClu, vlSync, vrSec, ...
-    'VariableNames', {'post_merge_mode','maxWavCor','nClu','synced','sec'});
+tResult = table(viMode, vrCor, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec, ...
+    'VariableNames', {'post_merge_mode','maxWavCor','nClu','nRefrac','nDup','medIsi','synced','sec'});
 fprintf('\n=== sweep done (nothing saved; in-memory cache restored to disk state) ===\n');
+fprintf('rank by: LOW nRefrac (less over-merge) + LOW nDup (less under-merge) at a plausible nClu.\n');
 disp(tResult);
+end %func
+
+
+% --- over-merge signal: units whose refractory-violation ratio exceeds isi_thresh ----------
+function [nRefrac, medIsi] = isi_quality_(S_clu, isi_thresh)
+[nRefrac, medIsi] = deal(NaN);
+if isfield(S_clu,'vrIsiRatio_clu') && ~isempty(S_clu.vrIsiRatio_clu)
+    vr = double(S_clu.vrIsiRatio_clu(:)); vr = vr(isfinite(vr));
+    if ~isempty(vr), nRefrac = sum(vr > isi_thresh); medIsi = median(vr); end
+end
+end %func
+
+% --- under-merge signal: cluster pairs left split with waveform corr >= maxCor --------------
+% Upper triangle of S_clu.mrWavCor (same-peak-site biased on label sorts -> a floor, not the
+% full cross-site duplicate count). NaN/zero off-diagonals never exceed a >0 maxCor.
+function nDup = dup_pairs_(S_clu, maxCor)
+nDup = NaN;
+if isfield(S_clu,'mrWavCor') && ~isempty(S_clu.mrWavCor) && maxCor > 0 && maxCor < 1
+    M = double(S_clu.mrWavCor); M = triu(M, 1);
+    nDup = sum(M(:) >= maxCor);
+end
 end %func
 
 
