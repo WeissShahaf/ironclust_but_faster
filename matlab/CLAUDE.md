@@ -442,6 +442,40 @@ under-merging of *similar* shapes is the same-site restriction of mode 1/8 plus 
 `[post_merge_mode, maxWavCor]` rows from the raw baseline and prints resulting cluster counts + sync — use
 it to pick settings, then bake in with one `reset-to-premerge` (or `irc sort`).
 
+### Which default parameters DISCARD data — audit (2026-09-02)
+
+`default.prm` comments describe intent, not behaviour: two parameters have been found documented as
+live while read by no code (`fDiscard_count`, dead for years; `thresh_mad_clu`, below). **Trace a
+parameter to its reader before tuning it or quoting its comment.** Result of tracing every
+data-discarding default:
+
+| parameter | default | discards | on by default? |
+|---|---|---|---|
+| `blank_thresh` | `[8]` | **spikes, at detection** | **yes** — deliberate, keep |
+| `fRemove_duplicate` | `1` | **whole clusters** | **yes** — deliberate, keep |
+| `fDiscard_count` | `0` *(was 1)* | spikes → `viClu=0` | no (gated by `fEnforce_min_count=0`) |
+| `spkRefrac_merge_ms` | `.5` | a few spikes per merge | yes — inherent to merging |
+| `thresh_mad_clu` | `7.5` | **nothing — dead** | n/a |
+
+- **`blank_thresh = [8]` blanks 5 ms windows and those spikes are never detected.** `car_reject_`
+  (irc.m:1915) bins the common reference by `blank_period_ms` and rejects windows over 8 MAD;
+  `detect_spikes_` (irc.m:13402) keeps only spikes inside surviving windows. Upstream of everything —
+  no later stage can recover them. Prints `Rejecting X % of time due to motion`; **read that line.**
+  Note irc.m's own fallbacks are `[]` = off (`struct_default_` irc.m:1688, `get_set_` irc.m:1917) and
+  the MountainSort importer maps `mask_out_artifacts=false` → `[]` (irc.m:27022), so `default.prm`
+  deliberately overrides the library default to ON. **Operator decision 2026-09-02: keep `8`** — it
+  rarely triggers on non-artifact events. Do not "fix" it to `[]`.
+- **`fRemove_duplicate = 1` deletes whole clusters** whose detection site is farther than
+  `maxDist_site_um` from their min-waveform site (irc.m:4437-4444, inside `post_merge_wav_`, via
+  `S_clu_keep_`). Prints `N duplicate units removed`. **Operator decision 2026-09-02: keep.**
+- **`fDiscard_count` default flipped `1` → `0` (absorb) on 2026-09-02**, in the `get_set_` fallback
+  and all three shipped `.prm` files — see the `min_count` section above. **An existing `.prm` on disk
+  still carries `1`**: the file beats the default, so read the file before setting
+  `fEnforce_min_count = 1` on an old parameter set.
+- **`thresh_mad_clu` is DEAD.** Its only reader is `S_clu_cleanup_` (irc.m:19609), which has **no
+  caller** in `irc.m` — the Mahalanobis outlier removal its comment promises never runs. Tuning it
+  does nothing.
+
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)
 - Page-based loading for large files
@@ -506,4 +540,9 @@ kilosort('rezToPhy', ...)  % Export to Phy format
 - `qqFactor`: Detection threshold multiplier
 - `spkLim_ms`: Spike waveform time window
 - `freqLim`: Bandpass filter frequency limits
-- `post_merge_mode0`: Automated merging modes
+- `post_merge_mode` (**scalar**) + `maxWavCor`: the automated merge. On label-based sorts
+  (`kmeans`/`hdbscan`/`isosplit`/`classix`) these are the ONLY merge knobs —
+  **`post_merge_mode0` is inert there**, read only inside `assign_clu_count_` ← `postCluster_`,
+  which those sorts skip. See the `reset-to-premerge` section above.
+- `blank_thresh`: artifact blanking — ON by default and it drops spikes at detection. See the
+  data-discarding audit above.
