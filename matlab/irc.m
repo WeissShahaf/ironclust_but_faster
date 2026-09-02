@@ -17838,7 +17838,28 @@ end
 
 t_automerge = tic;
 fprintf('Automatic merging...\n');
-[S_clu, S0] = post_merge_(S_clu, P);
+% post_merge_chain (optional .prm field): an Nx2 [post_merge_mode maxWavCor; ...] matrix applied
+% in sequence, so a chained merge picked with sweep_post_merge (e.g. [4 .985; 17 .985]) can be
+% baked in -- post_merge_mode alone is scalar and cannot express a chain. Empty/absent (default)
+% => the ordinary single-stage post_merge_ using post_merge_mode + maxWavCor (byte-identical to
+% before). Each stage re-runs post_merge_ on the previous stage's result; stages compound, no
+% reset between them. Intended with fReset_premerge=1 (reset-to-premerge) so the chain starts
+% from the raw baseline; on plain 'auto' it chains from the current viClu (compounds, like auto).
+mnChain = get_set_(P, 'post_merge_chain', []);
+if isempty(mnChain)
+    [S_clu, S0] = post_merge_(S_clu, P);
+else
+    fprintf('post_merge_chain: %d stages\n', size(mnChain,1));
+    for iStage = 1:size(mnChain,1)
+        P.post_merge_mode  = mnChain(iStage,1);   % scalar (DI-18)
+        P.post_merge_mode0 = mnChain(iStage,1);   % inert on label sorts; keep consistent
+        P.maxWavCor        = mnChain(iStage,2);
+        S_clu.P = P;
+        fprintf('  stage %d/%d: post_merge_mode=%d maxWavCor=%.3g\n', ...
+            iStage, size(mnChain,1), mnChain(iStage,1), mnChain(iStage,2));
+        [S_clu, S0] = post_merge_(S_clu, P);
+    end
+end
 t_automerge = toc(t_automerge);
 fprintf('\n\ttook %0.1fs\n', t_automerge);
 S0.runtime_sort = S0.S_clu.t_runtime + t_automerge;

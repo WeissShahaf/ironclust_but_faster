@@ -26,7 +26,12 @@ function tResult = sweep_post_merge(vcFile_prm, mnSweep, isi_thresh)
 %   sweep_post_merge(prm, [17 0.985; 17 0.97; 17 0.96; 8 0.985])
 %   sweep_post_merge(prm, [], 0.10)              % stricter refractory threshold
 %
-% Each row: [post_merge_mode (scalar), maxWavCor]. Returns a table of results.
+%   % CHAINS (sequential multi-stage merges): pass a CELL, each element an Nx2
+%   % [mode maxWavCor; ...] applied in order from ONE baseline reset (no reset between stages).
+%   sweep_post_merge(prm, {[17 .985; 4 .985], [4 .985; 17 .985]})   % 17->4 vs 4->17
+%
+% Numeric input: each row is a single-stage experiment [post_merge_mode (scalar), maxWavCor].
+% Cell input: each element is a chain of stages. Returns a table of results.
 
 if nargin < 2 || isempty(mnSweep)
     mnSweep = [ 8, 0.985;      % current setting (baseline for comparison)
@@ -61,34 +66,51 @@ if nClu_raw <= nClu_current * 1.05
         '  original isosplit labels. If unsure, do one full irc(''sort'') and sweep on that fresh file.\n']);
 end
 
-% ---- sweep -----------------------------------------------------------------
-nRow = size(mnSweep,1);
-[viMode, vrCor, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec] = deal(zeros(nRow,1));
-for iRow = 1:nRow
-    iMode = mnSweep(iRow,1);  maxCor = mnSweep(iRow,2);
-    S_clu = S_clu_base;
-    S_clu.viClu = S_clu_base.viClu_premerge;      % reset to raw baseline
-    P.post_merge_mode  = iMode;                   % MUST be scalar (DI-18)
-    P.post_merge_mode0 = iMode;                   % inert on label-based sorts; keep consistent
-    P.maxWavCor        = maxCor;
-    S_clu.P = P;
-    S0.S_clu = S_clu; set(0,'UserData',S0);        % expose reset baseline to internal get0_
+% ---- normalize to a cell of chains (each chain = Nx2 [mode maxWavCor] stages) --------------
+% Numeric matrix -> each row is a single-stage experiment. Cell -> each element a chain that is
+% applied in sequence from ONE baseline reset (stages compound; NO reset between stages).
+% Chaining runs post_merge_ more than once, which is not its designed single-shot flow -- treat
+% it as experimental. If a later stage errors it is likely a field the previous stage dropped.
+if iscell(mnSweep)
+    ccStages = mnSweep(:);
+else
+    ccStages = cell(size(mnSweep,1),1);
+    for i = 1:size(mnSweep,1), ccStages{i} = mnSweep(i,:); end
+end
+fChain = any(cellfun(@(x)size(x,1) > 1, ccStages));   % any multi-stage experiment?
+nExp = numel(ccStages);
 
+% ---- sweep -----------------------------------------------------------------
+[viMode, vrCor, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec] = deal(nan(nExp,1));
+csChain = cell(nExp,1);
+for iExp = 1:nExp
+    mnStages = ccStages{iExp};
+    S_clu = S_clu_base;
+    S_clu.viClu = S_clu_base.viClu_premerge;      % reset to raw baseline ONCE per experiment
     t1 = tic;
-    Sm = irc('call', 'post_merge_', {S_clu, P}, 2);  S_clu2 = Sm.out1;
+    for iStage = 1:size(mnStages,1)               % apply stages in order (no reset between)
+        P.post_merge_mode  = mnStages(iStage,1);  % scalar (DI-18)
+        P.post_merge_mode0 = mnStages(iStage,1);  % inert on label sorts; keep consistent
+        P.maxWavCor        = mnStages(iStage,2);
+        S_clu.P = P;
+        S0.S_clu = S_clu; set(0,'UserData',S0);    % expose current state to internal get0_
+        Sm = irc('call', 'post_merge_', {S_clu, P}, 2);  S_clu = Sm.out1;
+    end
     sec = toc(t1);
+    S_clu2 = S_clu;
 
     [nRefrac, medIsi] = isi_quality_(S_clu2, isi_thresh);   % over-merge signal
-    nDup = dup_pairs_(S_clu2, maxCor);                       % under-merge signal
-    [viMode(iRow), vrCor(iRow)] = deal(iMode, maxCor);
-    vnClu(iRow)    = S_clu2.nClu;
-    vnRefrac(iRow) = nRefrac;
-    vnDup(iRow)    = nDup;
-    vrMedIsi(iRow) = medIsi;
-    vlSync(iRow)   = is_synced_(S_clu2);
-    vrSec(iRow)    = sec;
-    fprintf('  [%d/%d] mode=%2d  maxWavCor=%.3f  ->  nClu=%d  nRefrac=%d  nDup=%d  medIsi=%.3f  synced=%d  (%.1fs)\n', ...
-        iRow, nRow, iMode, maxCor, S_clu2.nClu, nRefrac, nDup, medIsi, vlSync(iRow), sec);
+    nDup = dup_pairs_(S_clu2, mnStages(end,2));              % under-merge signal (final threshold)
+    csChain{iExp} = chain_str_(mnStages);
+    if size(mnStages,1) == 1, viMode(iExp) = mnStages(1,1); vrCor(iExp) = mnStages(1,2); end
+    vnClu(iExp)    = S_clu2.nClu;
+    vnRefrac(iExp) = nRefrac;
+    vnDup(iExp)    = nDup;
+    vrMedIsi(iExp) = medIsi;
+    vlSync(iExp)   = is_synced_(S_clu2);
+    vrSec(iExp)    = sec;
+    fprintf('  [%d/%d] %-24s ->  nClu=%d  nRefrac=%d  nDup=%d  medIsi=%.3f  synced=%d  (%.1fs)\n', ...
+        iExp, nExp, csChain{iExp}, S_clu2.nClu, nRefrac, nDup, medIsi, vlSync(iExp), sec);
 end
 
 % Restore the in-memory cache to the on-disk state. load_cached_ reuses UserData for the same
@@ -98,11 +120,22 @@ end
 % cache valid (no slow reload) and consistent with disk.
 S0.S_clu = S_clu_base; set(0, 'UserData', S0);
 
-tResult = table(viMode, vrCor, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec, ...
-    'VariableNames', {'post_merge_mode','maxWavCor','nClu','nRefrac','nDup','medIsi','synced','sec'});
+if fChain
+    tResult = table(csChain, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec, ...
+        'VariableNames', {'chain','nClu','nRefrac','nDup','medIsi','synced','sec'});
+else
+    tResult = table(viMode, vrCor, vnClu, vnRefrac, vnDup, vrMedIsi, vlSync, vrSec, ...
+        'VariableNames', {'post_merge_mode','maxWavCor','nClu','nRefrac','nDup','medIsi','synced','sec'});
+end
 fprintf('\n=== sweep done (nothing saved; in-memory cache restored to disk state) ===\n');
 fprintf('rank by: LOW nRefrac (less over-merge) + LOW nDup (less under-merge) at a plausible nClu.\n');
 disp(tResult);
+end %func
+
+% --- "17@0.985 -> 4@0.985" label for a chain of [mode maxWavCor] stages ---------------------
+function s = chain_str_(mn)
+c = arrayfun(@(i)sprintf('%d@%.3g', mn(i,1), mn(i,2)), 1:size(mn,1), 'UniformOutput', 0);
+s = strjoin(c, ' -> ');
 end %func
 
 
