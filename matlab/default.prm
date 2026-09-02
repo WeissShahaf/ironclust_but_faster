@@ -164,7 +164,7 @@ delta_cut = 1.0;            % Cutoff value for the Delta outlier in KNN-based Ro
 knn_merge_thresh = 1;       % Number of spikes shared between two peaks to be merged
 post_merge_mode = 17;       % Automated merging mode. 17 = cross-site drift-aware waveform-similarity merge (clu_wave_similarity_paged -> templateMatch); scalar. Was 1 (same-peak-site only).
 post_merge_mode0 = [12, 17];        % Automated merging mode. Set to 21 to use CLASSIX post-merge
-post_merge_chain = [];      % Optional Nx2 [post_merge_mode maxWavCor; ...] applied in sequence by 'irc auto'/'reset-to-premerge' (e.g. [4 .985; 17 .985] = mode 4 then mode 17). [] = single-stage post_merge_mode+maxWavCor (default). post_merge_mode is scalar and cannot express a chain; this can.
+post_merge_chain = [];      % Optional Nx2 [post_merge_mode maxWavCor; ...] applied in sequence by 'irc auto'/'reset-to-premerge'. [] = single-stage post_merge_mode+maxWavCor (default). post_merge_mode is scalar and cannot express a chain; this can. Pick a chain per recording with sweep_post_merge.m, then bake it in with 'irc reset-to-premerge'. Example that won a sweep on a 385-ch NPX isosplit sort (260320_afm18367): [17 .96; 4 .985] -- shape-based cross-site merge at a loose threshold, then a kNN-overlap pass. Thresholds are recording-specific; do not copy blindly.
 maxWavCor = .965;           % merge if waveform correlation is greater than maxWavCor. Was .985.
 thresh_mad_clu = 7.5;       % This sets the MAD score threshold to remove outlier spikes for each cluster.
 maxCluPerSite = 20;         % Maximum clusters per site allowed if local detrending is used.
