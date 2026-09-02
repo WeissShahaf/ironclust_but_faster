@@ -4479,9 +4479,18 @@ end %func
 % minimum count. set to zero to absorb to the nearest cluster") but was read by NO code --
 % it is given its documented meaning here.
 %
-% OFF BY DEFAULT. fDiscard_count defaults to 1 in every shipped .prm, so honouring it
-% unconditionally would make label-based sorts start DELETING clusters they currently keep.
-% fEnforce_min_count (default 0) is the opt-in; fDiscard_count then selects the action.
+% OFF BY DEFAULT. fEnforce_min_count (default 0) is the opt-in; fDiscard_count then selects the
+% action. The opt-in had to be a separate flag because fDiscard_count historically shipped as 1
+% in every .prm, so honouring it unconditionally would have made label-based sorts start DELETING
+% clusters they currently keep.
+%
+% The DEFAULT ACTION IS ABSORB (fDiscard_count = 0), changed 2026-09-02 -- both the fallback below
+% and the shipped .prm files. Discarding moves spikes to viClu = 0 and they are gone; absorbing
+% only relabels them. A user who turns fEnforce_min_count on is asking to enforce a size floor,
+% not to throw spikes away, so the destructive action must be the one you opt into. Set
+% fDiscard_count = 1 explicitly for the legacy DPC semantics.
+% NOTE: an EXISTING .prm on disk still carries whatever it was generated with -- check the file,
+% not just this default, before enabling fEnforce_min_count on an old parameter set.
 function S_clu = S_clu_merge_small_(S_clu, P)
 if ~get_set_(P, 'fEnforce_min_count', 0), return; end   % default: byte-identical to before
 % An explicitly EMPTY min_count means "no count filtering", matching postCluster_ (irc.m ~11816
@@ -4491,7 +4500,7 @@ if ~get_set_(P, 'fEnforce_min_count', 0), return; end   % default: byte-identica
 if isfield(P, 'min_count') && isempty(P.min_count), return; end
 min_count = get_set_(P, 'min_count', 30);
 if min_count < 2, return; end
-fDiscard = get_set_(P, 'fDiscard_count', 1);
+fDiscard = get_set_(P, 'fDiscard_count', 0);   % default: absorb (lossless), not discard
 
 % Rollback snapshot. This function REWRITES viClu, which is the field the desync family of bugs
 % corrupts, so it follows delete_clu_'s reference pattern: snapshot, apply, verify CONTENT, and

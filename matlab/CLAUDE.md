@@ -349,16 +349,20 @@ threshold, smallest 8 spikes**, holding 1221 spikes (0.01% of assigned).
 - **`fEnforce_min_count`** (default **0** = off ⇒ `post_merge_` byte-identical to before) enables
   `S_clu_merge_small_`, called just before `post_merge_wav_` (irc.m:4018) so every per-cluster
   field downstream is rebuilt against the final cluster set.
-- With it on, **`fDiscard_count`** picks the action: `1` = spikes to noise (`viClu = 0`, the DPC
-  semantics), `0` = **absorb into the nearest surviving cluster** by centroid distance
-  (median `mrPos_spk`, the same metric `post_merge_wav4_` uses — a sub-threshold cluster's mean
-  waveform is noise-dominated), capped at `maxDist_site_um`.
+- With it on, **`fDiscard_count`** picks the action: `0` (**default since 2026-09-02**) = **absorb
+  into the nearest surviving cluster** by centroid distance (median `mrPos_spk`, the same metric
+  `post_merge_wav4_` uses — a sub-threshold cluster's mean waveform is noise-dominated), capped at
+  `maxDist_site_um`; `1` = spikes to noise (`viClu = 0`, the legacy DPC semantics, **lossy**).
+  The default was flipped 1→0 in the `get_set_` fallback and all three shipped `.prm` files:
+  enabling a size floor asks for a minimum, not for spikes to be thrown away, so the lossy action
+  must be opt-in. **An existing `.prm` still carries `fDiscard_count = 1`** — read the file, not
+  the default, before turning the floor on for an old parameter set.
 - Targets are drawn only from clusters **at or above** `min_count`, so there is no chaining and the
   result is order-independent. A small cluster with no surviving neighbour in range is **left
   alone** — never force-merged, never discarded.
 - Strict `<`, unlike `S_clu_remove_count_`'s `<=`. `fEnforce_min_count` had to be a *separate* flag
-  because `fDiscard_count` ships as `1` everywhere: honouring it directly would have made every
-  existing label-based sort start deleting clusters it currently keeps.
+  because `fDiscard_count` historically shipped as `1` everywhere: honouring it directly would have
+  made every existing label-based sort start deleting clusters it currently keeps.
 - Verified on the real recording (`260324_afm18349`), both standalone and through a full in-memory
   `post_merge_`: off ⇒ `viClu` byte-identical; absorb ⇒ 68 clusters folded in, min size 8→61, none
   left below threshold, cache/`viClu` in sync, all per-cluster fields sized to the new `nClu`.

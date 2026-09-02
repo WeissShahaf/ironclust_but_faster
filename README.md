@@ -329,8 +329,8 @@ the action:
 
 | Setting | Action on a cluster below `min_count` |
 |---|---|
-| `fDiscard_count = 1` *(prm default)* | move its spikes to noise (`viClu = 0`) — the same semantics the DPC path already had |
-| `fDiscard_count = 0` | **absorb** it into the nearest surviving cluster, losing no spikes |
+| `fDiscard_count = 0` *(default)* | **absorb** it into the nearest surviving cluster, losing no spikes |
+| `fDiscard_count = 1` | move its spikes to noise (`viClu = 0`) — the legacy DPC semantics; **those spikes are gone** |
 
 Absorption uses **centroid distance** (median spike position), not waveform similarity — a
 sub-threshold cluster's mean waveform is noise-dominated — and is capped at `maxDist_site_um`.
@@ -338,9 +338,17 @@ Targets are drawn only from clusters already at or above `min_count`, so there i
 the result is order-independent. **A small cluster with no surviving neighbour inside the radius
 is left untouched** — never force-merged, never discarded — and the count is reported.
 
-`fEnforce_min_count` had to be a separate flag because `fDiscard_count` ships as `1` everywhere:
-honouring it directly would have made every existing label-based sort start deleting clusters it
-currently keeps. With `fEnforce_min_count = 0` (the default) the sort is byte-identical to before.
+`fEnforce_min_count` had to be a separate flag because `fDiscard_count` historically shipped as `1`
+everywhere: honouring it directly would have made every existing label-based sort start deleting
+clusters it currently keeps. With `fEnforce_min_count = 0` (the default) the sort is byte-identical
+to before.
+
+**`fDiscard_count` now defaults to `0` (absorb), changed 2026-09-02** — in the code fallback and in
+`default.prm` / `rhs32_template.prm` / `sample_sample_merge.prm`. Turning on a size floor is a
+request to enforce a minimum, not to throw spikes away, so the lossy action is the one you opt into.
+This changes nothing unless `fEnforce_min_count = 1`. **An existing `.prm` on disk still carries the
+old `fDiscard_count = 1`** — check the file, not just the default, before enabling the floor on an
+old parameter set.
 
 ## Clustering methods
 
