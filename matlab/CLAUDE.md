@@ -421,12 +421,43 @@ using only the cached detect/feature/kNN artifacts (minutes, no re-detect/re-clu
   keeps `.bak`) and **discards curation**, like `auto`/`recurate`.
 - **Idempotent w.r.t. the baseline:** `post_merge_` re-stores `viClu_premerge` from the reset `viClu`
   (irc.m ~3973) *before* merging, so repeating it always restarts from the same raw labels.
-- Guards: **errors** if `viClu_premerge` is absent/empty; **warns** if `nClu(premerge) ≤ 1.05·nClu(current)`
-  — a label-based sort over-segments, so a baseline that isn't much larger than the merged result was
-  probably overwritten by a prior `auto`/`recurate` (see the "not write-once" correction above).
+- Guards: **errors** if `viClu_premerge` is absent/empty; and if `nClu(premerge) ≤ 1.05·nClu(current)`
+  it **stops and asks** (`confirm_premerge_baseline_`, 2026-09-04 — it used to only print to stderr
+  and proceed). A label-based sort over-segments, so a baseline that isn't much larger than the merged
+  result was probably overwritten by a prior `auto`/`recurate` (see the "not write-once" correction
+  above) — that is exactly when a full re-sort is warranted, and this command overwrites in place.
+  Cancel returns **before anything is computed or written**. Buttons are **OK/Cancel, not Yes/No**,
+  for the same reason as `confirm_recurate_`: `questdlg_` returns `'Yes'` whenever `fDebug_ui==1`,
+  which matches neither button and so falls through to Cancel — a headless run aborts instead of
+  silently overwriting a sort whose baseline is unreliable.
 - **Overwrites in place on purpose — do NOT add a "new file" mode.** The whole toolchain derives the
   `_jrc.mat` path from the `.prm` name (`strrep(vcFile_prm,'.prm','_jrc.mat')`), so a side-written
   `_jrc.mat` is an orphan no `irc` command loads. Keep multiple results by copying the `.prm`.
+
+**Is answering `No` to `irc manual`'s "Load last saved or recompute?" the same as
+`reset-to-premerge`? Only on DPC sorts.** `manual_`'s `'no'` branch runs
+`post_merge_(S0.S_clu, P)` on the **loaded** `viClu` then `clear_log_`; it never touches
+`viClu_premerge`, and it does **not** write the `_jrc.mat` (only the GUI's exit prompt does).
+What that means depends entirely on `fLabelClu`:
+
+| | `No` at `irc manual` | `irc reset-to-premerge` |
+|---|---|---|
+| starting `viClu` | the loaded (curated) one | reset to `viClu_premerge` first |
+| **DPC sorts** (`drift-knn`, `spacetime`, …) | `postCluster_` **`rmfield`s `viClu`** (irc.m:11933-11935) and rebuilds it from `rho`/`delta`/`icl`, so curation is discarded and the merge restarts from the auto clustering | same `rmfield` **discards the reset** — the `viClu_premerge` assignment is a no-op here |
+| ⇒ clustering result | **identical** to reset-to-premerge | identical to `No` |
+| **label sorts** (`isosplit`/`kmeans`/`hdbscan`/`classix`) | `postCluster_` is **skipped** ⇒ merges **on top of curated labels, compounding** | true reset to the raw baseline |
+| ⇒ clustering result | **not a reset** | the reset |
+| `<prm>_log.mat` | deleted (`clear_log_`) | deleted (`clear_log_`) |
+| `csNote_clu` | reset by `post_merge_` | reset by `post_merge_` |
+| writes `_jrc.mat` | no — only if you save on GUI exit | **yes, in place**, atomically, keeps `.bak` |
+| opens a GUI | yes | no |
+
+**So on a label-based sort, answering `No` is actively harmful**: it merges on top of curated
+labels *and* `post_merge_`'s unconditional `S_clu.viClu_premerge = S_clu.viClu` (irc.m ~3975) then
+overwrites the baseline with those curated labels — permanently disabling `reset-to-premerge` and
+`recover_from_snapshot` for that file. On a DPC sort `No` is harmless (the baseline it stores is a
+genuine regenerated auto clustering). `irc recurate` is the same `'no'` branch behind a consent
+dialog; use it rather than clicking `No`.
 
 **Tuning the merge on label-based sorts (`isosplit`/`kmeans`/`hdbscan`/`classix`).** `post_merge_mode0`
 is read **only** inside `assign_clu_count_`, whose sole caller `postCluster_` these sorts **skip**
@@ -519,9 +550,65 @@ kilosort('rezToPhy', ...)  % Export to Phy format
 - Lock files prevent concurrent access
 
 ### GUI Components
-- Main manual curation GUI: `irc_gui.m`
-- Figure handles stored in `S0` structure
-- Keyboard shortcuts documented in help menu
+- Manual curation GUI: **`manual_` → `figures_manual_` in `irc.m`**, not `irc_gui.m` (that is an
+  unrelated GUIDE/`.fig` launcher). `show_drift_view.m` is the one curation window living in its
+  own file; it reaches `irc.m`'s local functions through `irc('call', …)` shims.
+- Per-figure state lives in that figure's own `UserData` (`S_fig`); the window **tags** are listed
+  in `S0.csFig`, and `S0.cvrFigPos0` holds their startup positions **by index into `csFig`**
+  (`figures_manual_` builds it with `cellfun` over `csFig`, so appending a tag is index-safe).
+- **`get_fig_` and `get_fig_cache_` CREATE the figure when `findobj` misses.** This is the single
+  most common GUI bug in this file: a lookup meant to test "is this window open?" silently pops a
+  blank, axis-less window instead. It caused the unbidden "Projection rendering OFF" window, and
+  it is why `reset_position_`/`save_figures_` can resurrect any closed `csFig` tag. For an
+  optional window, resolve with `findobj('Tag', …, 'Type','figure')` and make the toggle **hide**
+  rather than close.
+- Keyboard shortcuts are in each figure's `S_fig.csHelp` (`[H]`); several entries there and in the
+  window titles are stale (`[J] projection view` is the drift view; `[A]`, `[C]`, `[E]`, and
+  Shift+Left/Right "features" on FigTime are advertised but not implemented).
+
+#### The two time views — `FigTime` and `FigTime2` (2026-09-04)
+
+The bottom strip holds **two independent copies of the same window**: `FigTime` (`[.15 0 .35 .25]`,
+Vpp) and `FigTime2` (`[.5 0 .35 .25]`, PCA). They share every code path —
+`plot_FigTime_`/`update_FigTime_`/`rescale_FigTime_`/`keyPressFcn_FigTime_` all take a trailing
+`vcTag` (default `'FigTime'`) — so `[S]` split, `[M]` merge, `[B]`, `[R]`, `[T]` and the site/scale
+keys behave identically in both. `keyPressFcn_FigTime_` derives the tag from `get(hObject,'Tag')`.
+
+- **The feature is per-window, and `getFet_site_`/`getFet_clu_` were NOT changed.** They read `P`
+  out of the `S0` they are handed, so each window overrides `S0.P.vcFet_show` on a *local* copy
+  (`fet_show_`). Never write that back: the `Projection` menu, `plot_FigProj_` and `plot_split_`
+  all read the global `P.vcFet_show`. In `update_FigTime_` the override **must come after** the
+  vestigial `set0_(P)` — that line writes the whole `P` to global state on every arrow keypress.
+- FigTime keeps the original `Projection` menu (global `P.vcFet_show`); FigTime2 has its own
+  `Projection (2nd time view)` menu → `proj_view2_`, which stores the choice in FigTime2's `S_fig`
+  and redraws only that window. Default `vcFet_show2` = `'pca'`. `plot_FigTime_`'s `struct_merge_`
+  does not overwrite `vcFet_show`, so the choice survives a replot.
+- `ui_show_FigTime2_` (called from `ui_show_elective_`, i.e. on **every** cluster selection) is the
+  only entry point; it returns early while hidden, so `View > Show 2nd time view` is a real cost
+  switch. Autoscale reads the quantile straight off `hPlot1`/`hPlot2` `YData` rather than
+  recomputing features the way `auto_scale_proj_time_` does for FigTime — selected clusters are
+  **not** subsampled (the `MAX_SAMPLE=10000` cap in `getFet_clu_` applies to *background* spikes
+  only), so a second feature pass is not cheap.
+- **`abs()` in `getFet_clu_` plus the hardcoded non-negative y-limits fold PC1's negative lobe onto
+  the positive one.** Correct for Vpp, lossy for PCA. Left as-is deliberately (the 2nd view is
+  meant to be *exactly* the existing window). Note also that `pca` derives a **separate** eigenbasis
+  for each plotted population (background / black / red) while `ppca` reuses cluster 1's basis for
+  all three — so **`ppca` is the comparable one** for split/merge decisions.
+- **`impoly_` must be passed the axes.** `impoly_()` with no argument parents to `gca`. With one
+  time window that could not diverge; with two, a polygon drawn in one and evaluated against the
+  other's `hPlot1` yields a plausible mask, the `numel()` guard compares **counts only**, and
+  `split_clu_by_id_` commits the wrong split silently inside a `try/catch` — the wrong-but-consistent
+  class no sync checker detects. Both `[S]` handlers now pass `S_fig.hAx` (`show_drift_view.m` did
+  this already).
+
+#### `FigProj` is opt-in and off by default
+
+`ui_show_FigProj_` used `get_fig_`, so its "not open ⇒ no-op" guard could never fire and the
+"Projection rendering OFF - press [Q] to render" window appeared on the first cluster selection,
+while its menu item could only ever *close* it. `auto_scale_proj_time_` created it a second way.
+Both now use `findobj`, so the View item toggles both ways and the window is genuinely opt-in;
+`close_figure_uncheck_menu_` (written long ago, never wired) is now its `CloseRequestFcn`.
+`plot_FigProj_`, `[Q]` and its projection-space `[S]` lasso are unchanged and still reachable.
 
 ### CUDA Requirements
 - Compute capability 3.5+ (Kepler or newer)

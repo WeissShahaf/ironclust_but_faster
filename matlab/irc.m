@@ -6420,6 +6420,34 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% Consent gate for 'irc reset-to-premerge' when the pre-merge baseline looks clobbered.
+% Returns TRUE only on an explicit OK. Buttons are OK/Cancel rather than Yes/No on purpose:
+% questdlg_ returns 'Yes' whenever the global fDebug_ui==1, which with Yes/No would silently
+% mean "proceed" in a headless run and overwrite a sort whose baseline is unreliable. 'Yes'
+% matches neither button here, so the answer falls through to Cancel (fail-safe).
+function fOk = confirm_premerge_baseline_(nClu_raw, nClu_cur, P)
+vcCluster = get_set_(P, 'vcCluster', '');
+vcMsg = sprintf(['The pre-merge baseline does not look like an automatic clustering.\n\n', ...
+    '  raw baseline (viClu_premerge): nClu = %d\n', ...
+    '  current (merged) viClu:        nClu = %d\n\n', ...
+    'An automatic sort over-segments, so the baseline should hold MANY more clusters than\n', ...
+    'the merged result. It does not, which usually means viClu_premerge was overwritten by\n', ...
+    'a prior auto/recurate - post_merge_ rewrites it on every run and save, and on a\n', ...
+    'label-based sort ("%s") the labels it stores are the CURATED ones.\n\n', ...
+    'Continuing will:\n', ...
+    '  - re-merge from that questionable baseline\n', ...
+    '  - OVERWRITE %s in place (a .bak is kept)\n', ...
+    '  - discard all manual merges, splits, deletes and unit notes\n\n', ...
+    'A full re-sort is the warranted action here: irc(''sort'', ''%s'').\n', ...
+    'To try merge settings without writing anything, use sweep_post_merge.m instead.\n\n', ...
+    'Continue anyway?'], ...
+    nClu_raw, nClu_cur, vcCluster, ...
+    strrep(P.vcFile_prm, '.prm', '_jrc.mat'), P.vcFile_prm);
+fOk = strcmpi(questdlg_(vcMsg, 'reset-to-premerge - baseline may be clobbered?', 'OK', 'Cancel', 'Cancel'), 'OK');
+end %func
+
+
+%--------------------------------------------------------------------------
 % Copy <prm>_log.mat aside before clear_log_ deletes it. The log is the only record of
 % csNote_clu/viClu outside the _jrc.mat (see save_log_), and clear_log_ removes it from disk
 % immediately -- before the user ever reaches the GUI's save prompt.
@@ -6444,7 +6472,10 @@ create_figure_('FigPos', [0 0 .15 .5], ['Unit position; ', P.vcFile_prm], 1, 0);
 create_figure_('FigMap', [0 .5 .15 .5], ['Probe map; ', P.vcFile_prm], 1, 0);  
 
 create_figure_('FigWav', [.15 .25 .35 .75],['Averaged waveform: ', P.vcFile_prm], 0, 1);
-create_figure_('FigTime', [.15 0 .7 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
+% The two time views split the bottom strip so they can be read side by side (same time
+% axis, different feature) without either covering FigDrift.
+create_figure_('FigTime', [.15 0 .35 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
+create_figure_('FigTime2', [.5 0 .35 .25], ['Time vs. Feature (2nd view); (Sft)[Up/Down] channel; [h]elp; ', P.vcFile]);
 
 create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm], 0, 0);
 create_figure_('FigWavCor', [.5 .75 .35 .25], ['Waveform correlation (click): ', P.vcFile_prm]);
@@ -6455,7 +6486,7 @@ create_figure_('FigCorr', [.85 .25 .15 .25], ['Time correlation: ', P.vcFile_prm
 create_figure_('FigRD', [.85 0 .15 .25], ['Cluster rho-delta: ', P.vcFile_prm]);
 
 % drawnow_();
-csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
+csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist', 'FigTime2'};
 cvrFigPos0 = cellfun(@(vc)get(get_fig_(vc), 'OuterPosition'), csFig, 'UniformOutput', 0);
 S0 = set0_(cvrFigPos0, csFig);
 end %func
@@ -6498,6 +6529,7 @@ function ui_show_elective_()
 plot_aux_rate_();
 ui_show_all_chan_();
 ui_show_drift_view_();
+ui_show_FigTime2_(); % 2nd time view; no-op while it is hidden
 ui_show_FigProj_(); % no-op unless the user opened it (View > Show projection view)
 end %func
 
@@ -6903,9 +6935,19 @@ uimenu_(mh_view,'Label', 'Show averaged waveforms on all channels','Callback', @
 uimenu_(mh_view,'Label', 'Show global drift','Callback', @(h,e)plot_drift_());
 uimenu_(mh_view,'Label', 'Show drift view','Callback', @(h,e)ui_show_drift_view_(1,h));
 uimenu_(mh_view,'Label', 'Show projection view','Callback', @(h,e)ui_show_FigProj_(1,h));
+mh_figtime2 = uimenu_(mh_view,'Label', 'Show 2nd time view', ...
+    'Callback', @(h,e)ui_show_FigTime2_(1,h), 'Checked', 'on', 'Tag', 'mh_figtime2');
+% FigTime2 must survive the window X: it is in S0.csFig, and reset_position_ /
+% save_figures_ resolve csFig tags through get_fig_cache_, which creates on miss -- a
+% deleted FigTime2 would come back as a blank, axis-less figure. Hide it instead.
+try
+    set(findobj('Tag', 'FigTime2', 'Type', 'figure'), 'CloseRequestFcn', ...
+        @(h,e)hide_figure_uncheck_menu_(h, mh_figtime2));
+catch
+end
 uimenu_(mh_view,'Label', 'Reset window positions[1]', 'Callback', @reset_position_);
 
-mh_proj = uimenu_(hFig,'Label','Projection'); 
+mh_proj = uimenu_(hFig,'Label','Projection');
 uimenu_(mh_proj, 'Label', 'vpp', 'Callback', @(h,e)proj_view_(h), ...
     'Checked', if_on_off_(P.vcFet_show, {'vpp', 'vmin'}));
 uimenu_(mh_proj, 'Label', 'pca', 'Callback', @(h,e)proj_view_(h), ...
@@ -6914,6 +6956,18 @@ uimenu_(mh_proj, 'Label', 'ppca', 'Callback', @(h,e)proj_view_(h), ...
     'Checked', if_on_off_(P.vcFet_show, {'ppca', 'private pca'}));
 % uimenu_(mh_proj, 'Label', 'cov', 'Callback', @(h,e)proj_view_(h), ...
 %     'Checked', if_on_off_(P.vcFet_show, {'cov', 'spacetime'}));
+
+% Same three features for the 2nd time view. proj_view2_ writes the choice into that
+% figure's own UserData and redraws only that window -- the menu above keeps driving
+% FigTime through the global P.vcFet_show, unchanged.
+vcFet_show2 = get_set_(P, 'vcFet_show2', 'pca');
+mh_proj2 = uimenu_(hFig,'Label','Projection (2nd time view)');
+uimenu_(mh_proj2, 'Label', 'vpp', 'Callback', @(h,e)proj_view2_(h), ...
+    'Checked', if_on_off_(vcFet_show2, {'vpp', 'vmin'}));
+uimenu_(mh_proj2, 'Label', 'pca', 'Callback', @(h,e)proj_view2_(h), ...
+    'Checked', if_on_off_(vcFet_show2, {'pca'}));
+uimenu_(mh_proj2, 'Label', 'ppca', 'Callback', @(h,e)proj_view2_(h), ...
+    'Checked', if_on_off_(vcFet_show2, {'ppca', 'private pca'}));
 
 mh_trials = uimenu_(hFig,'Label','Trials', 'Tag', 'mh_trials');
 set_userdata_(mh_trials, P);
@@ -7541,17 +7595,26 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function plot_FigTime_(S0)
+function plot_FigTime_(S0, vcTag)
 % plot FigTime window. Uses subsampled data
+% vcTag selects which time view to draw: 'FigTime' (default) or 'FigTime2', the second,
+% independently-scaled copy whose feature is chosen from its own Projection menu.
 
 if nargin<1, S0 = get(0, 'UserData'); end
-S_clu = S0.S_clu; P = S0.P; 
-[hFig, S_fig] = get_fig_cache_('FigTime');
+if nargin<2 || isempty(vcTag), vcTag = 'FigTime'; end
+S_clu = S0.S_clu; P = S0.P;
+[hFig, S_fig] = get_fig_cache_(vcTag);
+
+% Per-window feature (vpp/pca/ppca). Override a LOCAL copy of S0 rather than P: getFet_site_
+% and getFet_clu_ read P out of the S0 they are handed, so the two windows can plot different
+% features with no change to either function. Never write this back into the global P -- the
+% Projection menu, FigProj and plot_split_ all read P.vcFet_show.
+S0.P.vcFet_show = fet_show_(vcTag, S_fig, P);   % local copy only; P below stays untouched
 
 %----------------
 % collect info
 iSite = S_clu.viSite_clu(S0.iCluCopy);
-[vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background    
+[vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background
 [vrFet1, vrTime1, vcYlabel, viSpk1] = getFet_site_(iSite, S0.iCluCopy, S0); % plot iCluCopy
 
 vcTitle = '[H]elp; (Sft)[Left/Right]:Sites/Features; (Sft)[Up/Down]:Scale; [B]ackground; [S]plit; [R]eset view; [P]roject; [M]erge; (sft)[Z] pos; [E]xport selected; [C]hannel PCA';
@@ -7632,6 +7695,25 @@ S_fig.csHelp = {...
     'Drag while pressing wheel: pan'};
         
 set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Which feature a time view puts on its y axis.
+% FigTime keeps reading the global P.vcFet_show, so the existing Projection menu drives it
+% exactly as before. FigTime2 carries its own choice in its figure UserData (set by the
+% 'Projection (2nd time view)' menu), falling back to vcFet_show2 (default 'pca') on the
+% first draw. Deriving it fresh on every draw is deliberate: plot_FigTime_'s struct_merge_
+% rewrites several S_fig fields per replot, so nothing here may depend on cached state
+% beyond the one field the menu owns.
+function vcFet_show = fet_show_(vcTag, S_fig, P)
+vcFet_show = get_(S_fig, 'vcFet_show');
+if ~isempty(vcFet_show), return; end
+if strcmpi(vcTag, 'FigTime2')
+    vcFet_show = get_set_(P, 'vcFet_show2', 'pca');
+else
+    vcFet_show = get_set_(P, 'vcFet_show', 'vpp');
+end
 end %func
 
 
@@ -9175,17 +9257,19 @@ end
 
 
 %--------------------------------------------------------------------------
-function rescale_FigTime_(event, S0, P)
+function rescale_FigTime_(event, S0, P, vcTag)
 % rescale_FigTime_(event, S0, P)
 % rescale_FigTime_(maxAmp, S0, P)
+% vcTag selects which time view to rescale ('FigTime' default, 'FigTime2' for the 2nd view).
 if nargin<2, S0 = []; end
 if nargin<3, P = []; end
+if nargin<4 || isempty(vcTag), vcTag = 'FigTime'; end
 
 if isempty(S0), S0 = get0_(); end
 if isempty(P), P = S0.P; end
 S_clu = S0.S_clu;
 
-[S_fig, maxAmp_prev] = set_fig_maxAmp_('FigTime', event);
+[S_fig, maxAmp_prev] = set_fig_maxAmp_(vcTag, event);
 ylim_(S_fig.hAx, [0, 1] * S_fig.maxAmp);
 imrect_set_(S_fig.hRect, [], [0, S_fig.maxAmp]);
 iSite = S_clu.viSite_clu(S0.iCluCopy);
@@ -9227,6 +9311,9 @@ function keyPressFcn_FigTime_(hObject, event, S0)
 if nargin<3, S0 = get(0, 'UserData'); end
 [P, S_clu, hFig] = deal(S0.P, S0.S_clu, hObject);
 S_fig = get(hFig, 'UserData');
+% Which time view got the keypress. This callback is attached to a figure only (see
+% plot_FigTime_), so hObject is the figure and its Tag is 'FigTime' or 'FigTime2'.
+vcTag = get(hFig, 'Tag');
 
 nSites = numel(P.viSite2Chan);
 switch lower(event.Key)
@@ -9240,14 +9327,14 @@ switch lower(event.Key)
         else
             S_fig.iSite = max(S_fig.iSite - factor, 1);
         end
-        set(hFig, 'UserData', S_fig);        
-        update_FigTime_();                
+        set(hFig, 'UserData', S_fig);
+        update_FigTime_(vcTag);
 
     case {'uparrow', 'downarrow'} %change ampl
         if ~isVisible_(S_fig.hAx)
-            msgbox_('Zoom is disabled in the position view'); return; 
+            msgbox_('Zoom is disabled in the position view'); return;
         end
-        rescale_FigTime_(event, S0, P);
+        rescale_FigTime_(event, S0, P, vcTag);
         
     case 'r' %reset view
         if ~isVisible_(S_fig.hAx), return; end
@@ -9269,14 +9356,21 @@ switch lower(event.Key)
         set(hFig, 'UserData', S_fig);
         
     case 't'
-        plot_FigTime_(S0);
-        
+        plot_FigTime_(S0, vcTag);
+
     case 's' %split. draw a polygon
         if ~isempty(S0.iCluPaste)
             msgbox_('Select one cluster'); return;
         end
         try
-            hPoly = impoly_();
+            % Draw the polygon on the SAME axes we read hPlot1 from. impoly_() with no
+            % argument targets gca, which is not kept in sync with the focused figure --
+            % harmless while FigTime was the only window of its kind, but with a second
+            % identical time view (FigTime2) a polygon drawn in one window would be
+            % evaluated against the other's data. Both plot the same cluster, so the
+            % numel() guard below matches and split_clu_by_id_ would commit the wrong
+            % split silently. show_drift_view.m:260 passes its axes for the same reason.
+            hPoly = impoly_(S_fig.hAx);
             if isempty(hPoly); return; end
             mrPolyPos = getPosition(hPoly);
             vrX1 = double(get(S_fig.hPlot1, 'XData'));
@@ -10991,7 +11085,13 @@ for iFig=1:numel(S0.csFig)
     hFig1 = get_fig_cache_(S0.csFig{iFig});
     if ishandle(hFig1)
         set(hFig1, 'OuterPosition', S0.cvrFigPos0{iFig});
-        figure(hFig1); %bring it to foreground
+        % Only raise what the user can see: figure() forces Visible='on', which would
+        % resurrect a deliberately hidden window (the 2nd time view) and leave it out of
+        % sync with its menu checkmark. Every other csFig window is always visible, so
+        % this is a no-op for them.
+        if strcmpi(get(hFig1, 'Visible'), 'on')
+            figure(hFig1); %bring it to foreground
+        end
     end
 end
 figure(get_fig_cache_('FigWav'));
@@ -11369,15 +11469,21 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function update_FigTime_()
+function update_FigTime_(vcTag)
 % display features in a new site
+% vcTag selects which time view to refresh ('FigTime' default, 'FigTime2' for the 2nd view).
 
-[hFig, S_fig] = get_fig_cache_('FigTime');
+if nargin<1 || isempty(vcTag), vcTag = 'FigTime'; end
+[hFig, S_fig] = get_fig_cache_(vcTag);
 S0 = get(0, 'UserData');
 P = S0.P;
 if ~isVisible_(S_fig.hAx), return; end
 % P.vcFet_show = S_fig.csFet{S_fig.iFet};
 set0_(P);
+% Per-window feature override, on a LOCAL copy of S0. This MUST come after the set0_(P)
+% above: that line writes the whole P back to global state, so overriding before it would
+% leak this window's feature into the real FigTime, FigProj and the Projection menu.
+S0.P.vcFet_show = fet_show_(vcTag, S_fig, P);
 [vrFet0, vrTime0, vcYlabel] = getFet_site_(S_fig.iSite, [], S0);
 if ~isfield(S_fig, 'fPlot0'), S_fig.fPlot0 = 1; end
 toggleVisible_(S_fig.hPlot0, S_fig.fPlot0);
@@ -16751,6 +16857,26 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% Feature selector for the 2nd time view (FigTime2). Unlike proj_view_ this touches neither
+% the global P nor any other figure: the choice lives in FigTime2's own UserData (read back
+% by fet_show_) and only that window is redrawn.
+function proj_view2_(hMenu)
+vcFet_show = lower(get(hMenu, 'Label'));
+hFig = findobj('Tag', 'FigTime2', 'Type', 'figure');
+if isempty(hFig), return; end
+hFig = hFig(end);
+S_fig = get(hFig, 'UserData');
+S_fig.vcFet_show = vcFet_show;
+set(hFig, 'UserData', S_fig);
+vhMenu = hMenu.Parent.Children;
+for iMenu = 1:numel(vhMenu)
+    vhMenu(iMenu).Checked = if_on_off_(vhMenu(iMenu).Label, vcFet_show);
+end
+ui_show_FigTime2_();
+end %func
+
+
+%--------------------------------------------------------------------------
 function P = struct_default_(P, csName, def_val)
 % Set to def_val if empty or field does not exist
 % set the field(s) to default val
@@ -17841,6 +17967,13 @@ if fReset_premerge
         fprintf(2, ['WARNING: viClu_premerge (nClu=%d) is not larger than the merged viClu (nClu=%d). ', ...
             'It may have been overwritten by a prior auto/recurate; the baseline may not be the ', ...
             'original clustering. If unsure, run a full irc(''sort'') instead.\n'], nClu_raw, nClu_cur);
+        % A clobbered baseline is precisely the case where a re-sort is warranted, and this
+        % command overwrites the _jrc.mat in place. Stop and require an explicit OK rather
+        % than merging from labels that are probably curated ones.
+        if ~confirm_premerge_baseline_(nClu_raw, nClu_cur, P)
+            fprintf('reset-to-premerge cancelled by user. Run irc(''sort'', ...) for a full re-sort.\n');
+            return; % nothing computed, nothing written
+        end
     end
     S_clu.viClu = S_clu.viClu_premerge;
 end
@@ -19872,7 +20005,16 @@ if nargin<2, fPlot = 0; end
 autoscale_pct = get_set_(S0.P, 'autoscale_pct', 99.5);
 
 % FigProj auto-scaling (skip if FigProj replaced by FigDrift)
-[hFig_proj, S_fig_proj] = get_fig_cache_('FigProj');
+% findobj, not get_fig_cache_: that creates the figure on miss, which popped a blank
+% FigProj window on every cluster selection even for users who never opened the view.
+% Both uses below are already isstruct/isfield-guarded, so [] is handled.
+hFig_proj = findobj('Tag', 'FigProj', 'Type', 'figure');
+if isempty(hFig_proj)
+    [hFig_proj, S_fig_proj] = deal([], []);
+else
+    hFig_proj = hFig_proj(end);
+    S_fig_proj = get(hFig_proj, 'UserData');
+end
 if isstruct(S_fig_proj) && isfield(S_fig_proj, 'viSites_show')
     [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, S_fig_proj.viSites_show);
     if isempty(mrMin2) || isempty(mrMax2)
@@ -33988,6 +34130,82 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% Second time-vs-feature view (FigTime2). Same window as FigTime in every respect -- same
+% plot_FigTime_, same keyPressFcn_FigTime_, so [S] split, [M] merge, [B], [R], [T] and the
+% site/scale keys all behave identically -- differing only in which feature it puts on the
+% y axis (its own Projection menu; see fet_show_ / proj_view2_).
+%
+% Called with no arguments from ui_show_elective_, i.e. on every cluster selection, which is
+% what keeps the two windows in tandem.
+%
+% Three invariants, each load-bearing:
+%  - Resolve with findobj, never get_fig_/get_fig_cache_: those create on miss (the FigProj
+%    bug), which here would produce a blank, axis-less window.
+%  - The toggle hides, it never closes. FigTime2 is in S0.csFig, and reset_position_ /
+%    save_figures_ resolve csFig tags through get_fig_cache_ -- so a closed FigTime2 would be
+%    resurrected as a bare figure by "Reset window positions". Keeping the handle alive also
+%    means plot_/update_/rescale_FigTime_ are never called on a missing tag.
+%  - Whole body in try/catch: this sits on the critical path of every cluster selection, so a
+%    failure in an optional window must not break selection.
+function ui_show_FigTime2_(fToggle, hMenu)
+if nargin<2, hMenu = []; end
+if nargin<1, fToggle = 0; end
+hFig = findobj('Tag', 'FigTime2', 'Type', 'figure');
+if isempty(hFig), return; end
+hFig = hFig(end);
+if fToggle
+    fVisible = ~strcmpi(get(hFig, 'Visible'), 'on');
+    vcVisible = ifeq_(fVisible, 'on', 'off');
+    set(hFig, 'Visible', vcVisible);
+    if ~isempty(hMenu), set(hMenu, 'Checked', vcVisible); end
+    if ~fVisible, return; end % just hidden - nothing to draw
+elseif ~strcmpi(get(hFig, 'Visible'), 'on')
+    return; % hidden - costs nothing until the user opens it
+end
+try
+    S0 = get0_();
+    plot_FigTime_(S0, 'FigTime2');
+    autoscale_FigTime2_(hFig, S0);
+catch
+    disperr_();
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Autoscale FigTime2 to the autoscale_pct quantile of what it just plotted.
+% Deliberately reads the y data straight off hPlot1/hPlot2 instead of recomputing features
+% the way auto_scale_proj_time_ does for FigTime: plot_FigTime_ has just filled those with
+% exactly the vrFet1/vrFet2 it computed, so this is the same number for none of the cost --
+% and selected clusters are NOT subsampled, so a second feature pass is not cheap.
+% Runs only after a draw, and returns before writing UserData if the figure was never drawn:
+% promoting an empty S_fig to a struct holding only maxAmp would make plot_FigTime_'s
+% isempty(S_fig) init gate false and leave the figure permanently unusable.
+function autoscale_FigTime2_(hFig, S0)
+S_fig = get(hFig, 'UserData');
+if ~isstruct(S_fig) || ~isfield(S_fig, 'hAx') || ~isfield(S_fig, 'hPlot1'), return; end
+autoscale_pct = get_set_(S0.P, 'autoscale_pct', 99.5);
+cvrFet = {double(get(S_fig.hPlot1, 'YData'))};
+if ~isempty(S0.iCluPaste) && isfield(S_fig, 'hPlot2')
+    cvrFet{end+1} = double(get(S_fig.hPlot2, 'YData'));
+end
+cvrFet = cvrFet(~cellfun(@(x)isempty(x) || all(isnan(x(:))), cvrFet));
+if isempty(cvrFet), return; end
+maxAmp = max(cellfun(@(x)quantile(x(:), autoscale_pct/100), cvrFet));
+if isnan(maxAmp) || isempty(maxAmp) || maxAmp <= 0, return; end
+rescale_FigTime_(maxAmp, S0, S0.P, 'FigTime2');
+end %func
+
+
+%--------------------------------------------------------------------------
+% CloseRequestFcn for windows that must survive being "closed" (see ui_show_FigTime2_).
+function hide_figure_uncheck_menu_(hFig, hMenu)
+try set(hMenu, 'Checked', 'off'); catch, end
+try set(hFig, 'Visible', 'off'); catch, end
+end %func
+
+
+%--------------------------------------------------------------------------
 % 2026/07/15: optional projection view (FigProj).
 % FigProj is deliberately NOT created at startup - the drift view replaced it as the
 % default (see the create_figure_ block and the [J] key), so its figure never existed
@@ -34000,7 +34218,13 @@ end %func
 function ui_show_FigProj_(fNewFig, hMenu)
 if nargin<2, hMenu = []; end
 if nargin<1, fNewFig = 0; end
-hFig = get_fig_('FigProj');
+% Resolve with findobj, NOT get_fig_: get_fig_ CREATES the figure when findobj misses
+% (see its create_figure_ fallback). That made hFig always valid, so the "not open" guard
+% below could never fire and the first cluster selection popped an unwanted projection
+% window, while the menu item could only ever take the toggle-off branch. findobj makes
+% both the opt-in guard and the two-way toggle work as the comment above always claimed.
+hFig = findobj('Tag', 'FigProj', 'Type', 'figure');
+if isempty(hFig), hFig = []; else, hFig = hFig(end); end
 if fNewFig
     if isvalid_(hFig) % toggle off
         close_(hFig);
@@ -34008,8 +34232,13 @@ if fNewFig
         return;
     end
     P = get0_('P');
-    create_figure_('FigProj', [.5 .25 .35 .5], ['Projection view: ', P.vcFile_prm], 0, 1);
-    if ~isempty(hMenu), set(hMenu, 'Checked', 'on'); end
+    hFig = create_figure_('FigProj', [.5 .25 .35 .5], ['Projection view: ', P.vcFile_prm], 0, 1);
+    if ~isempty(hMenu)
+        set(hMenu, 'Checked', 'on');
+        % Closing via the window X must also clear the menu check. close_figure_uncheck_menu_
+        % was written for exactly this and had never been wired up.
+        set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
+    end
 elseif ~isvalid_(hFig)
     return; % not open - nothing to refresh
 end
