@@ -547,6 +547,7 @@ function probe_(vcFile_prb)
 if matchFileExt_(vcFile_prb, {'.bin', '.dat'})
     vcFile_prb = subsFileExt_(vcFile_prb, '.prm');
 end
+vcFile_region = ''; % region CSV only known when started from a .prm
 if matchFileExt_(vcFile_prb, '.prm')
     vcFile_prm = vcFile_prb;
     P = loadParam_(vcFile_prm);
@@ -554,13 +555,19 @@ if matchFileExt_(vcFile_prb, '.prm')
     if ~exist_file_(vcFile_prb)
         vcFile_prb = replacePath_(vcFile_prb, vcFile_prm);
     end
+    vcFile_region = get_set_(P, 'vcFile_site_region', '');
+    if ~isempty(vcFile_region) && ~exist_file_(vcFile_region)
+        vcFile_region = replacePath_(vcFile_region, vcFile_prm);
+    end
 end
-vcFile_prb = find_prb_(vcFile_prb); 
+vcFile_prb = find_prb_(vcFile_prb);
 if isempty(vcFile_prb), fprintf(2, 'Probe file doesn''t exist.\n'); return; end
 S_prb = load_prb_(vcFile_prb);
 hFig = create_figure_('FigProbe', [0 0 .5 1], vcFile_prb, 1, 1);
-hPatch = plot_probe_(S_prb.mrSiteXY, S_prb.vrSiteHW, S_prb.viSite2Chan, S_prb.viShank_site);
+[hPatch, hText] = plot_probe_(S_prb.mrSiteXY, S_prb.vrSiteHW, S_prb.viSite2Chan, S_prb.viShank_site);
 axis equal;
+P_reg = struct('mrSiteXY', S_prb.mrSiteXY, 'viSite2Chan', S_prb.viSite2Chan, 'vcFile_site_region', vcFile_region);
+probe_region_keys_(hFig, hPatch, hText, P_reg, S_prb.viShank_site);
 edit_(vcFile_prb); %show probe file
 figure(hFig);
 end %func
@@ -8804,6 +8811,41 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% `irc probe`: add the region view to the static probe figure. P needs
+% mrSiteXY, viSite2Chan, vcFile_site_region. No-op (figure unchanged) when no
+% region CSV is available. Reuses the FigMap helpers: [C] cycles labels
+% (site/chan -> site # -> region), [V] toggles box color shank <-> region.
+function probe_region_keys_(hFig, hPatch, hText, P, viShank)
+S_fig = struct('hAx', get(hPatch, 'Parent'), 'hPatch', hPatch, 'hText', hText);
+S_fig.csLabelMode = site_label_modes_(P);
+if numel(S_fig.csLabelMode) < 3, return; end % no region CSV
+S_fig.csLabelMode(1).name = 'site/chan #';
+S_fig.csLabelMode(1).csText = get(hText, 'String'); % keep the original "site/chan" labels
+S_fig.iLabelMode = 1;
+S_fig.vcColorSrc = '';
+S_fig.vrVpp = viShank(:); % non-region color = shank index, as plot_probe_ draws it
+if isempty(S_fig.vrVpp), S_fig.vrVpp = zeros(size(P.mrSiteXY,1), 1); end
+S_fig.vcTitle_base = 'Site# / Chan# (zoom: wheel; pan: hold wheel & drag)';
+S_fig.csHelp = {'[C] cycle site labels: site/chan #, site #, region', ...
+    '[V] toggle box color: shank <-> region', '[H] help'};
+set(hFig, 'UserData', S_fig, 'KeyPressFcn', @keyPressFcn_FigProbe_);
+title_(S_fig.hAx, FigMap_title_(S_fig));
+end %func
+
+
+%--------------------------------------------------------------------------
+function keyPressFcn_FigProbe_(hObject, event)
+S_fig = get(hObject, 'UserData');
+if isempty(S_fig), return; end
+switch lower(event.Key)
+    case 'c', cycle_FigMap_label_(hObject, S_fig);
+    case 'v', toggle_FigMap_color_(hObject, S_fig);
+    case 'h', msgbox_(S_fig.csHelp, 1);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 % Probe-map (FigMap) key handler: [C] cycles the site labels, [V] toggles the
 % box color source (amplitude <-> region), [B] toggles the site zoom, [H] help.
 function keyPressFcn_FigMap_(hObject, event)
@@ -11885,7 +11927,7 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function hPatch = plot_probe_(mrSiteXY, vrSiteHW, viSite2Chan, vrVpp, hFig)
+function [hPatch, hText] = plot_probe_(mrSiteXY, vrSiteHW, viSite2Chan, vrVpp, hFig)
 if nargin<3, viSite2Chan=[]; end
 if nargin<4, vrVpp=[]; end
 if nargin<5, hFig=[]; end
@@ -11918,6 +11960,7 @@ else
 end
 hText = text(mrSiteXY(:,1), mrSiteXY(:,2), csText, ...
     'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
+hText = hText(:);
 axis_([min(mrPatchX(:)), max(mrPatchX(:)), min(mrPatchY(:)), max(mrPatchY(:))]);
 title('Site# / Chan# (zoom: wheel; pan: hold wheel & drag)');
 % vrPos = get(gcf, 'Position');
@@ -34762,8 +34805,9 @@ switch lower(vcMode)
         zlabel('log power');
     case 'probe'
         hFig = create_figure_([], [0 0 .5 1], P.vcFile, 1, 1);
-        plot_probe_(P.mrSiteXY, [12 12], P.viSite2Chan, get_(P, 'viShank_site'));
+        [hPatch, hText] = plot_probe_(P.mrSiteXY, [12 12], P.viSite2Chan, get_(P, 'viShank_site'));
         axis equal;
+        probe_region_keys_(hFig, hPatch, hText, P, get_(P, 'viShank_site'));
     case {'verify', 'validate'}
         validate_(P, [], S0);
     otherwise

@@ -308,7 +308,7 @@ direction — and locks the corruption in irreversibly.
   the quality CSV, so it changes what a curator sees.
 - **Revived:** `fDiscard_count` shipped in every `.prm` for years but was read by **no** `.m`
   file. It is now live, and only when `fEnforce_min_count = 1`.
-- **Manual GUI:** `vcFile_site_region` (CSV of site→region for the probe map).
+- **Manual GUI / `irc probe`:** `vcFile_site_region` (CSV of site→region for the probe map and the `irc probe` figure).
 
 `matlab/default.prm` is the authoritative parameter list with inline docs. Per-topic
 documents live alongside the code
@@ -494,6 +494,11 @@ The CSV holds `key,region` rows, where `key` is either a **channel number** (mat
 `viSite2Chan`) or a **1-based site index**; a header row is allowed. Sites the CSV does not
 cover are labelled `?`. If the parameter is empty or the file is missing, `c` simply cycles
 channel # ↔ site #.
+
+The static probe figure (`irc probe my.prm`) supports the same region view: `c` cycles the
+labels (site/chan # → site # → region), `v` toggles the box colour between shank and region,
+`h` shows help. It needs a `.prm` with `vcFile_site_region` set (a relative path is also looked
+up next to the `.prm`); with a `.prb` or `.bin` argument, or no region CSV, the figure is unchanged.
 
 ## Importing multiple `.bin` files from [SpikeGLX](https://github.com/billkarsh/SpikeGLX)
 ```
