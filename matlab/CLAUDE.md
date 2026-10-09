@@ -507,6 +507,43 @@ data-discarding default:
   caller** in `irc.m` — the Mahalanobis outlier removal its comment promises never runs. Tuning it
   does nothing.
 
+### Per-shank common reference / whitening — `vcCommonRef` shank modes (2026-10-07)
+
+Three additive `vcCommonRef` values, handled by `wav_car_shank_` (irc.m, right after `wav_car_`).
+**Everything is computed within a shank; nothing from another shank enters any median or any
+whitening neighbourhood.** Plan, review and test results: `logs/PLAN_shank_commonref_whiten.md`.
+
+| value | does |
+|---|---|
+| `shankcmr` | subtract from each site the median over the usable sites of **its own** shank |
+| `shankwhiten` | `spatial_whiten` with neighbour lists built from the site's own shank (no CMR) |
+| `shankcmrwhiten` | `shankcmr`, then `shankwhiten` |
+
+- **Why it exists:** plain `'whiten'` ranks neighbours by distance only (`findNearSites_` uses `viShank_site`
+  just to cap the *count*), so it can cross shanks — at shank ends, or across the gap when edge columns
+  are close (shanks have 1–5 columns). The shank modes build lists from shank **membership**
+  (`shank_miSites_`: site first, same row count in every column, `viSiteZero` excluded).
+- **Blanking reference** (`blank_thresh`, 2nd output of `wav_car_`) = the global `median_excl_` of the
+  input *before* any subtraction — exactly what `'median'` returns, so `Rejecting X %` is comparable.
+- **Single shank / empty / wrong-length `viShank_site`** (`shank_groups_`) ⇒ one group ⇒ `shankcmr` is
+  byte-identical to `'median'`.
+- **`nSites_min_shank`** (new, default 16): shanks with fewer usable sites are left untouched (warns once);
+  `shankwhiten` passes those sites through un-whitened, at a different scale from the whitened sites.
+- **`nSites_whiten`** is honoured *only* by the shank modes (capped by `size(P.miSites,1)` and the smallest
+  usable shank). Plain `'whiten'` still ignores it and passes the full `P.miSites`.
+- **`spatial_whiten.m` takes an optional 3rd arg `fKeyed`** (default 0 = original compute-once-per-session
+  behaviour). The shank modes pass 1 so the cache is re-keyed on `miSites`. The `persistent` cache is still
+  shared: `whiten` run after a shank mode in the same session reuses the shank lists until
+  `clear_filters_()`.
+- **Limitations:** whitening rescales amplitude (`scaleproc=100`), so thresholds/Vpp are not comparable with
+  `median` sorts; the whitening matrix comes from the first chunk; `irc2.m` and the traces/preview GUI do
+  not know these modes (the preview forces `'none'`; `mr2ref_` cannot show a per-shank ref).
+- **Verified (real afm17372_241213 recording, 3 s chunk, 106 sites / 3 shanks, in-memory):** the 8 existing
+  modes × 2 `viSiteZero` configs are `isequaln` to the pre-change baseline, and the new modes match a manual
+  per-shank median, leak nothing across shanks (global `median` does), compose correctly, and handle
+  int16, `fMeanSite_drift`, wrong-length labels and the size floor. `tmean`/`nmean` already **error** on
+  single-precision input before and after this change (int16-vs-single subtraction) — unrelated.
+
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)
 - Page-based loading for large files

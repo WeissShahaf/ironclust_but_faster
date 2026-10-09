@@ -5430,8 +5430,11 @@ switch lower(P.vcCommonRef)
             mnWav1 = bsxfun(@minus, mnWav1, vnWav1_mean);
         elseif strcmpi(P.vcCommonRef, 'whiten-median')
             vnWav1_mean = median_excl_(mnWav1, P);
-            mnWav1 = bsxfun(@minus, mnWav1, vnWav1_mean);   
+            mnWav1 = bsxfun(@minus, mnWav1, vnWav1_mean);
         end
+
+    case {'shankcmr', 'shankwhiten', 'shankcmrwhiten'} % per-shank CMR and/or whitening, never across shanks
+        [mnWav1, vnWav1_mean] = wav_car_shank_(mnWav1, P);
 end
 % viSiteZero should be treated carefully. try to repair using nearest sites?
 if get_(P, 'fMeanSite_drift')
@@ -5443,6 +5446,104 @@ else
     mnWav1(:, viSiteZero) = 0;
 end
 % fprintf('\n\ttook %0.1fs.\n', toc(t1));
+end %func
+
+
+%--------------------------------------------------------------------------
+% vcCommonRef = 'shankcmr' | 'shankwhiten' | 'shankcmrwhiten'
+%   shankcmr:       subtract, from each site, the median over the sites of its own shank
+%   shankwhiten:    spatial_whiten with neighbor lists restricted to the site's own shank
+%   shankcmrwhiten: shankcmr, then shankwhiten
+% Nothing from another shank enters any median or any whitening neighborhood.
+% vnWav1_ref (blanking reference for blank_thresh) = global median_excl_ of the INPUT, i.e. what
+% vcCommonRef='median' returns. A single shank (or no usable viShank_site) behaves as 'median'.
+% Shanks with < nSites_min_shank (default 16) usable sites are left untouched (warns once).
+function [mnWav1, vnWav1_ref] = wav_car_shank_(mnWav1, P)
+vcMode = lower(P.vcCommonRef);
+fCmr = any(strcmp(vcMode, {'shankcmr', 'shankcmrwhiten'}));
+fWhiten = any(strcmp(vcMode, {'shankwhiten', 'shankcmrwhiten'}));
+nSites_min_shank = get_set_(P, 'nSites_min_shank', 16);
+nSites = size(mnWav1, 2);
+viSiteZero = get_(P, 'viSiteZero');
+
+vnWav1_ref = median_excl_(mnWav1, P); % blanking reference, before any subtraction
+cviShank = shank_groups_(P, nSites);
+fSingle = numel(cviShank) == 1;
+cviUse = cellfun(@(vi)setdiff(vi(:)', viSiteZero), cviShank, 'UniformOutput', 0);
+vlOk = cellfun(@numel, cviUse) >= nSites_min_shank;
+if fSingle, vlOk(:) = true; end % same as 'median' / 'whiten': no size floor
+if ~all(vlOk), warn_once_('wav_car_shank_', sprintf( ...
+        'shank modes: %d shank(s) have < %d usable sites and are left untouched', nnz(~vlOk), nSites_min_shank)); end
+
+if fCmr
+    if fSingle
+        mnWav1 = bsxfun(@minus, mnWav1, vnWav1_ref); % identical to the 'median' case
+    else
+        fGpu = isGpu_(mnWav1);
+        for iShank = find(vlOk(:)')
+            viSite1 = cviShank{iShank};
+            try
+                vrRef1 = median(single(mnWav1(:, cviUse{iShank})), 2, 'omitnan');
+            catch % no gpu median: gather the shank subset only
+                vrRef1 = gpuArray_(median(single(gather_(mnWav1(:, cviUse{iShank}))), 2, 'omitnan'), fGpu);
+            end
+            mnWav1(:, viSite1) = cast(single(mnWav1(:, viSite1)) - vrRef1, 'like', mnWav1);
+        end
+    end
+end
+
+if fWhiten && any(vlOk)
+    nSites_whiten = min(get_set_(P, 'nSites_whiten', 32), size(P.miSites,1));
+    nSites_whiten = min([nSites_whiten, cellfun(@numel, cviUse(vlOk))]);
+    miSites_shank = shank_miSites_(P, cviShank, cviUse, vlOk, nSites_whiten);
+    mnWav1_ = mnWav1;
+    mnWav1 = spatial_whiten(mnWav1, miSites_shank, 1); % 1: re-key cache on miSites
+    viSite_skip = [cviShank{~vlOk}];
+    if ~isempty(viSite_skip), mnWav1(:, viSite_skip) = mnWav1_(:, viSite_skip); end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% site indices of each shank. One group (all sites) if viShank_site is empty, has the wrong
+% length, or holds a single shank.
+function cviShank = shank_groups_(P, nSites)
+viShank = get_(P, 'viShank_site');
+viShank = viShank(:)';
+if isempty(viShank) || numel(viShank) ~= nSites || numel(unique(viShank)) < 2
+    cviShank = {1:nSites};
+else
+    cviShank = arrayfun(@(i)find(viShank == i), unique(viShank), 'UniformOutput', 0);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% miSites_shank (n x nSites): column j = site j first (spatial_whiten uses row 1 as self), then its
+% n-1 nearest USABLE sites on the SAME shank. Same row count in every column. Sites on shanks that
+% are not usable (vlOk=0) get a placeholder list from all usable sites; their output is discarded.
+function miSites = shank_miSites_(P, cviShank, cviUse, vlOk, n)
+nSites = size(P.mrSiteXY, 1);
+miSites = zeros(n, nSites);
+viUse_all = unique([cviUse{vlOk}]);
+for iShank = 1:numel(cviShank)
+    if vlOk(iShank), viCand = cviUse{iShank}; else, viCand = viUse_all; end
+    for iSite = cviShank{iShank}(:)'
+        viCand1 = viCand(viCand ~= iSite);
+        [~, viSrt] = sort(sum((P.mrSiteXY(viCand1,:) - P.mrSiteXY(iSite,:)).^2, 2), 'ascend');
+        miSites(:, iSite) = [iSite; viCand1(viSrt(1:n-1))'];
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function warn_once_(vcKey, vcMsg)
+persistent csKey
+if isempty(csKey), csKey = {}; end
+if any(strcmp(csKey, [vcKey, vcMsg])), return; end
+csKey{end+1} = [vcKey, vcMsg];
+fprintf(2, 'Warning: %s\n', vcMsg);
 end %func
 
 
