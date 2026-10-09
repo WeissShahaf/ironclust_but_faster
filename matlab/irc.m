@@ -18684,7 +18684,13 @@ if isempty(viTime_spk), return; end
 %-----
 % Extract spike waveforms and build a spike table
 fprintf('\tExtracting features'); t_fet = tic;
-if get_set_(P, 'fRaw_feature', 0), mnWav2 = mnWav1; end
+if get_set_(P, 'fRaw_feature', 0)
+    mnWav2 = mnWav1;
+    % raw features still honor per-shank CMR/whitening (median/whiten stay raw, unchanged)
+    if any(strcmpi(P.vcCommonRef, {'shankcmr', 'shankwhiten', 'shankcmrwhiten'}))
+        mnWav2 = wav_car_(cast_(mnWav1, vcDataType_filter), P);
+    end
+end
 vcFilter_feature = get_set_(P, 'vcFilter_feature', '');
 if ~isempty(vcFilter_feature)
     [mnWav2, nShift_post] = filter_detect_(mnWav1, P, vcFilter_feature); % pass raw trace

@@ -543,6 +543,18 @@ whitening neighbourhood.** Plan, review and test results: `logs/PLAN_shank_commo
   per-shank median, leak nothing across shanks (global `median` does), compose correctly, and handle
   int16, `fMeanSite_drift`, wrong-length labels and the size floor. `tmean`/`nmean` already **error** on
   single-precision input before and after this change (int16-vs-single subtraction) — unrelated.
+- **GPU (2026-10-09):** `wav_car_` with the shank modes runs on `gpuArray` and is bit-exact vs CPU (a18349, 4 shanks).
+- **`vcCommonRef` can be inert (2026-10-09):** `filt_car_`'s output (`mnWav2`) is the only thing `vcCommonRef`
+  changes, and `wav2spk_` bypasses it twice: a non-empty `vcFilter_detect` (default `'wiener'`) detects on
+  `filter_detect_(raw)`, and `fRaw_feature=1` replaces `mnWav2` with the raw chunk before waveform/feature
+  extraction. With both set, `vcCommonRef` only picks the `blank_thresh` reference — and the shank modes use the
+  same global median there as `'median'`, so their detect output (`_spkwav`/`_spkfet`) is byte-identical to it
+  (measured on a 4-shank probe). To make any referencing mode matter: `fRaw_feature=0`, and
+  `vcFilter_detect=''` for detection.
+- **Probe gotchas:** `.prb` needs a `shank` (or `cviShank`) field, else all sites are one shank and the shank modes
+  equal `median` (`IRC.prb`, `IRC_all.prb` have none; `IRC_all_shanks.prb` does). A `.prm` exported from a finished
+  sort has probe fields baked in after `bytesPerSample = 2;` that override `probe_file` — truncate there when
+  reusing it as a template.
 
 ### Memory Management
 - Spike waveforms optionally saved (`fSave_spkwav` parameter)

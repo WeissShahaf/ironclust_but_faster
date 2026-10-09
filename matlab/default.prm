@@ -144,7 +144,7 @@ vcFet = 'gpca';             % Feature list: {'gpca', 'cov', 'vpp', 'vmin', 'vmin
 nPcPerChan = 2;             % number of principal components per chan.
 vcSpkRef = 'none';         % Subtract mean of the spiking event sites {'nmean', 'none', 'time-mean'}
 fInterp_fet = 1;            % Interpolate the waveforms for feature projection to find the optimal delay (2x interp). Set to 0 to disable
-fRaw_feature = 0;           % Use raw waveform for feature extraction
+fRaw_feature = 0;           % Use raw waveform for feature extraction. Raw features ignore vcCommonRef, except shankcmr/shankwhiten/shankcmrwhiten, which are still applied to the raw trace. With fRaw_feature=0 every vcCommonRef mode applies; vcFilter_detect (non-empty) detects on a separate filtered trace that ignores vcCommonRef.
 
 % #Clustering (run "jrc sort" after change)
 vcCluster = 'drift-knn';        % cluster method: {'spacetime', 'drift', 'drift2', 'drift-knn', 'wavcov', 'classix', 'kmeans', 'hdbscan', 'isosplit6'}, spacetime: spatiotemporal decentralized clustering that can handle slow drift; drift: fast drift clustering; classix: CLASSIX fast sorting-based clustering (10-100x faster than DPC); kmeans/hdbscan/isosplit6: per-site label-based clustering (bypass DPC, merged across sites by post-merge); wavcov: waveform covariance (creates nChans^2*nDelays_wavcov number of features)
