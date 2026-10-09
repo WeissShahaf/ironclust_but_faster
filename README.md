@@ -143,6 +143,32 @@ written diff: [`logs/COMPARISON_vs_upstream.md`](logs/COMPARISON_vs_upstream.md)
 - Label-based methods keep their own labels (an internal `fLabelClu` flag makes `fet2clu_`
   skip the density-peak `postCluster_`).
 
+### Per-shank common reference and whitening
+Multi-shank probes (e.g. 4-shank Neuropixels 2.0) should not be referenced or whitened across
+shanks. Three new `vcCommonRef` modes work **within each shank only**:
+
+| `vcCommonRef` | Effect |
+|---|---|
+| `'shankcmr'` | subtract each shank's own median (CMR) |
+| `'shankwhiten'` | spatial whitening with neighbor lists restricted to the site's shank |
+| `'shankcmrwhiten'` | `shankcmr`, then `shankwhiten` |
+
+How to use:
+1. The `.prb` file needs a per-site `shank` (or `cviShank`) field (e.g. `IRC_all_shanks.prb`).
+   Without it all sites are one shank and the modes equal `median`.
+2. Set `vcCommonRef = 'shankcmr'` (or another mode) in your `.prm`. `nSites_whiten` (default 32)
+   sets the whitening neighborhood; shanks with fewer than `nSites_min_shank` (default 16)
+   usable sites are left untouched (a warning is printed once).
+3. A `.prm` exported from a finished sort has probe fields baked in after `bytesPerSample = 2;`
+   that override `probe_file`; truncate there when reusing it as a template.
+
+Where it applies: the shank modes affect the filtered trace used for features, and (since
+`61721a0`) the raw trace too when `fRaw_feature = 1`. Detection with a non-empty `vcFilter_detect`
+(default `'wiener'`) ignores `vcCommonRef`; set `vcFilter_detect = ''` to detect on the referenced
+trace. `median` and `whiten` are unchanged. Verified to run through detect and sort on 1- and
+4-shank recordings; no ground-truth comparison of sort quality was made.
+See [`logs/PLAN_shank_commonref_whiten.md`](logs/PLAN_shank_commonref_whiten.md).
+
 ### Performance
 - **Parallel per-site clustering** — the kmeans/HDBSCAN/isosplit per-site loop runs across
   workers when `fParfor = 1` *(default change: `fParfor` is now `1`)*, capped by

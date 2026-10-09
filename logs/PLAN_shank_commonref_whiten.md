@@ -1,7 +1,7 @@
 # PLAN: per-shank common reference + per-shank whitening
 
 Written 2026-10-06, consolidated 2026-10-07 (supersedes the earlier append-only version).
-Status: **IMPLEMENTED, committed as `c1c9d1f`. Unit-level checks pass (CPU + GPU). End-to-end (2026-10-09): under the production config (`vcFilter_detect='wiener'`, `fRaw_feature=1`) the shank modes are byte-identical to `median` because `vcCommonRef` only feeds blanking there — see "End-to-end GPU detect comparison" and "Review notes" at the bottom.** Branch `rewind`. Targets: `matlab/irc.m`, `matlab/spatial_whiten.m`, `matlab/default.prm` (comment only).
+Status: **IMPLEMENTED, committed as `c1c9d1f`; raw-feature support in `61721a0` (2026-10-09, see last section). Detect+sort verified on 4-shank and 1-shank data, no crashes. Statements below that the modes are inert under `fRaw_feature=1` describe the state BEFORE `61721a0`. Unit-level checks pass (CPU + GPU). End-to-end (2026-10-09): under the production config (`vcFilter_detect='wiener'`, `fRaw_feature=1`) the shank modes are byte-identical to `median` because `vcCommonRef` only feeds blanking there — see "End-to-end GPU detect comparison" and "Review notes" at the bottom.** Branch `rewind`. Targets: `matlab/irc.m`, `matlab/spatial_whiten.m`, `matlab/default.prm` (comment only).
 Reviewed by: code-architect, MATLAB expert, devil's advocate, Opus advisor.
 Gate: user confirmed the 3 modes, MATLAB not running, go-ahead given, small-shank floor = 16 usable sites.
 
@@ -140,9 +140,9 @@ Consequences:
 A `.prm` exported from a finished sort has the probe fields baked into its tail (from `bytesPerSample = 2;` on: `viSite2Chan`, `mrSiteXY`, `vrSiteHW`, `viShank_site`, `miSites`, `nSites_fet`, `spkThresh`, `nC_max`). They override `probe_file`. Truncate the `.prm` at that line before using it as a template, or the probe/shank layout silently stays the old one (run 1 of this comparison was invalid for that reason: 106 sites / 3 shanks instead of 384 / 4).
 
 ### Still not done
-- End-to-end run where the modes can matter: `fRaw_feature = 0` (and optionally `vcFilter_detect = ''`), `median` vs the shank modes on the 4-shank a18349 probe.
+- (done 2026-10-09) `fRaw_feature=0` end-to-end run and detect+sort of all modes on both recordings; see the last two sections.
 - `irc unit-test` before/after (needs `irc download sample`, network). Use a `git worktree` at HEAD, never `git stash`.
-- Shank-mode sort-quality comparison beyond detect.
+- Sort quality: no ground truth, so the comparison only shows the modes differ, not which is better. `shankwhiten` and `shankcmrwhiten` gave identical cluster/noise counts at `fRaw_feature=1`; labels not compared.
 
 ## Review notes (2026-10-09) — stale parts of this file
 - **Line numbers in "Findings" are pre-implementation** and now off by +56 to +101 (e.g. `filt_car_` call 6016 → 6117, `findNearSites_` 14475 → 14576, `mean_excl_` 17008 → 17100, `isSingleShank_` 17084 → 17185, `mr2ref_` 24184 → 24285, `clear_filters_` 33592 → 33693, `car_reject_` call 18537-18541 → 18638-18643). Grep the function name.

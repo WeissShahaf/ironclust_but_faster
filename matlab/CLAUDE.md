@@ -549,8 +549,9 @@ whitening neighbourhood.** Plan, review and test results: `logs/PLAN_shank_commo
   `filter_detect_(raw)`, and `fRaw_feature=1` replaces `mnWav2` with the raw chunk before waveform/feature
   extraction. With both set, `vcCommonRef` only picks the `blank_thresh` reference — and the shank modes use the
   same global median there as `'median'`, so their detect output (`_spkwav`/`_spkfet`) is byte-identical to it
-  (measured on a 4-shank probe). To make any referencing mode matter: `fRaw_feature=0`, and
-  `vcFilter_detect=''` for detection.
+  (measured on a 4-shank probe). To make any referencing mode matter for detection: `vcFilter_detect=''`.
+  Since `61721a0` the three shank modes (not `median`/`whiten`) are also applied to the raw trace when
+  `fRaw_feature=1`, so they change features/clustering there; `wiener` detection still ignores `vcCommonRef`.
 - **Probe gotchas:** `.prb` needs a `shank` (or `cviShank`) field, else all sites are one shank and the shank modes
   equal `median` (`IRC.prb`, `IRC_all.prb` have none; `IRC_all_shanks.prb` does). A `.prm` exported from a finished
   sort has probe fields baked in after `bytesPerSample = 2;` that override `probe_file` — truncate there when
