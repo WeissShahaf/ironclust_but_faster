@@ -1,0 +1,6 @@
+session : afm16505_231215_2_0#traces_cached_seg0_probe_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16505\231215\ephys\preprocessed\spk\traces_cached_seg0_probe_jrc.mat
+verdict : PASS
+nClu=416  nSpk=7252515
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=5  worstSiteSpan=30

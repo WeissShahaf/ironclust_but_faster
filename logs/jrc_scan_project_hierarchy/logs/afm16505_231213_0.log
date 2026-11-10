@@ -1,0 +1,6 @@
+session : afm16505_231213_0
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16505\231213\ephys\sorted\IRC_hi_amps\Copy_of_monopolar_231212_test4_g0_tcat.imec0.ap_imec3B2_jrc.mat
+verdict : PASS
+nClu=335  nSpk=7606306
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=3  worstSiteSpan=20

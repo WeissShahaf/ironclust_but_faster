@@ -1,0 +1,6 @@
+session : afm17365_241210_01
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17365\supercat\concat\supercat_afm17365_241202_0_g0\afm17365_241202_0_g0_imec0\afm17365_241202_0_g0_tcat.imec0.ap_IRC_reordered_jrc.mat
+verdict : PASS
+nClu=928  nSpk=125797380
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=21  worstSiteSpan=383

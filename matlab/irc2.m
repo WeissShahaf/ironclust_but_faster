@@ -454,9 +454,10 @@ i=0;
 while exist_file_(vcFile_lock)
     if i==0, fprintf('Waiting for lock: %s\n', vcFile_lock); end
     if toc(t1) > lock_timeout
-        fprintf(2, 'Timeout (%0.1f s) for lock: %s\n', lock_timeout, vcFile_lock);
-        break; 
-    else        
+        fprintf(2, 'Timeout (%0.1f s) for lock: %s -- removing the stale lock.\n', lock_timeout, vcFile_lock);
+        try delete(vcFile_lock); catch, end   % DI-14: clear a stale lock (crashed process) rather than proceeding while it still exists
+        break;
+    else
         pause(check_period);
     end
     i=i+1;
@@ -1624,7 +1625,14 @@ else
     [viTime, viSite] = deal(gather_(viTime), gather_(viSite)); 
 end
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime));
+% DI-17 (349a0e1) fixed int32 index saturation in irc.m only -- this sibling was left behind, so
+% irc2 still had the defect DI-17 was written to close. int32 caps at 2.147e9 while 20h @ 30kHz
+% is 2.16e9. Fixed here with double rather than DI-17's int64 because gpuArray does NOT support
+% int64 arithmetic and viTime is moved onto the GPU three lines above -- int64 would break irc2
+% on the GPU exactly as it broke irc detect (see the long note in irc.m mr2tr_). double is exact
+% for integers to 2^53, is MATLAB's natural index type, works on gpuArray, and is 8 bytes as
+% int64 is. Verified elementwise identical to int32 at 600s and 5267s, and correct at 20h.
+miRange = bsxfun(@plus, double(viTime0), double(viTime));
 miRange = min(max(miRange, 1), N);
 miRange = miRange(:);
 if isempty(viSite)
@@ -4144,6 +4152,8 @@ function [fid, fCached] = fid_fet_cache_(vcCmd, arg1, arg2)
 % fid = fid_fet_cache_('set', v_fid_fet, v_fid_fet2)
 % fid = fid_fet_cache_(vcFile_prm, iLoad, iFet)
 
+% DI-21: DEAD CODE (only commented-out call sites remain, irc2.m:4368/4391). c_fid_load ignores the
+% vcFile_prm arg on a cache hit; add a file key (see DI-11) before reactivating.
 persistent c_fid_load c_fid2_load
 fCached = 0;
 
@@ -5228,6 +5238,7 @@ if nargin==1
         end
     end
     vcFile = P.vcFile;
+    if ~isempty(fid), fclose_(fid); fid = []; end   % DI-22: close the previous file's fid before reopening (handle leak on file switch)
     viSite2Chan_ = get_(P, 'viSite2Chan');
     switch recording_type_(vcFile)        
         case 'mda'
@@ -6375,13 +6386,15 @@ end
 
 
 %--------------------------------------------------------------------------
-function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType)
+function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType, fStrict)
 % Get around fread bug (matlab) where built-in fread resize doesn't work
+% DI-04 (irc2.m copy): fStrict (optional, default false) -> error on a short read. See irc.m.
 
 % defensive programming practice
 if strcmpi(vcDataType, 'float'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float32'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float64'), vcDataType = 'double'; end
+if nargin < 4, fStrict = false; end
 
 try
     if isempty(dimm_wav)
@@ -6392,6 +6405,10 @@ try
         if numel(mnWav1) == prod(dimm_wav)
             mnWav1 = reshape(mnWav1, dimm_wav);
         else
+            if fStrict
+                error('fread_: short read (%d of %d elements), dimm=[%s]', ...
+                    numel(mnWav1), prod(dimm_wav), sprintf('%d ', dimm_wav));
+            end
             dimm2 = floor(numel(mnWav1) / dimm_wav(1));
             if dimm2 >= 1
                 nSamples1 = dimm_wav(1) * dimm2;
@@ -6401,7 +6418,8 @@ try
             end
         end
     end
-catch
+catch hErr
+    if fStrict, rethrow(hErr); end   % DI-04: strict callers get a real error, not a swallow (this catch is layer 0 of the swallow chain)
     disperr_();
 end
 end %func
@@ -7013,16 +7031,19 @@ end %func
 %--------------------------------------------------------------------------
 % 11/19/2018 JJJ: improved matlab version check
 % 7/13/17 JJJ: Version check routine
-function struct_save_(S, vcFile, fVerbose)
-nRetry = 3;
+function fOk = struct_save_(S, vcFile, fVerbose)
+% DI-02/DI-05 (irc2.m copy): returns fOk and writes atomically (temp + movefile). See irc.m.
+nRetry = 3; fOk = false; fSaved = false;
 if nargin<3, fVerbose = 0; end
+vcFile_tmp = tempname_sibling_(vcFile);
+if exist(vcFile_tmp, 'file'), delete(vcFile_tmp); end
 if fVerbose
     fprintf('Saving a struct to %s: ', vcFile); t1=tic;
 end
 if version_matlab_() >= 2017
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3', '-nocompression'); %faster    
+            save(vcFile_tmp, '-struct', 'S', '-v7.3', '-nocompression'); fSaved = true; %faster    
             break;
         catch
             pause(.5);
@@ -7032,7 +7053,7 @@ if version_matlab_() >= 2017
 else    
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3');   
+            save(vcFile_tmp, '-struct', 'S', '-v7.3'); fSaved = true;
             break;
         catch
             pause(.5);
@@ -7040,8 +7061,44 @@ else
         fprintf(2, 'Saving failed: %s\n', vcFile);
     end    
 end
+if fSaved
+    fOk = atomic_replace_(vcFile_tmp, vcFile, true);
+end
+if ~fOk
+    fprintf(2, 'struct_save_: %s NOT updated (previous version preserved).\n', vcFile);
+end
 if fVerbose
     fprintf('took %0.1fs.\n', toc(t1));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function vcFile_tmp = tempname_sibling_(vcFile_final)
+% DI-05 helper (irc2.m copy): same-directory temp path so movefile stays on one volume.
+vcFile_tmp = [vcFile_final, '.tmp'];
+end %func
+
+
+%--------------------------------------------------------------------------
+function fOk = atomic_replace_(vcFile_tmp, vcFile_final, fKeep_bak)
+% DI-05 helper (irc2.m copy): commit a fully-written temp over vcFile_final; refuses a
+% missing/zero-byte temp. Uses fprintf (not disperr_) on failure. See irc.m for the primary copy.
+if nargin<3, fKeep_bak = false; end
+fOk = false;
+try
+    S_dir = dir(vcFile_tmp);
+    if isempty(S_dir) || S_dir(1).bytes == 0
+        fprintf(2, 'atomic_replace_: refusing to commit missing/empty temp: %s\n', vcFile_tmp);
+        return;
+    end
+    if fKeep_bak && exist(vcFile_final, 'file')
+        try copyfile(vcFile_final, [vcFile_final, '.bak'], 'f'); catch, end
+    end
+    movefile(vcFile_tmp, vcFile_final, 'f');
+    fOk = (exist(vcFile_final, 'file') == 2);
+catch hErr
+    fprintf(2, 'atomic_replace_ failed (%s): %s\n', vcFile_final, hErr.message);
 end
 end %func
 
@@ -9266,6 +9323,13 @@ switch class(val)
             vcStr = '1';
         else
             vcStr = '0';
+        end
+        return;
+    case 'string'   % DI-12 (irc2.m copy): MATLAB string class -> format like a char literal
+        if fDoubleQuote
+            vcStr = sprintf('"%s"', char(val));
+        else
+            vcStr = sprintf('''%s''', char(val));
         end
         return;
     otherwise

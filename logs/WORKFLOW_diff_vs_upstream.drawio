@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="26.0.0">
+  <diagram name="rewind-vs-upstream">
+    <mxGraphModel dx="1400" dy="700" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1440" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="IronClust &#8212; rewind (fork) vs upstream/master : pipeline differences" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;fontColor=#1f3a5f;" vertex="1" parent="1">
+          <mxGeometry x="40" y="18" width="1360" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="rewind = official master (frozen 2022-06-07) + 93 additive commits &#160;&#183;&#160; irc.m: +44 functions, 0 removed, +2,948/&#8722;262 lines &#160;&#183;&#160; grey = inherited core (unchanged), blue = added/changed in rewind" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="40" y="50" width="1360" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- ============ DETECTION ============ -->
+        <mxCell id="sw_det" value="1 &#183; DETECTION" style="swimlane;startSize=32;html=1;fillColor=#eef3fb;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;fontColor=#1f3a5f;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="92" width="322" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="u_det" value="Upstream (frozen 2022)&#xa;&#xa;file2spk_ &#8594; wav2spk_&#xa;threshold detect + PC features&#xa;write_spk_ / fread_ (fail silently)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#333333;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=11;" vertex="1" parent="sw_det">
+          <mxGeometry x="16" y="46" width="290" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="r_det" value="rewind adds &#160;(core unchanged)&#xa;&#xa;&#8226; write_spk_ returns fOk + fopen guard (DI-07)&#xa;&#8226; fread_ / load_bin_ fStrict &#8212; errors on&#xa;&#160;&#160;&#160;truncated .jrc instead of misaligning (DI-04)&#xa;&#8226; dimm template from 1st non-empty chunk&#xa;&#160;&#160;&#160;&#8212; a quiet tail no longer zeroes dims (DI-03)&#xa;&#8226; onCleanup closes .jrc handles on throw (DI-13)&#xa;&#8226; fwrite_ short-write count check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontColor=#1f3a5f;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=10;" vertex="1" parent="sw_det">
+          <mxGeometry x="16" y="168" width="290" height="316" as="geometry" />
+        </mxCell>
+
+        <!-- ============ SORTING ============ -->
+        <mxCell id="sw_sort" value="2 &#183; SORTING" style="swimlane;startSize=32;html=1;fillColor=#eef3fb;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;fontColor=#1f3a5f;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="380" y="92" width="322" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="u_sort" value="Upstream&#xa;&#xa;density-peak clustering (DPC)&#xa;cuda_knn_ / cuda_rho_ / cuda_delta_&#xa;single global clustering pass" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#333333;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=11;" vertex="1" parent="sw_sort">
+          <mxGeometry x="16" y="46" width="290" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="r_sort" value="rewind adds &#160;(core unchanged)&#xa;&#xa;&#8226; per-site engine: cluster_site_ / _capped_,&#xa;&#160;&#160;&#160;cluster_labels_persite_, persite_knn_,&#xa;&#160;&#160;&#160;nearest_in_set_ (GPU 1-NN assignment)&#xa;&#8226; clustering back-ends: isosplit / hdbscan /&#xa;&#160;&#160;&#160;kmeans / CLASSIX &#160;(S_clu_from_labels_)&#xa;&#8226; max_workers_ pool cap (0.85&#215; cores)&#xa;&#8226; cuda_* launch-config recomputed per call&#xa;&#160;&#160;&#160;&#8212; no stale kernel across files (DI-10)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontColor=#1f3a5f;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=10;" vertex="1" parent="sw_sort">
+          <mxGeometry x="16" y="168" width="290" height="316" as="geometry" />
+        </mxCell>
+
+        <!-- ============ MERGING ============ -->
+        <mxCell id="sw_merge" value="3 &#183; MERGING" style="swimlane;startSize=32;html=1;fillColor=#eef3fb;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;fontColor=#1f3a5f;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="720" y="92" width="322" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="u_merge" value="Upstream&#xa;&#xa;auto post_merge_&#xa;waveform-correlation merges&#xa;(no shank / batch handling)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#333333;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=11;" vertex="1" parent="sw_merge">
+          <mxGeometry x="16" y="46" width="290" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="r_merge" value="rewind adds &#160;(core unchanged)&#xa;&#xa;&#8226; cross-shank guard: block_cross_shank_,&#xa;&#160;&#160;&#160;shank_clu_ &#8212; blocks merges across shanks&#xa;&#8226; queued [U] execute_pending_and_update_&#xa;&#160;&#160;&#160;reconciles multi-group indices after each&#xa;&#160;&#160;&#160;delete: adjust_pending_indices_ (DI-01)&#xa;&#160;&#160;&#160;&#8212; batching &#8805;2 merge groups no longer&#xa;&#160;&#160;&#160;&#160;&#160;&#160;merges the wrong clusters&#xa;&#8226; merge_clu_pair_ + atomic rollback on abort" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontColor=#1f3a5f;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=10;" vertex="1" parent="sw_merge">
+          <mxGeometry x="16" y="168" width="290" height="316" as="geometry" />
+        </mxCell>
+
+        <!-- ============ CURATION ============ -->
+        <mxCell id="sw_cur" value="4 &#183; CURATION (GUI)" style="swimlane;startSize=32;html=1;fillColor=#eef3fb;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;fontColor=#1f3a5f;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="92" width="340" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="u_cur" value="Upstream&#xa;&#xa;immediate merge / delete / split&#xa;save0_ &#8594; direct overwrite&#xa;no desync / atomicity guards" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#333333;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=11;" vertex="1" parent="sw_cur">
+          <mxGeometry x="16" y="46" width="308" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="r_cur" value="rewind adds &#160;(core unchanged)&#xa;&#xa;&#8226; queued [M]/[U]/[D] pending ops&#xa;&#160;&#160;&#160;(ui_merge_pending_, ui_delete_pending_,&#xa;&#160;&#160;&#160;execute_pending_and_update_, cancel_&#8230;)&#xa;&#8226; [O] reorder_clu_by_coords_ &#8212; remaps viClu&#xa;&#160;&#160;&#160;in lockstep (CID-01 desync fix)&#xa;&#8226; S_clu_assert_synced_ desync detector&#xa;&#160;&#160;&#160;(warns at load + commit)&#xa;&#8226; atomic save: struct_save_ / atomic_replace_&#xa;&#160;&#160;&#160;+ .bak, save0_ blocks false success (DI-02/05)&#xa;&#8226; FigMap / region view, get_clu_spk_confirmed_" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontColor=#1f3a5f;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontSize=10;" vertex="1" parent="sw_cur">
+          <mxGeometry x="16" y="168" width="308" height="316" as="geometry" />
+        </mxCell>
+
+        <!-- ============ pipeline flow arrows (upstream core row) ============ -->
+        <mxCell id="a1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;strokeWidth=2;endArrow=block;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="u_det" target="u_sort">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;strokeWidth=2;endArrow=block;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="u_sort" target="u_merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;strokeWidth=2;endArrow=block;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="u_merge" target="u_cur">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============ footer note ============ -->
+        <mxCell id="foot" value="All rewind additions are additive &amp; fixes-only (healthy-path byte-identical). Detection/Sorting/Merging/Curation cores are inherited unchanged from upstream; the blue boxes are the fork's new functions + data-integrity guards (CID-01&#8230;15, DI-01&#8230;22). See logs/COMPARISON_vs_upstream.md." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#777777;" vertex="1" parent="1">
+          <mxGeometry x="40" y="604" width="1360" height="34" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

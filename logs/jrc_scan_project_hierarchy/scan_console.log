@@ -1,0 +1,229 @@
+scan_jrc_report: 167 dataset(s) from D:\github\ironclustSW\logs\jrc_scan_project_hierarchy\manifest.csv
+  [  1/167] afm16505_231211_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [  2/167] afm16505_231212_2                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [  3/167] afm16505_231213_0                      PASS           (nClu=335 desync=0 mix=0 spatial=3)
+  [  4/167] afm16505_231215_2_0#shortwin_traces_cached_seg0_probe_jrc PASS           (nClu=491 desync=0 mix=0 spatial=1)
+  [  5/167] afm16505_231215_2_0#traces_cached_seg0_probe_jrc PASS           (nClu=416 desync=0 mix=0 spatial=5)
+  [  6/167] afm16505_231215_2_1#shortwin_traces_cached_seg0_probe_jrc PASS           (nClu=491 desync=0 mix=0 spatial=1)
+  [  7/167] afm16505_231215_2_1#traces_cached_seg0_probe_jrc PASS           (nClu=416 desync=0 mix=0 spatial=5)
+  [  8/167] afm16505_231215_2_2#shortwin_traces_cached_seg0_probe_jrc PASS           (nClu=491 desync=0 mix=0 spatial=1)
+  [  9/167] afm16505_231215_2_2#traces_cached_seg0_probe_jrc PASS           (nClu=416 desync=0 mix=0 spatial=5)
+  [ 10/167] afm16505_231218_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 11/167] afm16618_240214                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 12/167] afm16618_240216                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 13/167] afm16618_240226_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 14/167] afm16618_240226_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 15/167] afm16618_240228                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 16/167] afm16618_240301                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 17/167] afm16618_240307                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 18/167] afm16963_240526#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2 - Copy_jrc PASS           (nClu=636 desync=0 mix=0 spatial=1)
+  [ 19/167] afm16963_240526#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=151 desync=0 mix=0 spatial=11)
+  [ 20/167] afm16963_240526_sw#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=303 desync=0 mix=0 spatial=9)
+  [ 21/167] afm16963_240526_sw#Hi_amps_monopolar_afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=682 desync=0 mix=0 spatial=2)
+  [ 22/167] afm16963_240526_sw#shortwin_Hi_amps_monopolar_afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc PASS           (nClu=436 desync=0 mix=0 spatial=2)
+  [ 23/167] afm16924_240522_test_last_good         PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 24/167] afm16924_240522                        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 25/167] afm16924_240523_0                      PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 26/167] afm16924_240523_1                      PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 27/167] afm16924_240524                        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 28/167] afm16924_240525                        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 29/167] afm16924_240526                        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 30/167] afm16924_240527                        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 31/167] afm16924_240529                        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 32/167] afm16924_240527_fixedTH                PASS           (nClu=72 desync=0 mix=0 spatial=0)
+  [ 33/167] afm16924_240529_test_last_good         PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 34/167] afm16924_240522_test                   PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 35/167] afm16924_240522_test_hard_th           PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 36/167] afm16924_240522_test_2sec_300gap       PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 37/167] afm16924_240522_test_20sec_10secpad    PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 38/167] afm16924_240523_hard_coded             PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 39/167] afm16924_240523_2sec_1overlap          PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 40/167] afm16924_240523_0_Kilosort4            PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 41/167] afm16924_240523_0_Ks4_raw              PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 42/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 43/167] afm16924_240523_hard_coded             PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 44/167] afm16924_240523_2sec_1overlap          PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 45/167] afm16924_240523_0_K4                   PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 46/167] afm16924_240523_0_Kilosort4_raw        PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 47/167] afm16924_240529_test                   PASS           (nClu=181 desync=0 mix=0 spatial=2)
+  [ 48/167] afm16924_240529_KS4_20250924           SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+[Warning: Variable 'S_clu' not found.] 
+[> In check_jrc_one (line 20)
+In scan_jrc_report (line 44)] 
+  [ 49/167] afm16924_240526_fixedTH                SKIP:noS_clu   (nClu=0 desync=0 mix=0 spatial=0)
+  [ 50/167] afm16924_240529_KS4_20250924_SW        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 51/167] afm16924_240525_KS                     SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 52/167] afm16924_240529_commit20251010         PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 53/167] afm16924_240529_commit20251014         PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 54/167] afm16924_240529_commit20251015         PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 55/167] afm16924_240529_commit20251013         PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 56/167] afm16924_240529_test2                  PASS           (nClu=271 desync=0 mix=0 spatial=0)
+  [ 57/167] afm16924_240525_KS_SPI                 SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 58/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 59/167] afm17365_241202_0                      PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 60/167] afm17365_241202_1                      PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 61/167] afm17365_241203_01                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 62/167] afm17365_241203_02                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 63/167] afm17365_241205                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 64/167] afm17365_241205_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 65/167] afm17365_241205_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 66/167] afm17365_241206                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 67/167] afm17365_241209                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 68/167] afm17365_241210_01                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 69/167] afm17365_241210_02                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 70/167] afm17365_241211                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 71/167] afm17365_241212                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 72/167] afm17365_241213_01                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 73/167] afm17365_241213_02                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 74/167] afm17365_241215                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 75/167] afm17365_241216                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 76/167] afm17365_241219_01                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 77/167] afm17365_241219_02                     PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 78/167] afm17365_241220                        PASS           (nClu=928 desync=0 mix=0 spatial=21)
+  [ 79/167] afm17365_241219_01_resorted2           PASS           (nClu=492 desync=0 mix=0 spatial=5)
+  [ 80/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 81/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 82/167] afm17307_241021                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 83/167] afm17307_241023                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 84/167] afm17307_241024#afm17307_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=220 desync=209 mix=12 spatial=19)
+HDF5-DIAG: Error detected in HDF5 (1.8.12) thread 0:
+  #000: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1585 in H5Fopen(): unable to open file
+    major: File accessibilty
+    minor: Unable to open file
+  #001: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1274 in H5F_open(): unable to open file: time = Mon Jul 20 18:26:04 2026
+, name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17307\241024\trial0\ephys\preprocessed\catgt_afm17307_241024_hunting_pups_escape_g0\afm17307_241024_hunting_pups_escape_g0_imec0\afm17307_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_short_jrc.mat', tent_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  #002: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FD.c line 987 in H5FD_open(): open failed
+    major: Virtual File Layer
+    minor: Unable to initialize object
+  #003: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FDsec2.c line 343 in H5FD_sec2_open(): unable to open file: name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17307\241024\trial0\ephys\preprocessed\catgt_afm17307_241024_hunting_pups_escape_g0\afm17307_241024_hunting_pups_escape_g0_imec0\afm17307_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_short_jrc.mat', errno = 2, error message = 'No such file or directory', flags = 0, o_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  [ 85/167] afm17307_241024#afm17307_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_short_jrc SKIP:loaderr   (nClu=0 desync=0 mix=0 spatial=0)
+  [ 86/167] afm17307_241025                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 87/167] afm17307_241026                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 88/167] afm17307_241027                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 89/167] afm17307_241028                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 90/167] afm17307_241029                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [ 91/167] afm17307_241030_0#afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=799 desync=792 mix=117 spatial=43)
+  [ 92/167] afm17307_241030_0#merged_afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=114 desync=85 mix=12 spatial=16)
+  [ 93/167] afm17307_241030_1#afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=799 desync=792 mix=117 spatial=43)
+  [ 94/167] afm17307_241030_1#merged_afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=114 desync=85 mix=12 spatial=16)
+  [ 95/167] afm17307_241030_2#afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=799 desync=792 mix=117 spatial=43)
+  [ 96/167] afm17307_241030_2#merged_afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=114 desync=85 mix=12 spatial=16)
+  [ 97/167] afm17307_241031_0                      DESYNC-SEVERE  (nClu=1122 desync=1104 mix=299 spatial=56)
+  [ 98/167] afm17307_241031_1                      DESYNC-SEVERE  (nClu=1122 desync=1104 mix=299 spatial=56)
+  [ 99/167] afm17307_241031_2                      DESYNC-SEVERE  (nClu=1122 desync=1104 mix=299 spatial=56)
+  [100/167] afm17307_241031_3                      DESYNC-SEVERE  (nClu=1122 desync=1104 mix=299 spatial=56)
+  [101/167] afm17307_241101_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [102/167] afm17307_241101_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [103/167] afm17307_241122_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [104/167] afm17307_241122_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [105/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [106/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [107/167] afm17313_241016_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [108/167] afm17313_241016_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [109/167] afm17313_241017_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [110/167] afm17313_241017_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [111/167] afm17313_241018                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [112/167] afm17313_241022                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [113/167] afm17313_241023_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [114/167] afm17313_241023_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [115/167] afm17313_241023_2                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [116/167] afm17313_241024#afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=427 desync=0 mix=0 spatial=67)
+HDF5-DIAG: Error detected in HDF5 (1.8.12) thread 0:
+  #000: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1585 in H5Fopen(): unable to open file
+    major: File accessibilty
+    minor: Unable to open file
+  #001: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1274 in H5F_open(): unable to open file: time = Mon Jul 20 18:29:41 2026
+, name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241024\trial0\ephys\preprocessed\catgt_afm17313_241024_hunting_pups_escape_g0\afm17313_241024_hunting_pups_escape_g0_imec0\unipolar_afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat', tent_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  #002: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FD.c line 987 in H5FD_open(): open failed
+    major: Virtual File Layer
+    minor: Unable to initialize object
+  #003: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FDsec2.c line 343 in H5FD_sec2_open(): unable to open file: name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241024\trial0\ephys\preprocessed\catgt_afm17313_241024_hunting_pups_escape_g0\afm17313_241024_hunting_pups_escape_g0_imec0\unipolar_afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat', errno = 2, error message = 'No such file or directory', flags = 0, o_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  [117/167] afm17313_241024#unipolar_afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc SKIP:loaderr   (nClu=0 desync=0 mix=0 spatial=0)
+  [118/167] afm17313_241024_SPKGUI                 SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [119/167] afm17313_241025                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [120/167] afm17313_241026                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [121/167] afm17313_241027                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [122/167] afm17313_241028_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [123/167] afm17313_241028_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [124/167] afm17313_241028_2                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [125/167] afm17313_241028_3                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+HDF5-DIAG: Error detected in HDF5 (1.8.12) thread 0:
+  #000: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1585 in H5Fopen(): unable to open file
+    major: File accessibilty
+    minor: Unable to open file
+  #001: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1274 in H5F_open(): unable to open file: time = Mon Jul 20 18:29:41 2026
+, name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241028\trial4\ephys\preprocessed\catgt_afm17313_241028_hunting_pups_escape_2_g0\afm17313_241028_hunting_pups_escape_2_g0_imec0\afm17313_241026_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat', tent_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  #002: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FD.c line 987 in H5FD_open(): open failed
+    major: Virtual File Layer
+    minor: Unable to initialize object
+  #003: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FDsec2.c line 343 in H5FD_sec2_open(): unable to open file: name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241028\trial4\ephys\preprocessed\catgt_afm17313_241028_hunting_pups_escape_2_g0\afm17313_241028_hunting_pups_escape_2_g0_imec0\afm17313_241026_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat', errno = 2, error message = 'No such file or directory', flags = 0, o_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  [126/167] afm17313_241028_4#afm17313_241026_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc SKIP:loaderr   (nClu=0 desync=0 mix=0 spatial=0)
+HDF5-DIAG: Error detected in HDF5 (1.8.12) thread 0:
+  #000: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1585 in H5Fopen(): unable to open file
+    major: File accessibilty
+    minor: Unable to open file
+  #001: C:\TEMP\batserve\win64\hdf5-1.8\src\H5F.c line 1274 in H5F_open(): unable to open file: time = Mon Jul 20 18:29:41 2026
+, name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241028\trial4\ephys\preprocessed\catgt_afm17313_241028_hunting_pups_escape_2_g0\afm17313_241028_hunting_pups_escape_2_g0_imec0\afm17313_241028_hunting_pups_escape_2_g0_tcat.imec0.ap_irc_jrc.mat', tent_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  #002: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FD.c line 987 in H5FD_open(): open failed
+    major: Virtual File Layer
+    minor: Unable to initialize object
+  #003: C:\TEMP\batserve\win64\hdf5-1.8\src\H5FDsec2.c line 343 in H5FD_sec2_open(): unable to open file: name = '\\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241028\trial4\ephys\preprocessed\catgt_afm17313_241028_hunting_pups_escape_2_g0\afm17313_241028_hunting_pups_escape_2_g0_imec0\afm17313_241028_hunting_pups_escape_2_g0_tcat.imec0.ap_irc_jrc.mat', errno = 2, error message = 'No such file or directory', flags = 0, o_flags = 0
+    major: File accessibilty
+    minor: Unable to open file
+  [127/167] afm17313_241028_4#afm17313_241028_hunting_pups_escape_2_g0_tcat.imec0.ap_irc_jrc SKIP:loaderr   (nClu=0 desync=0 mix=0 spatial=0)
+  [128/167] afm17313_241029_0                      DESYNC-SEVERE  (nClu=314 desync=313 mix=79 spatial=107)
+  [129/167] afm17313_241029_1                      DESYNC-SEVERE  (nClu=314 desync=313 mix=79 spatial=107)
+  [130/167] afm17313_241029_2                      DESYNC-SEVERE  (nClu=314 desync=313 mix=79 spatial=107)
+  [131/167] afm17313_241029_3                      DESYNC-SEVERE  (nClu=314 desync=313 mix=79 spatial=107)
+  [132/167] _                                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [133/167] afm17372_241122_0                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [134/167] afm17372_241122_1                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [135/167] afm17372_241122_2                      SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [136/167] afm17372_241125_0                      DESYNC-SEVERE  (nClu=219 desync=216 mix=46 spatial=4)
+  [137/167] afm17372_241125_1                      DESYNC-SEVERE  (nClu=219 desync=216 mix=46 spatial=4)
+  [138/167] afm17372_241125_2                      DESYNC-SEVERE  (nClu=219 desync=216 mix=46 spatial=4)
+  [139/167] afm17372_241127_0                      DESYNC-SEVERE  (nClu=199 desync=185 mix=38 spatial=3)
+  [140/167] afm17372_241127_1                      DESYNC-SEVERE  (nClu=199 desync=185 mix=38 spatial=3)
+  [141/167] afm17372_241127_2                      DESYNC-SEVERE  (nClu=199 desync=185 mix=38 spatial=3)
+  [142/167] afm17372_241129_0#afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=257 desync=81 mix=61 spatial=21)
+  [143/167] afm17372_241129_0#monopolar_of_afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=340 desync=0 mix=0 spatial=53)
+  [144/167] afm17372_241129_1#afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=257 desync=81 mix=61 spatial=21)
+  [145/167] afm17372_241129_1#monopolar_of_afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=340 desync=0 mix=0 spatial=53)
+  [146/167] afm17372_241129_2#afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=257 desync=81 mix=61 spatial=21)
+  [147/167] afm17372_241129_2#monopolar_of_afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc PASS           (nClu=340 desync=0 mix=0 spatial=53)
+  [148/167] afm17372_241202_0                      DESYNC-SEVERE  (nClu=212 desync=113 mix=66 spatial=3)
+  [149/167] afm17372_241202_1                      DESYNC-SEVERE  (nClu=212 desync=113 mix=66 spatial=3)
+  [150/167] afm17372_241202_2                      DESYNC-SEVERE  (nClu=212 desync=113 mix=66 spatial=3)
+  [151/167] afm17372_241206_0#afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=197 desync=176 mix=15 spatial=18)
+  [152/167] afm17372_241206_0#histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=110 desync=47 mix=4 spatial=0)
+  [153/167] afm17372_241206_0#shortwaves_histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=191 desync=184 mix=19 spatial=1)
+  [154/167] afm17372_241206_1#afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=197 desync=176 mix=15 spatial=18)
+  [155/167] afm17372_241206_1#histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=110 desync=47 mix=4 spatial=0)
+  [156/167] afm17372_241206_1#shortwaves_histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc DESYNC-SEVERE  (nClu=191 desync=184 mix=19 spatial=1)
+  [157/167] afm17372_241209#afm17372_241209_0_g0_tcat.imec0.ap_irc_jrc DESYNC-SEVERE  (nClu=384 desync=274 mix=40 spatial=34)
+  [158/167] afm17372_241209#optimized_afm17372_241209_0_g0_tcat.imec0.ap_irc_jrc DESYNC-SEVERE  (nClu=292 desync=187 mix=28 spatial=18)
+  [159/167] afm17372_241209_01#afm17372_241209_0_g0_tcat.imec0.ap_irc_jrc DESYNC-SEVERE  (nClu=384 desync=274 mix=40 spatial=34)
+  [160/167] afm17372_241209_01#optimized_afm17372_241209_0_g0_tcat.imec0.ap_irc_jrc DESYNC-SEVERE  (nClu=292 desync=187 mix=28 spatial=18)
+  [161/167] afm17372_241210                        DESYNC-SEVERE  (nClu=287 desync=282 mix=28 spatial=9)
+  [162/167] afm17372_241212                        DESYNC-SEVERE  (nClu=176 desync=58 mix=58 spatial=8)
+  [163/167] afm17372_241213                        DESYNC-SEVERE  (nClu=181 desync=172 mix=75 spatial=5)
+  [164/167] afm17372_241215                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [165/167] afm17372_241216                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [166/167] afm17372_241219                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+  [167/167] afm17372_241220                        SKIP:notfound  (nClu=0 desync=0 mix=0 spatial=0)
+
+Wrote D:\github\ironclustSW\logs\jrc_scan_project_hierarchy\AFFECTED_REPORT.md and 167 per-session logs in D:\github\ironclustSW\logs\jrc_scan_project_hierarchy\logs

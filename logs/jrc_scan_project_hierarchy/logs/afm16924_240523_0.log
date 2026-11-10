@@ -1,0 +1,6 @@
+session : afm16924_240523_0
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16924\concat\supercat_afm16924_240522_g0\afm16924_240522_g0_imec0\KS2_whiten_afm16924_supercat.imec0.ap_imec3b2_2sec_chunks_jrc.mat
+verdict : PASS
+nClu=271  nSpk=12167574
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=0  worstSiteSpan=0

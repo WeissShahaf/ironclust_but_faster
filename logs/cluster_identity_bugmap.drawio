@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="30.2.6">
+  <diagram name="cluster-identity-bugmap">
+    <mxGraphModel dx="1400" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1450" pageHeight="740" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="2" value="IronClust cluster-identity bugs — where they were, how they were fixed, what the code does now" style="text;html=1;fontSize=18;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1370" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="Green = fixed &amp; committed (87cd4f1, d954926)&#160;&#160;&#183;&#160;&#160;Purple = detection added&#160;&#160;&#183;&#160;&#160;Orange = still open (plan P3b)" style="text;html=1;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="56" width="1370" height="24" as="geometry" />
+        </mxCell>
+
+        <mxCell id="4" value="How the code works now (the invariant): viClu(cviSpk_clu{i}) == i" style="text;html=1;fontSize=13;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="94" width="600" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="5" value="&lt;b&gt;S_clu.viClu&lt;/b&gt;&#xa;per-SPIKE labels&#xa;&lt;b&gt;AUTHORITATIVE&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="124" width="220" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="&lt;b&gt;cviSpk_clu&lt;/b&gt; cache&#xa;+ viSite / vnSpk / pos satellites&#xa;(what the GUI shows)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="124" width="270" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="GUI display&#xa;FigWav / FigTime&#xa;drift view" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="670" y="124" width="200" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="8" value="&lt;b&gt;The bug class:&lt;/b&gt; when viClu and the cache disagree, the GUI shows one cluster while split / merge rebuild a different one (S_clu_update_ reads viClu)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;align=left;verticalAlign=middle;spacingLeft=8;spacingRight=8;" vertex="1" parent="1">
+          <mxGeometry x="920" y="124" width="458" height="72" as="geometry" />
+        </mxCell>
+
+        <mxCell id="9" value="&lt;b&gt;S_clu_select_&lt;/b&gt; permutes the *_clu fields ONLY — it cannot remap viClu.&#xa;Every caller that reorders clusters must remap viClu itself (all 5 now do)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=left;verticalAlign=middle;spacingLeft=8;spacingRight=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="224" width="560" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="10" value="&lt;b&gt;S_clu_commit_ then S_clu_assert_synced_&lt;/b&gt; — the detection. Checks the viClu / cache invariant on every commit and WARNS (never reverts)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;align=left;verticalAlign=middle;spacingLeft=8;spacingRight=8;" vertex="1" parent="1">
+          <mxGeometry x="670" y="224" width="708" height="64" as="geometry" />
+        </mxCell>
+
+        <mxCell id="30" value="derives (S_clu_refresh_ / S_clu_update_)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="31" value="displays" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="6" target="7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="32" value="permutes *_clu" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="9" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="33" value="caller must remap viClu (fixed)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;dashed=1;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="9" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="11" value="The bugs — location &#183; defect &#183; fix &#183; current behavior" style="text;html=1;fontSize=13;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="314" width="800" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="12" value="&lt;b&gt;CID-01 &#183; reorder_clu_by_coords_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 10380&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  [O] renumbered the cache, not viClu, then saved.&#xa;&lt;b&gt;Fix&lt;/b&gt;  remap viClu before S_clu_select_.&#xa;&lt;b&gt;Now&lt;/b&gt;  [O] moves cache + viClu together." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="344" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="&lt;b&gt;CID-07 &#183; delete_clu_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 9140&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  remapped viClu even when the cache remap silently failed (7,172 deleted spikes found in live cache).&#xa;&lt;b&gt;Fix&lt;/b&gt;  snapshot + content-check + rollback.&#xa;&lt;b&gt;Now&lt;/b&gt;  a failed remap aborts cleanly." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="312" y="344" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="14" value="&lt;b&gt;CID-03 &#183; split_clu_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 10690&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  max(viClu)+1 clobbered a live index; the split silently reverted.&#xa;&lt;b&gt;Fix&lt;/b&gt;  max(nClu, max(viClu)) + 1.&#xa;&lt;b&gt;Now&lt;/b&gt;  the split always commits." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="584" y="344" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="&lt;b&gt;CID-04 &#183; get_clu_spk_confirmed_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 9873&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  on total disagreement it returned the stale cache (why 45b5333 did not fix it).&#xa;&lt;b&gt;Fix&lt;/b&gt;  prefer viClu (authoritative).&#xa;&lt;b&gt;Now&lt;/b&gt;  splits use the right spikes even when desynced." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="856" y="344" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="&lt;b&gt;CID-02 &#183; show_drift_view [S]&lt;/b&gt;&#xa;&lt;i&gt;show_drift_view.m&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  polygon drawn on gca, data read from the tab axes.&#xa;&lt;b&gt;Fix&lt;/b&gt;  impoly_(hAx) + explicit parent.&#xa;&lt;b&gt;Now&lt;/b&gt;  the cut matches what is drawn." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1128" y="344" width="250" height="170" as="geometry" />
+        </mxCell>
+
+        <mxCell id="17" value="&lt;b&gt;CID-08 &#183; merge_clu_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 9344&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  a half-applied merge was logged as complete.&#xa;&lt;b&gt;Fix&lt;/b&gt;  snapshot + whole-merge rollback.&#xa;&lt;b&gt;Now&lt;/b&gt;  merge is all-or-nothing." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="524" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="18" value="&lt;b&gt;CID-09 &#183; post_merge_wav_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 4287&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  stripped mrWavCor and left nClu_merge unassigned, crashing the two-output caller.&#xa;&lt;b&gt;Fix&lt;/b&gt;  init nClu_merge=0; return before rmfield.&#xa;&lt;b&gt;Now&lt;/b&gt;  fSave_spkwav=0 is a true no-op." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="312" y="524" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="19" value="&lt;b&gt;CID-10 &#183; parpool sizing&lt;/b&gt;&#xa;&lt;i&gt;irc.m 2572&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Bug&lt;/b&gt;  a stale undersized pool was reused, running the loop narrow.&#xa;&lt;b&gt;Fix&lt;/b&gt;  resize in either direction (~= nWorkers).&#xa;&lt;b&gt;Now&lt;/b&gt;  the pool matches the requested width." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="584" y="524" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="&lt;b&gt;CID-06 &#183; S_clu_assert_synced_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 19787 (detection)&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Gap&lt;/b&gt;  no content check existed (S_clu_valid_ checks lengths only).&#xa;&lt;b&gt;Fix&lt;/b&gt;  new O(nSpk) check at S_clu_commit_, warns.&#xa;&lt;b&gt;Now&lt;/b&gt;  a desync is announced, not hidden." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="856" y="524" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="&lt;b&gt;CID-11 &#183; struct_select_safe_&lt;/b&gt;&#xa;&lt;i&gt;irc.m 19589 (ENABLER — OPEN)&lt;/i&gt;&#xa;&#xa;&lt;b&gt;Enabler&lt;/b&gt;  skips a field silently; the reconcile then falsifies the length.&#xa;&lt;b&gt;Status&lt;/b&gt;  NOT fixed (plan P3b).&#xa;&lt;b&gt;Mitigated&lt;/b&gt;  delete_clu_'s content guard catches it locally." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1128" y="524" width="250" height="170" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

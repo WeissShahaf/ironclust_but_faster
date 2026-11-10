@@ -1,0 +1,6 @@
+session : afm16924_240529_test
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16924\240529\trial0\ephys\preprocessed\catgt_afm16924_240529_pup_retrieval_hunting_g0\afm16924_240529_pup_retrieval_hunting_g0_imec0\afm16924_240529_pup_retrieval_hunting_g0_tcat.imec0.ap_jrc.mat
+verdict : PASS
+nClu=181  nSpk=2162975
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=2  worstSiteSpan=16

@@ -1,0 +1,7 @@
+session : afm17313_241024#unipolar_afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241024\trial0\ephys\preprocessed\catgt_afm17313_241024_hunting_pups_escape_g0\afm17313_241024_hunting_pups_escape_g0_imec0\unipolar_afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat
+verdict : SKIP:loaderr
+nClu=0  nSpk=0
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=0  worstSiteSpan=0
+note    : Unable to read MAT-file \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17313\241024\trial0\ephys\preprocessed\catgt_afm17313_241024_hunting_pups_escape_g0\afm17313_241024_hunting_pups_escape_g0_imec0\unipolar_afm17313_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat. Not a binary MAT-file. Try load -ASCII to read as text.

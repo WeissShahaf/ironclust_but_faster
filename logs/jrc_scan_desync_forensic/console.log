@@ -1,0 +1,25 @@
+
+=== analyze_desync: 22 file(s) ===
+  afm17307_241024_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat clean=201   partial=7    mixed=12    sciPreserved= 91.8%  cover= 86.8%  
+  afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat clean=659   partial=23   mixed=117   sciPreserved= 71.2%  cover= 78.7%  
+  merged_afm17307_241030_hunting_pups_escape_g0_tcat.imec0.ap_IRC_jrc.mat clean=83    partial=19   mixed=12    sciPreserved= 69.3%  cover=102.2%  
+  afm17307_241031_hunting_pups_escape2_g0_tcat.imec0.ap_IRC_jrc.mat clean=774   partial=49   mixed=299   sciPreserved= 68.3%  cover= 74.8%  
+  afm17313_241029_hunting_pups_escape_g0_tcat.imec0.ap_IRC_PAG_jrc.mat clean=225   partial=10   mixed=79    sciPreserved= 75.3%  cover= 95.3%  
+  afm17372_241125_g0_tcat.imec0.ap_IRC_jrc.mat   clean=159   partial=14   mixed=46    sciPreserved= 70.7%  cover= 88.0%  
+  afm17372_241127_g0_tcat.imec0.ap_shortlist_IRC_jrc.mat clean=149   partial=12   mixed=38    sciPreserved= 62.7%  cover= 99.9%  
+  afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=188   partial=8    mixed=61    sciPreserved= 59.2%  cover= 47.7%  
+  afm17372_241202_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=142   partial=4    mixed=66    sciPreserved= 65.2%  cover= 65.9%  
+  afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=113   partial=69   mixed=15    sciPreserved= 63.9%  cover= 88.5%  
+  histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=100   partial=6    mixed=4     sciPreserved= 76.6%  cover= 94.9%  
+  shortwaves_histo_afm17372_241206_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=168   partial=4    mixed=19    sciPreserved= 90.3%  cover= 75.4%  
+  afm17372_241209_0_g0_tcat.imec0.ap_irc_jrc.mat clean=270   partial=74   mixed=40    sciPreserved= 79.6%  cover= 92.1%  
+  optimized_afm17372_241209_0_g0_tcat.imec0.ap_irc_jrc.mat clean=227   partial=37   mixed=28    sciPreserved= 73.7%  cover= 75.4%  
+  afm17372_241210_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=259   partial=0    mixed=28    sciPreserved= 82.5%  cover=103.4%  
+  afm17372_241212_0_g0_tcat.imec0.ap_IRC_jrc.mat clean=118   partial=0    mixed=58    sciPreserved= 66.0%  cover=102.5%  
+  afm17372_241213_0_g0_tcat.imec0.lf_shortlist_IRC_jrc.mat clean=102   partial=4    mixed=75    sciPreserved= 54.3%  cover=105.1%  
+  260317_afm18349_g0_tcat.imec0.ap_IRC_jrc.mat   clean=172   partial=2    mixed=35    sciPreserved= 88.0%  cover= 72.8%  
+  test260317_afm18367_g0_tcat.imec0.ap_IRC_jrc.mat clean=32    partial=1    mixed=3     sciPreserved= 87.7%  cover= 10.7%  
+  260320_afm18349_g0_tcat.imec0.ap_IRC_jrc.mat   clean=231   partial=10   mixed=18    sciPreserved= 90.4%  cover= 78.3%  
+  260320_afm18367_g0_tcat.imec0.ap_IRC_jrc.mat   clean=104   partial=8    mixed=26    sciPreserved= 79.7%  cover= 76.9%  
+  260324_afm18349_g0_tcat.imec0.ap_IRC_jrc.mat   clean=135   partial=3    mixed=52    sciPreserved= 62.0%  cover=101.9%  
+wrote D:\github\ironclustSW\logs\jrc_scan_desync_forensic\DESYNC_PERMUTATION_ANALYSIS.md

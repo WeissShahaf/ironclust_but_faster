@@ -275,7 +275,7 @@ rho_cut = -2.5;			% RL cluster: rho cut-off. Decreasing (more negative) this wil
 thresh_merge_clu = 0;			% Pierre Yger's cluster merging criterial based on medium projection of cluster pairs
 thresh_automerge_pca = [];			% posthoc merge based on the eigvec similarity. recommends .998
 thresh_split_clu = 0;			% Split a cluster to two if separation distance > (x) after k-means clustering
-fDiscard_count = 1;			% Discard cluster under minimum count. set to zero to absorb to the nearest cluster
+fDiscard_count = 0;			% Action for clusters under min_count, and only when fEnforce_min_count = 1. 0 = absorb into the nearest cluster (lossless, default); 1 = discard their spikes to noise.
 vcCluWavMode = 'median';			% use median to compute average cluster waveform
 frac_equal_knn = 0.5;			% Fraction of k-nearest neighbors from the same cluster. 
 

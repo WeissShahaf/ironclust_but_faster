@@ -1,0 +1,6 @@
+session : afm16963_240526#afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16963\afm16963_240526_pup_retrieval_g0_imec0\afm16963_240526_pup_retrieval_g0_tcat.imec0.ap_imec3b2_jrc.mat
+verdict : PASS
+nClu=151  nSpk=10533140
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=11  worstSiteSpan=40

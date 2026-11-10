@@ -19,6 +19,7 @@ header_offset = 0;          % File header offset (set to 0 for files containing 
 version = '';               % IronClust version
 fVerbose = 0;               % Verbose flag, set to 0 to suppress displaying extra information 
 fParfor = 1;                % Use Multiple CPU cores (if parallel processing toolbox is installed)
+parfor_core_factor = 0.85;  % Safety-margin cap on the parfor worker pool cluster_labels_persite_ creates: floor(parfor_core_factor * #cores) (max_workers_ in irc.m). Lower on shared/interactive machines. NOT a fix for BLAS-thread oversubscription under parfor -- see logs/investigation_maxSpk_persite_clust.md; fParfor=0 remains the measured-correct setting for per-site label-clustering workloads.
 fGpu = 1;                   % Use GPU if parallel processing toolbox is installed
 fGpu_sort = 1;              % Use GPU for clustering if parallel processing toolbox is installed
 fGpu_rho = 1;               % Use GPU for computing KNN and Rho
@@ -45,12 +46,13 @@ maxAmp = 250;               % Amplitude range in uV (initial setting, changeable
 nShow = 200;                % Maximum number of traces to show [D?# spikes to show]
 corrLim = [.9 1];           % Correlation color plot range
 nSpk_show = 30;             % show spike waveforms for manual clustering
-nShow_proj = 50;           % Max. number of spikes to show in the projection view
+nShow_proj = 50;           % Max. number of BACKGROUND spikes to show in the projection view (selected clusters are shown in full so the display matches what [S] splits)
 vcFet_show = 'vpp';         % Feature to show in time plot {'vpp', 'cov', 'pca'} (*)
 mrColor_proj = [.75 .75 .75; 0 0 0; 1 0 0];     % background, selected, comparison color
 vcFilter_show = '';         % Filter to apply in the "traces" view. Choices: {'', 'bandpass', 'sgdiff'}. '' uses vcFilter setting.
 fText = 0;                  % Show spike count per unit (*, press 'n' to toggle in manual GUI)
-vcFile_site_region = '';    % .csv of "key,region" rows (key = channel # or 1-based site #). In the manual GUI probe map, press 'c' to cycle site labels between channel #, site #, and region.
+vcFile_site_region = '';    % .csv of "key,region" rows (key = channel # or 1-based site #). In the manual GUI probe map, press 'c' to cycle site labels between channel #, site #, and region; 'v' toggles the box color between amplitude (Vpp) and region; 'b' toggles zoom between the selected cluster's site +/-5 sites and the whole shank. "irc probe my.prm" also honors it ('c' cycles labels, 'v' toggles shank/region color).
+fCheck_clu_sync = 1;        % Warn (console) if S_clu.cviSpk_clu disagrees with S_clu.viClu on commit. Catches cache/label desync, which silently corrupts splits and merges. Set 0 to silence.
 
 % #Pre-processing (run "jrc spikesort" after change)
 vcDataType_filter = 'single';   % Internal data representation after filtering
@@ -67,8 +69,9 @@ vnFilter_user = [];         % User-specified filter kernel. Used if vcFilter='us
 fft_thresh = 8;             % Automatically remove frequency outliers (unit:MAD, 10 recommended, 0 to disable). Verify by running "jrc traces" and press "p" to view the power spectrum.
 fft_thresh_low = [];        % lower threshold for dual-threshold scheme. set to [] to disable dual thresholding. low threshold gets activated if it connects to the higher threshold
 freqLimNotch = {[48,52]};          % Notch filter frequency range to exclude manually. {[start1, end1], [start2, end2]}. Can be used in conjunction with fft_thresh.
-vcCommonRef = 'none';       % common reference mode {'none', 'mean', 'median', 'whiten', 'whiten-mean', 'whiten-median'}
-nSites_whiten = 32;         % number of sites to use local whtening (only active when vcCommonRef=`whiten`).
+vcCommonRef = 'none';       % common reference mode {'none', 'mean', 'median', 'whiten', 'whiten-mean', 'whiten-median', 'shankcmr', 'shankwhiten', 'shankcmrwhiten'}. shank*: median CMR and/or whitening computed within each shank only (.prb shank field), never across shanks.
+nSites_whiten = 32;         % number of sites to use local whitening in the shank* modes (capped by the neighbor count and the smallest usable shank). 'whiten' ignores it.
+nSites_min_shank = 16;      % shank* modes: shanks with fewer usable (non-viSiteZero) sites are left untouched (warns once). A single-shank probe ignores it.
 nChans_min_car = 8;        % minimum number of common average referencing
 viSiteZero = [];            % Site# to ignore manually
 viSiteExcl = [];            % Site to exclude manually
@@ -141,7 +144,7 @@ vcFet = 'gpca';             % Feature list: {'gpca', 'cov', 'vpp', 'vmin', 'vmin
 nPcPerChan = 2;             % number of principal components per chan.
 vcSpkRef = 'none';         % Subtract mean of the spiking event sites {'nmean', 'none', 'time-mean'}
 fInterp_fet = 1;            % Interpolate the waveforms for feature projection to find the optimal delay (2x interp). Set to 0 to disable
-fRaw_feature = 0;           % Use raw waveform for feature extraction
+fRaw_feature = 0;           % Use raw waveform for feature extraction. Raw features ignore vcCommonRef, except shankcmr/shankwhiten/shankcmrwhiten, which are still applied to the raw trace. With fRaw_feature=0 every vcCommonRef mode applies; vcFilter_detect (non-empty) detects on a separate filtered trace that ignores vcCommonRef.
 
 % #Clustering (run "jrc sort" after change)
 vcCluster = 'drift-knn';        % cluster method: {'spacetime', 'drift', 'drift2', 'drift-knn', 'wavcov', 'classix', 'kmeans', 'hdbscan', 'isosplit6'}, spacetime: spatiotemporal decentralized clustering that can handle slow drift; drift: fast drift clustering; classix: CLASSIX fast sorting-based clustering (10-100x faster than DPC); kmeans/hdbscan/isosplit6: per-site label-based clustering (bypass DPC, merged across sites by post-merge); wavcov: waveform covariance (creates nChans^2*nDelays_wavcov number of features)
@@ -155,19 +158,23 @@ step_sec_drift = 20;          % compute anatomical similarity every n sec
 nBatch_max_drift = 32;      % max number of batch size
 
 % #Post-cluster auto-merging parameters (run "jrc auto" after change)
-min_count = 30;             % Minimum cluster size (min_count will be set to 2*#features if lower).
+min_count = 30;             % Minimum cluster size (min_count will be set to 2*#features if lower). NOTE: enforced only by postCluster_, which post_merge_ SKIPS for label-based sorts (vcCluster = kmeans/hdbscan/isosplit/classix) -- so on those sorts min_count does nothing unless fEnforce_min_count = 1 below.
+fEnforce_min_count = 0;     % Apply min_count after the automated merge (S_clu_merge_small_). 0 = off (default; behaviour byte-identical to before). 1 = enforce, using fDiscard_count to choose the action. Only does anything on label-based sorts: DPC sorts already applied min_count inside postCluster_. Set to 1 when a per-site label sort leaves clusters far below min_count.
+nSpk_max_clu_wav = 0;       % Cap on how many spikes clu_wav_ medians when building a cluster template. 0 = off (default; use every spike, byte-identical to before). RECOMMENDED VALUE IF ENABLED: 10000. DOES NOT change merge decisions: S_clu.mrWavCor is never a merge input -- post_merge_wav4_ (which merges, in both post_merge_ and the GUI auto-merge) computes its own similarity from its own MAX_SAMPLE=4000 subsample, and S_clu_wavcor_merge_ (the only function that merges from S_clu.mrWavCor) is unreachable. Merge decisions have therefore ALWAYS used a 4000-spike subsample, so a 10000 cap here is more conservative than what merging already does. DOES change: stored templates, mrWavCor, vrVmin_clu, vrSnr_clu -- so the quality CSV and what a curator sees (plotted waveforms, FigWavCor, the GUI's pre-selected comparison partner). Measured on a 661-cluster recording (16.9M spikes, largest 745k), value / loop time / spikes medianed / near-threshold |d mrWavCor| median: 0=full / 77.1s / 100% / --;  10000 / 20.6s / 25.4% / 0.00024;  4000 / 10.2s / 12.0% / 0.00066;  1000 / 3.0s / 3.3% / 0.00159. End-to-end at 10000: post_merge_ 178s -> 113s with the CLUSTERING BYTE-IDENTICAL. 20000 and 40000 cost 50-110% more for no further gain. subsample_vr_ is deterministic, so a given setting is reproducible. See logs/ironclust_post_merge_followup_2026-08-06.md sections 3.7 and 3.7b.
 delta_cut = 1.0;            % Cutoff value for the Delta outlier in KNN-based Rodriguez-Laio clustering
 knn_merge_thresh = 1;       % Number of spikes shared between two peaks to be merged
-post_merge_mode = 1;        % Automated merging mode
+post_merge_mode = 17;       % Automated merging mode. 17 = cross-site drift-aware waveform-similarity merge (clu_wave_similarity_paged -> templateMatch); scalar. Was 1 (same-peak-site only).
 post_merge_mode0 = [12, 17];        % Automated merging mode. Set to 21 to use CLASSIX post-merge
-maxWavCor = .985;           % merge if waveform correlation is greater than maxWavCor.
-thresh_mad_clu = 7.5;       % This sets the MAD score threshold to remove outlier spikes for each cluster.
+post_merge_chain = [];      % Optional Nx2 [post_merge_mode maxWavCor; ...] applied in sequence by 'irc auto'/'reset-to-premerge'. [] = single-stage post_merge_mode+maxWavCor (default). post_merge_mode is scalar and cannot express a chain; this can. Pick a chain per recording with sweep_post_merge.m, then bake it in with 'irc reset-to-premerge'. Example that won a sweep on a 385-ch NPX isosplit sort (260320_afm18367): [17 .96; 4 .985] -- shape-based cross-site merge at a loose threshold, then a kNN-overlap pass. Thresholds are recording-specific; do not copy blindly.
+maxWavCor = .965;           % merge if waveform correlation is greater than maxWavCor. Was .985.
+thresh_mad_clu = 7.5;       % DEAD PARAMETER (verified 2026-09-02) -- changing it does NOTHING. It was documented as "MAD score threshold to remove outlier spikes for each cluster", and that is what S_clu_cleanup_ (irc.m ~19609) would do, but S_clu_cleanup_ has NO CALLER anywhere in irc.m: no Mahalanobis outlier removal ever runs. Kept only so old .prm files still load. Do not tune it; do not infer intent from this comment (see fDiscard_count, dead for years while documented as live). To actually drop outlier spikes you would have to call S_clu_cleanup_ from post_merge_.
 maxCluPerSite = 20;         % Maximum clusters per site allowed if local detrending is used.
 spkLim_factor_merge = 1;    % Waveform range for computing the correlation. spkLim_factor_merge <= spkLim_raw_factor_merge. circa v3.1.8
 frac_shift_merge = .1;      % Fraction of the waveform to shift to check for merging
 fRemove_duplicate = 1;      % Remove clusters whose detection site occurs far from the min waveform site (d>=maxDist_site_um)
 nInterp_merge = 1;          % Interpolation factor for the mean unit waveforms, set to 1 to disable
 fWavRaw_merge = 0;          % Use raw average unit waveforms for merge when set to 1, if not use filtered waveforms.
+fMerge_across_shank = 0;    % Allow cluster merges across shanks (0=reject cross-shank merges, the guard; 1=allow). No-op on single-shank/shank-less probes. Applies to irc sort/auto post-merge and the manual [M]/[U] curation.
 
 % #CLASSIX clustering parameters (applies to both vcCluster='classix' and post_merge_mode0=21)
 % CLASSIX can be used in two independent ways:
@@ -204,7 +211,7 @@ isosplit_max_iterations = 1000;    % ISO-SPLIT (v5): safety cap on merge/redistr
 isosplit_whiten = 1;               % ISO-SPLIT (v5): whiten comparison axis by pooled covariance (1=on, 0=off)
 % The per-site clustering loop (kmeans/hdbscan/isosplit) runs in parallel when fParfor=1.
 nWorkers_clust = 12;               % max parallel workers for per-site clustering (capped at #cores). Each worker holds one site's data (~8GB), so raise only if RAM allows; lower (4-8) if memory-bound.
-maxSpk_persite_clust = [];         % per-site spike cap for label-based clustering. [] = off (no cap; behaviour byte-identical to before). Sites with more spikes cluster a random subsample of this many and assign the rest to the nearest subset member, bounding the O(n^2) kNN graph + clustering on huge (usually noise) channels. Try 50000-100000 to enable; with m=50000 a 1.1M-spike noise site drops from ~80 min to ~90 s (measured: isosplit ~5 s + subset kNN + a 1-NN assignment pass ~86 s).
+maxSpk_persite_clust = 100000;     % per-site spike cap for label-based clustering (vcCluster = 'kmeans' | 'hdbscan' | 'isosplit6' only -- no effect on the default DPC path or on 'classix'). Sites with more spikes cluster a random subsample of this many and assign the rest to the nearest subset member, bounding the O(n^2) kNN graph + clustering on huge (usually noise) channels. Set to [] to disable (behaviour byte-identical to upstream); ignored if set below min_count. With m=50000 a 1.1M-spike noise site drops from ~80 min to ~90 s (measured: isosplit ~5 s + subset kNN + a 1-NN assignment pass ~86 s). When fGpu=1 the 1-NN assignment pass (nearest_in_set_) runs on GPU -- measured ~25-28x faster than CPU on the assignment step, with bit-exact indices -- automatically falling back to CPU if the GPU errors or if running inside a parfor worker (single shared GPU). Set fGpu=0 to force the CPU assignment path.
 
 % #Trial (used for plotting PSTH for each unit after clustering)
 vcFile_trial = '';          % .mat or .csv file containing timestamp in seconds unit. use any variable name.
@@ -352,7 +359,7 @@ rho_cut = -2.5;             % RL cluster: rho cut-off. Decreasing (more negative
 thresh_merge_clu = 0;       % Pierre Yger's cluster merging criterial based on medium projection of cluster pairs
 thresh_automerge_pca = [];   % posthoc merge based on the eigvec similarity. recommends .998
 thresh_split_clu = 0;       % Split a cluster to two if separation distance > (x) after k-means clustering
-fDiscard_count = 1;         % Discard cluster under minimum count. set to zero to absorb to the nearest cluster
+fDiscard_count = 0;         % Action for clusters under min_count. Read by S_clu_merge_small_, but ONLY when fEnforce_min_count = 1 (see above); with fEnforce_min_count = 0 this value is ignored. 0 = ABSORB them into the nearest surviving cluster by centroid distance, capped at maxDist_site_um, losing no spikes (DEFAULT since 2026-09-02 -- enforcing a size floor should not silently throw spikes away). 1 = move their spikes to noise (viClu = 0), the legacy DPC semantics: those spikes are GONE, opt in deliberately. Clusters with no surviving neighbour inside the radius are left untouched either way.
 vcCluWavMode = 'median';      % use median to compute average cluster waveform
 frac_equal_knn = .5;        % Fraction of k-nearest neighbors from the same cluster. 
 

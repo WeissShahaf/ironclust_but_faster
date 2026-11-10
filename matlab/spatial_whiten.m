@@ -1,12 +1,15 @@
-function [mrB, mrW, miSites] = spatial_whiten(mrA, miSites)
+function [mrB, mrW, miSites] = spatial_whiten(mrA, miSites, fKeyed)
 % spatial_whiten(mrA, miSites)
 % mrB = spatial_whiten(mrA)
+% fKeyed (default 0): if 1, recompute the cached whitening matrix when miSites differs from the
+%   cached one (used by the shank* vcCommonRef modes). 0 keeps the original compute-once behavior.
 
 if nargin<2, miSites = []; end
+if nargin<3, fKeyed = 0; end
 
 persistent mrW_ miSites_
 
-if isempty(mrW_)
+if isempty(mrW_) || (fKeyed && ~isequal(miSites_, miSites))
     miSites_ = miSites;
     mrW_ = compute_whiten_(mrA, miSites);
     fprintf(2, 'spatial_whiten: computed whitening matrix\n');

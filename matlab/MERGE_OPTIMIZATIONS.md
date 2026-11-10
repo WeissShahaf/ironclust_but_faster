@@ -1,5 +1,27 @@
 # Cluster Merging Runtime Optimizations
 
+> ## ⚠ NOT IMPLEMENTED — this is a proposal, not a description of `irc.m`
+>
+> Verified against `irc.m` on 2026-07-15: **none of the code described below exists.**
+> `grep` returns zero matches in any `.m` file for `ui_merge_batch_`,
+> `update_correlation_after_merge_`, `compute_cluster_correlations_`, `update_all_figures_`,
+> `figures_need_update`, `fUpdateImmediate`, or `fUpdateCorrelation`. They appear only in
+> this and other `.md` files.
+>
+> Specifically contradicted:
+> - **§1 "Critical Performance Bottleneck Fix"** — `merge_clu_pair_` still uses the
+>   `find(S_clu.viClu == iClu1)` path this document claims was replaced.
+> - **§2 "Deferred UI Updates"** / **§5 "Batch Merge"** — there is no `fUpdateImmediate`
+>   parameter, no `[B]` key, and no "Edit > Batch merge" menu. The **real** deferred feature is
+>   unrelated: `[M]`/`[D]` queue operations (`ui_merge_pending_`, `ui_delete_pending_`), `[U]`
+>   applies them (`execute_pending_and_update_`), `[Escape]` discards them.
+> - **§4 "Incremental Correlation Matrix Updates"** — not present.
+> - The "Expected Performance Improvements" table measures nothing that exists.
+>
+> Kept for historical/design reference only. **Do not cite it as current behavior** — the
+> `CLAUDE.md` section that used to summarize it has been corrected. See
+> `logs/changes_log20260715.md`.
+
 This document describes the performance optimizations implemented for the IronClust cluster merging process in `irc.m`.
 
 ## Overview

@@ -251,7 +251,7 @@ fNormRhoDelta = 1;			% remove spikes in delta dimension if set
 thresh_merge_clu = 0;			% Pierre Yger's cluster merging criterial based on medium projection of cluster pairs
 thresh_automerge_pca = [];			% posthoc merge based on the eigvec similarity. recommends .998
 thresh_split_clu = 0;			% Split a cluster to two if separation distance > (x) after k-means clustering
-fDiscard_count = 1;			% Discard cluster under minimum count. set to zero to absorb to the nearest cluster
+fDiscard_count = 0;			% Action for clusters under min_count, and only when fEnforce_min_count = 1. 0 = absorb into the nearest cluster (lossless, default); 1 = discard their spikes to noise.
 vcCluWavMode = 'mean';			% use median to compute average cluster waveform
 maxDist_site_merge_um = 35;			% Max. distance separation of the peak sites to consider merging
 

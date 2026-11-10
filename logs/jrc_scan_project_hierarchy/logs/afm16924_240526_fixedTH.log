@@ -1,0 +1,6 @@
+session : afm16924_240526_fixedTH
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16924\240526\trial0\ephys\preprocessed\catgt_afm16924_240526_pup_retrieval_g0\afm16924_240526_pup_retrieval_g0_imec0\afm16924_240526_pup_retrieval_g0_tcat.imec0.ap_NP1_jrc.mat
+verdict : SKIP:noS_clu
+nClu=0  nSpk=0
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=0  worstSiteSpan=0

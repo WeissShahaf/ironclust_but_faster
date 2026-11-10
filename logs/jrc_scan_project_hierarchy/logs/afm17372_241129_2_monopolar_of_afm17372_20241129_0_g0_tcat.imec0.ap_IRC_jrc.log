@@ -1,0 +1,6 @@
+session : afm17372_241129_2#monopolar_of_afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\np2\afm17372\241129\concat\supercat_afm17372_20241129_0_g0\afm17372_20241129_0_g0_imec0\monopolar_of_afm17372_20241129_0_g0_tcat.imec0.ap_IRC_jrc.mat
+verdict : PASS
+nClu=340  nSpk=3887655
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=53  worstSiteSpan=28

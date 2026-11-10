@@ -1,6 +1,7 @@
 %--------------------------------------------------------------------------
 % IronClust (irc)
 % James Jun, Flatiron Institute
+% modified by shahaf weiss. MPI for brain research.
 
 function varargout = irc(varargin)
 % Memory-efficient version 
@@ -214,6 +215,7 @@ fError = 0;
 switch lower(vcCmd)  
     case 'localize', localize_(P); return;
     case 'manual-gt', manual_(P, 'groundtruth'); return;
+    case 'recurate', manual_(P, 'recurate'); return; % 'return' is load-bearing: it matches manual-gt/manual-test and keeps the command out of the greedy contains_ fallback below
     case 'plot-clupairs', plot_clu_pairs_(P);
     case 'preview', preview_(P); 
     case 'preview-test', preview_(P, 1); gui_test_(P, 'Fig_preview');
@@ -246,6 +248,8 @@ switch lower(vcCmd)
         describe_(P.vcFile_prm);
     case {'auto', 'auto-verify', 'auto-manual', 'auto-validate', 'merge', 'merge-validate', 'merge-manual'}
         auto_(P); describe_(P.vcFile_prm);
+    case {'reset-to-premerge', 'reset-premerge'}
+        auto_(P, 1); describe_(P.vcFile_prm);
     case 'manual-test'
         manual_(P, 'debug'); manual_test_(P); return;          
     case 'manual-test-menu'
@@ -444,6 +448,9 @@ csHelp = {...
     '    Run the manual clustering GUI ';
     '  irc auto-manual myparams.prm';
     '    Run the auto clustering and do the manual clustering next';        
+    '  irc recurate myparams.prm';
+    '    Manual GUI starting from a fresh automatic clustering (no load prompt).';
+    '    Asks for confirmation, then DISCARDS the saved curation, unit notes and log.';
     '  irc plot-activity myparams.prm';
     '    Show firing rate as a function of time and depth';         
     '  irc verify myparams.prm';
@@ -540,6 +547,7 @@ function probe_(vcFile_prb)
 if matchFileExt_(vcFile_prb, {'.bin', '.dat'})
     vcFile_prb = subsFileExt_(vcFile_prb, '.prm');
 end
+vcFile_region = ''; % region CSV only known when started from a .prm
 if matchFileExt_(vcFile_prb, '.prm')
     vcFile_prm = vcFile_prb;
     P = loadParam_(vcFile_prm);
@@ -547,13 +555,19 @@ if matchFileExt_(vcFile_prb, '.prm')
     if ~exist_file_(vcFile_prb)
         vcFile_prb = replacePath_(vcFile_prb, vcFile_prm);
     end
+    vcFile_region = get_set_(P, 'vcFile_site_region', '');
+    if ~isempty(vcFile_region) && ~exist_file_(vcFile_region)
+        vcFile_region = replacePath_(vcFile_region, vcFile_prm);
+    end
 end
-vcFile_prb = find_prb_(vcFile_prb); 
+vcFile_prb = find_prb_(vcFile_prb);
 if isempty(vcFile_prb), fprintf(2, 'Probe file doesn''t exist.\n'); return; end
 S_prb = load_prb_(vcFile_prb);
 hFig = create_figure_('FigProbe', [0 0 .5 1], vcFile_prb, 1, 1);
-hPatch = plot_probe_(S_prb.mrSiteXY, S_prb.vrSiteHW, S_prb.viSite2Chan, S_prb.viShank_site);
+[hPatch, hText] = plot_probe_(S_prb.mrSiteXY, S_prb.vrSiteHW, S_prb.viSite2Chan, S_prb.viShank_site);
 axis equal;
+P_reg = struct('mrSiteXY', S_prb.mrSiteXY, 'viSite2Chan', S_prb.viSite2Chan, 'vcFile_site_region', vcFile_region);
+probe_region_keys_(hFig, hPatch, hText, P_reg, S_prb.viShank_site);
 edit_(vcFile_prb); %show probe file
 figure(hFig);
 end %func
@@ -1740,7 +1754,7 @@ viSite = int32(viSite);
 viSpk = int64(viSpk);    % deal with longer recording
 
 [cviSpkA, cvrSpkA, cviSiteA] = deal(cell(nSites,1));
-%fParfor = get_set_(P, 'fParfor', 1);
+%fParfor = get_set_(P, 'fParfor', 0);
 fParfor = 0;
 if fParfor
     try
@@ -1757,13 +1771,18 @@ if fParfor
     end
 end %if
 if ~fParfor
+    nFail_site = 0;   % DI-09: count per-site failures instead of silently dropping a whole site's spikes
     for iSite = 1:nSites
         try
             [cviSpkA{iSite}, cvrSpkA{iSite}, cviSiteA{iSite}] = ...
-                spikeMerge_single_(viSpk, vrSpk, viSite, iSite, P);            
-        catch
-            disperr_();
+                spikeMerge_single_(viSpk, vrSpk, viSite, iSite, P);
+        catch ME
+            nFail_site = nFail_site + 1;
+            fprintf(2, '\tspikeMerge_: site %d failed (%s) -- its spikes are dropped from this chunk.\n', iSite, ME.message);
         end
+    end
+    if nFail_site > 0
+        fprintf(2, '\t*** spikeMerge_: %d site(s) failed; their spikes are missing from the merged output. ***\n', nFail_site);
     end
 end
 
@@ -2238,16 +2257,19 @@ end %func
 
 %--------------------------------------------------------------------------
 % 2018/6/1: Added support for .prm format
-function mnWav = load_bin_(vcFile, vcDataType, dimm, header)
+function mnWav = load_bin_(vcFile, vcDataType, dimm, header, fStrict)
 % mnWav = load_bin_(vcFile, dimm, vcDataType)
 % mnWav = load_bin_(fid, dimm, vcDataType)
 % mnWav = load_bin_(vcFile_prm)
 % [Input arguments]
 % header: header bytes
+% fStrict (optional, default false): DI-04 -- error on a short read (rethrown from the catch below,
+%   not swallowed by disperr_) so a truncated .jrc surfaces instead of silently misaligning spikes.
 
 if nargin<2, vcDataType = []; end
 if nargin<3, dimm = []; end
 if nargin<4, header = 0; end
+if nargin<5, fStrict = false; end
 if isempty(vcDataType), vcDataType = 'int16'; end
 
 mnWav = [];
@@ -2285,12 +2307,14 @@ else % fid directly passed
 end
 try
     t1 = tic;
-    mnWav = fread_(fid, dimm, vcDataType);
+    mnWav = fread_(fid, dimm, vcDataType, fStrict);
     if ischar(vcFile)
         fclose(fid);
-%         fprintf('Loading %s took %0.1fs\n', vcFile, toc(t1)); 
+%         fprintf('Loading %s took %0.1fs\n', vcFile, toc(t1));
     end
-catch
+catch hErr
+    if ischar(vcFile), try fclose(fid); catch, end, end   % don't leak the handle on error
+    if fStrict, rethrow(hErr); end   % DI-04: strict callers (load_spkfet_/get_spkfet_) get a real error
     disperr_();
 end
 end %func
@@ -2413,7 +2437,7 @@ end %func
 %   - Tail/giant-site handling: a few noise/artifact channels can hold 30x the median
 %     spike count, and both the kNN graph (O(n^2)) and the clustering grow steeply, so
 %     those sites dominate the run (measured: kNN ~= 90% of the per-site cost, clean
-%     O(n^2)). The optional per-site spike cap (maxSpk_persite_clust, off by default)
+%     O(n^2)). The per-site spike cap (maxSpk_persite_clust, default 100000; [] disables)
 %     bounds this: a site with more than maxSpk spikes clusters a random subsample
 %     (clustering -> maxSpk points, kNN graph -> O(maxSpk^2)) and assigns the rest to
 %     the nearest subset member (cluster_site_capped_). The only residual cost that
@@ -2553,21 +2577,21 @@ nWorkers = max(1, round(get_set_(P, 'nWorkers_clust', 8)));
 % profile's NumWorkers throws ("Too many workers requested ..."), which would otherwise
 % drop us to the (much slower) serial path. To use more workers, raise the profile cap:
 %   c = parcluster('local'); c.NumWorkers = 12; saveProfile(c);
-nWorkersMax = feature('numcores');
-try
-    nWorkersMax = parcluster('local').NumWorkers;
-catch
-end
+nWorkersMax = max_workers_(P);   % capped at 0.85x cores (P.parfor_core_factor); see default.prm
 nWorkers = min(nWorkers, nWorkersMax);
 progress_persite_('init', nSites);
 if fParfor
     try
-        % reuse an existing pool when possible; otherwise size one to <= nWorkers
+        % reuse an existing pool only if it is already the right size; otherwise resize it.
+        % NOTE: this used to resize only when hPool.NumWorkers > nWorkers, so a pre-existing
+        % UNDER-sized pool (e.g. a stale 3-worker pool left by an earlier run) was silently
+        % reused and the whole per-site loop ran at a fraction of the requested width.
         hPool = gcp('nocreate');
         if isempty(hPool)
             hPool = parpool('local', nWorkers);
-        elseif hPool.NumWorkers > nWorkers
-            delete(hPool);                       % shrink an over-sized pool to the cap
+        elseif hPool.NumWorkers ~= nWorkers
+            fprintf('\tresizing existing pool: %d -> %d workers\n', hPool.NumWorkers, nWorkers);
+            delete(hPool);                       % resize an over- OR under-sized pool
             hPool = parpool('local', nWorkers);
         end
         nWorkers = hPool.NumWorkers;
@@ -2666,8 +2690,9 @@ end
 X = double(X);
 % --- optional per-site spike cap: on huge (usually noise) channels, cluster a
 %     random subsample of maxSpk spikes and propagate the result to the rest.
-%     Bounds BOTH the O(n1^2) kNN graph and the clustering cost. Off by default
-%     (maxSpk_persite_clust = []); only sites with n1 > maxSpk are affected. ---
+%     Bounds BOTH the O(n1^2) kNN graph and the clustering cost. default.prm sets
+%     maxSpk_persite_clust = 100000 ([] disables); only sites with n1 > maxSpk are
+%     affected. The [] fallback below applies only to a P built without default.prm. ---
 maxSpk = get_set_(P, 'maxSpk_persite_clust', []);
 if ~isempty(maxSpk) && n1 > maxSpk && maxSpk >= max(2, min_count)
     [viLabel, miKnn1, vrRho1, nLabel, t_clu, t_knn] = ...
@@ -2784,7 +2809,15 @@ nLabel = max([0; viLabelSub(viLabelSub > 0)]);
 hT = tic;
 try
     [miKnnSub, vrRhoSub] = persite_knn_(Xsub', knn, viSpkSub);
-    viNN = nearest_in_set_(X', Xsub');     % n1 x 1, index into the m subset members
+    % Any capped site (n1 > maxSpk) is a GPU candidate for the 1-NN assignment when
+    % P.fGpu is on -- Step 0 measured GPU ~25-28x faster than CPU here with no upper
+    % crossover (GPU still wins at n1~587k), so there is no upper size band. nearest_in_set_
+    % declines GPU inside a parfor worker and falls back to CPU on any GPU error.
+    fUseGpu = get_set_(P, 'fGpu', 0);
+    viNN = nearest_in_set_(X', Xsub', fUseGpu);     % n1 x 1, index into the m subset members
+    if ~all(viNN >= 1 & viNN <= m)   % defensive: a valid assignment indexes only the m subset members
+        error('nearest_in_set_ returned an out-of-range index');   % caught below -> single-cluster fallback
+    end
     viLabel = viLabelSub(viNN);
     miKnn1 = miKnnSub(:, viNN);
     vrRho1 = vrRhoSub(viNN);
@@ -2802,16 +2835,58 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function viNN = nearest_in_set_(mrFet_all, mrFet_sub)
+function viNN = nearest_in_set_(mrFet_all, mrFet_sub, fUseGpu)
 % For each column of mrFet_all (nFet x n1), return the index (1..m) of the
 % nearest column in mrFet_sub (nFet x m) by Euclidean distance. Chunked over the
 % queries (like knn_cpu_) so the pdist2 distance block stays bounded in memory.
 % Pure of shared state -> parfor-safe. Used by the per-site spike cap to assign
 % every spike to its nearest clustered subsample member.
+%
+% fUseGpu (optional, default false): when true, try a gpuArray-wrapped pdist2 GPU
+% path first (single precision), FALLING BACK TO THE CPU PATH BELOW ON ANY GPU ERROR
+% (mirrors cuda_knn_/cuda_delta_knn_'s try/GPU/catch-fallback idiom). Since this runs
+% once per capped site, a GPU failure on one site falls back to CPU for that site
+% while later sites still retry GPU. Measured ~25-28x faster than CPU with bit-exact
+% indices on real data (site n1~587k, m up to 200k, RTX 4000 Ada). GPU is additionally
+% declined when running inside a parfor worker (getCurrentTask() non-empty), because
+% cluster_site_capped_ runs inside cluster_labels_persite_'s parfor loop across up to
+% nWorkers_clust workers sharing ONE physical GPU. Omitting fUseGpu (nargin<3) preserves
+% today's CPU-only behavior byte-identically.
+if nargin < 3 || isempty(fUseGpu), fUseGpu = false; end
 n1 = size(mrFet_all, 2);
+m  = size(mrFet_sub, 2);
 viNN = zeros(n1, 1);
 mrSub_T = mrFet_sub';            % m x nFet (the searched set)
 nStep = 10000;                   % larger blocks = fewer calls + better BLAS efficiency
+
+if fUseGpu && isempty(getCurrentTask())
+    [gSub_T, fGpu_ok] = gpuArray_(single(mrSub_T));   % upload the constant anchor set once (gpuArray_ retries after a gpuDevice(1) reset)
+    if fGpu_ok
+        try
+            % Budget the GPU chunk size by available VRAM: the nStep_gpu x m single-
+            % precision distance block pdist2 materializes must fit. The CPU nStep=10000
+            % assumes system RAM; m can be hundreds of thousands on a capped giant site.
+            try
+                nBudgetBytes = 0.25 * gpuDevice().AvailableMemory;
+            catch
+                nBudgetBytes = 1e9;   % ~1GB fallback if the device query itself fails
+            end
+            nStep_gpu = max(1, min(nStep, floor(nBudgetBytes / (4 * max(m,1)))));
+            for i1 = 1:nStep_gpu:n1
+                vi_ = i1:min(i1+nStep_gpu-1, n1);
+                gChunk = gpuArray(single(mrFet_all(:,vi_)'));
+                [~, gIx] = pdist2(gSub_T, gChunk, 'euclidean', 'Smallest', 1);
+                viNN(vi_) = gather(gIx(:));
+            end
+            return;
+        catch ME
+            fprintf(2, '\n\tnearest_in_set_: GPU path failed (%s); falling back to CPU\n', ME.message);
+            viNN = zeros(n1, 1);   % discard any partial GPU results; CPU loop below covers all n1
+        end
+    end
+end
+
+% CPU path (default; also the GPU-failure fallback) -- UNCHANGED from today
 for i1 = 1:nStep:n1
     vi_ = i1:min(i1+nStep-1, n1);
     [~, ix] = pdist2(mrSub_T, mrFet_all(:,vi_)', 'euclidean', 'Smallest', 1);
@@ -3085,6 +3160,11 @@ if P.fGpu && knn==0
         CK.GridSize = [ceil(n1 / P.CHUNK / P.CHUNK), P.CHUNK]; %MaxGridSize: [2.1475e+09 65535 65535]    
         vrRho1 = zeros([1, n1], 'single', 'gpuArray'); 
         vnConst = int32([n1, n12, nC, dn_max, get_set_(P, 'fDc_spk', 0)]);
+        % DI-10: recompute launch config EVERY call. ThreadBlockSize/SharedMemorySize depend on
+        % P.nThreads/P.CHUNK/nC_max, which can change between files in one session while nC stays
+        % the same; the old code baked them in only at kernel construction -> stale kernel launch.
+        CK.ThreadBlockSize = [P.nThreads, 1];
+        CK.SharedMemorySize = 4 * P.CHUNK * (2 + nC_max + 2 * P.nThreads);
         vrRho1 = feval(CK, vrRho1, mrFet12, viiSpk12_ord, vnConst, dc2);
         return;
     catch        
@@ -3208,6 +3288,9 @@ if P.fGpu
         vrDelta1 = zeros([1, n1], 'single', 'gpuArray'); 
         viNneigh1 = zeros([1, n1], 'uint32', 'gpuArray'); 
         vnConst = int32([n1, n12, nC, dn_max, get_set_(P, 'fDc_spk', 0)]);
+        % DI-10: recompute launch config every call (depends on P.nThreads/P.CHUNK/nC_max).
+        CK.ThreadBlockSize = [P.nThreads, 1];
+        CK.SharedMemorySize = 4 * P.CHUNK * (3 + nC_max + 2*P.nThreads);
         [vrDelta1, viNneigh1] = feval(CK, vrDelta1, viNneigh1, mrFet12, viiSpk12_ord, viiRho12_ord, vnConst, dc2);
         % [vrDelta1_, viNneigh1_] = deal(vrDelta1, viNneigh1);
         return;
@@ -3808,20 +3891,21 @@ end %func
 
 %--------------------------------------------------------------------------
 function [via1, via2, via3, via4, vib1, vib2, vib3, vib4] = sgfilt4_(n1, fGpu)
-persistent n1_prev_ via1_ via2_ via3_ via4_ vib1_ vib2_ vib3_ vib4_
+persistent n1_prev_ fGpu_prev_ via1_ via2_ via3_ via4_ vib1_ vib2_ vib3_ vib4_
 if nargin<2, fGpu=0; end
 
 % Build filter coeff
 if isempty(n1_prev_), n1_prev_ = 0; end
+if isempty(fGpu_prev_), fGpu_prev_ = -1; end   % DI-19: force rebuild on first call / fGpu change
 try a = size(via1_); catch, n1_prev_ =0; end
-if n1_prev_ ~= n1 %rebuild cache
+if n1_prev_ ~= n1 || fGpu_prev_ ~= fGpu %rebuild cache (DI-19: fGpu keyed -- cached arrays are CPU or GPU)
     vi0 = int32(1:n1);        
     vi0 = gpuArray_(vi0, fGpu);
     via4_ = vi0+4; via4_(end-3:end)=n1;   vib4_ = vi0-4; vib4_(1:4)=1;
     via3_ = vi0+3; via3_(end-2:end)=n1;   vib3_ = vi0-3; vib3_(1:3)=1;
     via2_ = vi0+2; via2_(end-1:end)=n1;   vib2_ = vi0-2; vib2_(1:2)=1;
     via1_ = vi0+1; via1_(end)=n1;         vib1_ = vi0-1; vib1_(1)=1;
-    n1_prev_ = n1;
+    n1_prev_ = n1; fGpu_prev_ = fGpu;
 end
 
 % Copy from cache
@@ -3834,13 +3918,14 @@ end %func
 
 %--------------------------------------------------------------------------
 function [miA, miB, viC] = sgfilt_init_(nData, nFilt, fGpu)
-persistent miA_ miB_ viC_ nData_ nFilt_
+persistent miA_ miB_ viC_ nData_ nFilt_ fGpu_
 if nargin<2, fGpu=0; end
 
 % Build filter coeff
 if isempty(nData_), nData_ = 0; end
+if isempty(fGpu_), fGpu_ = -1; end   % DI-19: force rebuild on first call / fGpu change
 try a = size(miA_); catch, nData_ = 0; end
-if nData_ == nData && nFilt_ == nFilt
+if nData_ == nData && nFilt_ == nFilt && fGpu_ == fGpu   % DI-19: fGpu keyed
     [miA, miB, viC] = deal(miA_, miB_, viC_);
 else
     vi0 = gpuArray_(int32(1):int32(nData), fGpu)';
@@ -3848,7 +3933,7 @@ else
     miA = min(max(bsxfun(@plus, vi0, vi1),1),nData);
     miB = min(max(bsxfun(@plus, vi0, -vi1),1),nData);
     viC = gpuArray_(int32(-nFilt:nFilt), fGpu);
-    [nData_, nFilt_, miA_, miB_, viC_] = deal(nData, nFilt, miA, miB, viC);
+    [nData_, nFilt_, miA_, miB_, viC_, fGpu_] = deal(nData, nFilt, miA, miB, viC, fGpu);
 end
 end %func
 
@@ -3903,7 +3988,9 @@ if ~get_set_(P, 'fSave_spkwav', 1)
     return;
 end
     
-switch get_set_(P, 'post_merge_mode', 1)
+post_merge_mode = get_set_(P, 'post_merge_mode', 1);
+if numel(post_merge_mode) > 1, post_merge_mode = post_merge_mode(1); end   % DI-18: a .prm array (copy-paste from post_merge_mode0) would crash the scalar switch; use the first element
+switch post_merge_mode
     case 17, S_clu = templateMatch_post_(S_clu, P, clu_wave_similarity_paged(S_clu, P));
     case 16, S_clu = post_merge_local_(S_clu, P);
     case 15, S_clu = post_merge_similarity_cc_(S_clu, P);
@@ -3938,10 +4025,36 @@ if fLabelClu && get_set_(P, 'maxWavCor', 1) > 0 && get_set_(P, 'maxWavCor', 1) <
     % post_merge_wav4_ refreshes S_clu and recomputes centroids from mrPos_spk internally.
     S_clu = post_merge_wav4_(S_clu, get_set_(P, 'maxDist_site_um', 50), P);
 end
+% Enforce min_count. No-op unless fEnforce_min_count=1 (see S_clu_merge_small_). Placed here,
+% before post_merge_wav_, so every per-cluster field downstream (S_clu_refrac_,
+% S_clu_update_wav_, correlogram_, S_clu_position_, S_clu_quality_) is rebuilt against the
+% final cluster set. On DPC sorts it finds nothing: postCluster_ already applied min_count.
+S_clu = S_clu_merge_small_(S_clu, P);
 S_clu = post_merge_wav_(S_clu, 0, P);
 S_clu = S_clu_sort_(S_clu, 'viSite_clu');
+% S_clu_wav_ runs twice in post_merge_ (once inside post_merge_wav_ above, once below) and each
+% pass is ~30% of this function -- all of it in the per-cluster median loops; the get_spkwav_
+% loads are free once resident. But S_clu_refrac_ only zeroes labels and shrinks cviSpk_clu /
+% vnSpk_clu in place (irc.m:12599-12602): it never renumbers, never drops a cluster. So every
+% cluster it does NOT touch still holds exactly the waveforms computed above, and typically it
+% touches ~10 of ~500.
+% Snapshot vnSpk_clu and pass only the changed clusters, rather than teaching S_clu_refrac_ to
+% report them -- refrac can only shrink a cluster, so a count change is a complete signal.
+% This is only safe because S_clu_sort_ (just above) now permutes the waveform fields with the
+% cluster order; while it did not, the carried-over fields were mis-indexed and the full
+% recompute here was what silently repaired them.
+% Fall back to [] (recompute everything) if refrac changed nothing or the counts look unexpected.
+vnSpk_clu_pre = S_clu.vnSpk_clu(:);
 S_clu = S_clu_refrac_(S_clu, P); % refractory violation removal
-S_clu = S_clu_update_wav_(S_clu, P);
+viClu_refrac = [];
+if numel(S_clu.vnSpk_clu) == numel(vnSpk_clu_pre)
+    viClu_refrac = reshape(find(S_clu.vnSpk_clu(:) ~= vnSpk_clu_pre), 1, []);
+end
+if ~isempty(viClu_refrac)
+    fprintf('\tS_clu_update_wav_: %d/%d clusters changed by S_clu_refrac_\n', ...
+        numel(viClu_refrac), numel(vnSpk_clu_pre));
+end
+S_clu = S_clu_update_wav_(S_clu, P, [], viClu_refrac);
 S_clu.mrCC = correlogram_(S_clu, get0('viTime_spk'), P);
 
 % set diagonal element
@@ -4168,9 +4281,14 @@ for iSite = 1:nSites
     viClu_spkout(vii_spkout1) = viClu_in1(viMin1);
     fprintf('.');
 end
-S_clu.viClu_prematch = S_clu.viClu;
+% Keep the pre-match labels in a LOCAL only. This snapshot is used solely to report the
+% reassigned fraction on the next line; storing it on S_clu (as before) persisted a ~68 MB
+% per-spike int32 copy into every _jrc.mat for nothing, and it is never read again anywhere.
+% (X1 / CID-15. Its name ends in '_prematch', not '_clu', so S_clu_select_ never reindexed it,
+% which is also why it was safe to leave stale for so long.)
+viClu_prematch = S_clu.viClu;
 S_clu.viClu(viSpk_out) = viClu_spkout;
-frac_changed = mean(S_clu.viClu_prematch ~= S_clu.viClu);
+frac_changed = mean(viClu_prematch ~= S_clu.viClu);
 fprintf('\n\tReassigned %0.1f%% spikes, took %0.1fs\n', frac_changed*100, toc(t1));
 
 % merge the templates
@@ -4197,6 +4315,11 @@ if 1
         fprintf('.');
     end %for
     mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+    % Cross-shank guard (defensive; non-default mode 2). No-op unless viSite_clu is
+    % nClu-aligned and the probe declares >1 shank.
+    if ~get_set_(P, 'fMerge_across_shank', 0)
+        mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+    end
     viMap_clu = int32(ml2map_(mlWavCor_clu));
     vlPos = S_clu.viClu > 0;
     S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -4283,8 +4406,18 @@ end % func
 function [S_clu, nClu_merge] = post_merge_wav_(S_clu, fMerge, P)
 fRemove_duplicate = get_set_(P, 'fRemove_duplicate', 1);
 nClu_pre = S_clu.nClu;
-S_clu = rmfield_(S_clu, 'trWav_raw_clu', 'tmrWav_raw_clu', 'mrWavCor');
+% nClu_merge must be assigned on EVERY path: the caller in auto_merge_ requests both
+% outputs, but the early return below (fSave_spkwav=0) and the fMerge==0 fall-through
+% both used to leave it unset -> "Output argument 'nClu_merge' is not assigned".
+nClu_merge = 0;
+
+% Bail out BEFORE invalidating the waveform caches. The rmfield_ below exists only to
+% force the rebuild at the bottom of this function (S_clu_wav_ / S_clu_wavcor_); on this
+% early return there is no rebuild, so stripping mrWavCor / trWav_raw_clu / tmrWav_raw_clu
+% first would leave S_clu permanently without them. Returning before the rmfield_ makes
+% this path a true no-op, which is what "cannot merge without saved waveforms" should be.
 if ~get_set_(P, 'fSave_spkwav', 1), return; end
+S_clu = rmfield_(S_clu, 'trWav_raw_clu', 'tmrWav_raw_clu', 'mrWavCor');
 
 mrDist_site = pdist(P.mrSiteXY); 
 merge_thresh = min(mrDist_site(mrDist_site>0));
@@ -4339,6 +4472,208 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% 2026-08-06: enforce min_count on LABEL-BASED sorts (kmeans/hdbscan/isosplit/classix).
+%
+% Why this exists: min_count is applied only inside postCluster_ (dpclus_remove_count_
+% 11897/11902/11907 and S_clu_remove_count_ 11893, its sole caller), and post_merge_ skips
+% postCluster_ entirely when fLabelClu (irc.m ~3964). cluster_site_ gates on the SITE's
+% total spike count, not on each label it returns, so isosplit can emit a handful-of-spikes
+% label; the comment at cluster_site_ ("pruned later if tiny") refers to that never-run
+% pruning. Result: label-based sorts keep clusters far below min_count. Measured on
+% 260324_afm18349 (min_count=50): 68/661 clusters below threshold, smallest 8 spikes.
+%
+% fDiscard_count has documented this choice in default.prm for years ("Discard cluster under
+% minimum count. set to zero to absorb to the nearest cluster") but was read by NO code --
+% it is given its documented meaning here.
+%
+% OFF BY DEFAULT. fEnforce_min_count (default 0) is the opt-in; fDiscard_count then selects the
+% action. The opt-in had to be a separate flag because fDiscard_count historically shipped as 1
+% in every .prm, so honouring it unconditionally would have made label-based sorts start DELETING
+% clusters they currently keep.
+%
+% The DEFAULT ACTION IS ABSORB (fDiscard_count = 0), changed 2026-09-02 -- both the fallback below
+% and the shipped .prm files. Discarding moves spikes to viClu = 0 and they are gone; absorbing
+% only relabels them. A user who turns fEnforce_min_count on is asking to enforce a size floor,
+% not to throw spikes away, so the destructive action must be the one you opt into. Set
+% fDiscard_count = 1 explicitly for the legacy DPC semantics.
+% NOTE: an EXISTING .prm on disk still carries whatever it was generated with -- check the file,
+% not just this default, before enabling fEnforce_min_count on an old parameter set.
+function S_clu = S_clu_merge_small_(S_clu, P)
+if ~get_set_(P, 'fEnforce_min_count', 0), return; end   % default: byte-identical to before
+% An explicitly EMPTY min_count means "no count filtering", matching postCluster_ (irc.m ~11816
+% maps [] -> 0, which makes both dpclus_remove_count_ and S_clu_remove_count_ no-ops). This has
+% to be tested on P directly: get_set_ substitutes its default for [], so an isempty() check
+% AFTER the get_set_ call can never fire.
+if isfield(P, 'min_count') && isempty(P.min_count), return; end
+min_count = get_set_(P, 'min_count', 30);
+if min_count < 2, return; end
+fDiscard = get_set_(P, 'fDiscard_count', 0);   % default: absorb (lossless), not discard
+
+% Rollback snapshot. This function REWRITES viClu, which is the field the desync family of bugs
+% corrupts, so it follows delete_clu_'s reference pattern: snapshot, apply, verify CONTENT, and
+% restore rather than commit anything half-applied. See merge_small_verify_ below.
+S_clu_bak = S_clu;
+
+% Refresh first so nClu/cviSpk_clu/vnSpk_clu agree with viClu (same guard post_merge_wav4_
+% uses before it merges). viClu stays authoritative; the cache is rebuilt FROM it.
+S_clu = S_clu_refresh_(S_clu);
+nClu = S_clu.nClu;
+vnSpk_clu = cellfun(@numel, S_clu.cviSpk_clu);
+viClu_small = find(vnSpk_clu(:)' <  min_count);   % strict <: a min_count-spike cluster is kept
+viClu_keep  = find(vnSpk_clu(:)' >= min_count);
+if isempty(viClu_small)
+    fprintf('\tS_clu_merge_small_: no cluster below min_count=%d\n', min_count);
+    return;
+end
+
+if fDiscard
+    % legacy DPC semantics: send them to noise
+    S_clu.viClu(ismember(S_clu.viClu, int32(viClu_small))) = 0;
+    fprintf('\tS_clu_merge_small_: discarded %d/%d clusters (<%d spikes, %d spikes to noise)\n', ...
+        numel(viClu_small), nClu, min_count, sum(vnSpk_clu(viClu_small)));
+    S_clu = S_clu_refresh_(S_clu);
+    S_clu = merge_small_verify_(S_clu, S_clu_bak, 'discard');
+    return;
+end
+
+% --- absorb into the nearest surviving cluster (fDiscard_count = 0) ---
+if isempty(viClu_keep)
+    fprintf(2, '\tS_clu_merge_small_: every cluster is below min_count=%d; nothing to absorb into\n', min_count);
+    return;
+end
+% Cluster centroid: median spike position, as post_merge_wav4_ does. Position is used rather
+% than waveform similarity on purpose -- a sub-min_count cluster's mean waveform is dominated
+% by noise, while the median of its spike positions stays stable. Fall back to the peak-site
+% coordinate when mrPos_spk is unavailable.
+mrPos_spk = get0_('mrPos_spk');
+if isempty(mrPos_spk)
+    mrSiteXY = get_(P, 'mrSiteXY');
+    if isempty(mrSiteXY) || ~isfield(S_clu, 'viSite_clu')
+        fprintf(2, '\tS_clu_merge_small_: no mrPos_spk and no mrSiteXY; skipped\n');
+        return;
+    end
+    viSite_clu = S_clu.viSite_clu(:);
+    viSite_clu(isnan(viSite_clu) | viSite_clu < 1) = 1;   % mode([]) -> NaN on an empty cluster
+    mrPos_clu = mrSiteXY(viSite_clu, :);
+else
+    nPos = size(mrPos_spk, 2);
+    % reshape pins each cell to nPos x 1: median of a 0-row selection can return a scalar NaN
+    % on some releases, which would make cell2mat fail (same fix as post_merge_wav4_).
+    mrPos_clu = cell2mat(cellfun(@(x)reshape(median(mrPos_spk(x,:), 1), nPos, 1), ...
+        S_clu.cviSpk_clu(:)', 'UniformOutput', 0))';
+end
+if size(mrPos_clu,1) < nClu, mrPos_clu(end+1:nClu, :) = nan; end
+
+% squared euclidean without pdist2 (no Statistics Toolbox dependency)
+mrA = double(mrPos_clu(viClu_small,:));
+mrB = double(mrPos_clu(viClu_keep,:));
+mrD2 = bsxfun(@plus, sum(mrA.^2,2), sum(mrB.^2,2)') - 2*(mrA*mrB');
+[vrMin2, viNear] = min(mrD2, [], 2);
+vrDist = sqrt(max(vrMin2, 0));
+
+% Radius ceiling: a small cluster with no surviving neighbour in range is LEFT ALONE -- never
+% force-merged into something far away, and never discarded. NaN centroids fail this test too.
+dist_max = get_set_(P, 'maxDist_site_um', 50);
+vlAbsorb = vrDist <= dist_max;
+
+viClu_src = viClu_small(vlAbsorb);
+viClu_dst = viClu_keep(viNear(vlAbsorb));
+nSpk_moved = 0;
+for ii = 1:numel(viClu_src)
+    viSpk1 = S_clu.cviSpk_clu{viClu_src(ii)};
+    if isempty(viSpk1), continue; end
+    S_clu.viClu(viSpk1) = int32(viClu_dst(ii));   % targets are drawn only from viClu_keep,
+    nSpk_moved = nSpk_moved + numel(viSpk1);      % so no chaining and order does not matter
+end
+fprintf('\tS_clu_merge_small_: absorbed %d/%d clusters (<%d spikes) into nearest, %d spikes moved; %d left (no cluster within %g um)\n', ...
+    numel(viClu_src), nClu, min_count, nSpk_moved, sum(~vlAbsorb), dist_max);
+
+% Rebuild the cache from viClu and drop the now-empty source clusters (renumbers).
+S_clu = S_clu_refresh_(S_clu);
+S_clu = merge_small_verify_(S_clu, S_clu_bak, 'absorb');
+end %func
+
+
+%--------------------------------------------------------------------------
+% Return S_clu.cviSpk_clu ONLY if it provably equals find(viClu==i) for every cluster; otherwise
+% return {} so the caller falls back to the authoritative find(S_clu.viClu == iClu).
+%
+% Why verify instead of trusting the cache (the D5 optimization): cviSpk_clu is derived state and
+% CAN go stale -- that is the entire desync family in matlab/CLAUDE.md. Building templates from a
+% stale cache and then merging on them yields a self-consistent but WRONG clustering, which is the
+% DI-01 class that no sync checker can detect afterwards. viClu is authoritative; the cache is only
+% an accelerator, and must earn its use.
+%
+% Cost: ONE O(nSpk) pass, versus the O(nClu * nSpk) scan it replaces (nClu = 661 on the reference
+% recording), so verification is ~0.15% of the work it saves.
+%
+% Exactness: writing iClu into vi_chk at the cache's indices reconstructs a labelling from the
+% cache alone. If that equals viClu (negatives clamped to 0, matching "unassigned") AND the total
+% entry count matches, the two describe the same partition -- catching missing spikes, extra
+% spikes, cross-cluster duplicates and wrong members alike. A length-only test would not: per
+% matlab/CLAUDE.md, S_clu_select_ actively force-fits wrong-length fields.
+function cviSpk_clu = get_cviSpk_clu_checked_(S_clu, vcCaller)
+cviSpk_clu = {};
+if ~isfield(S_clu, 'cviSpk_clu') || ~isfield(S_clu, 'viClu'), return; end
+c = S_clu.cviSpk_clu; viClu = S_clu.viClu(:);
+nClu = double(max(viClu));
+if nClu < 1 || numel(c) < nClu, return; end
+try
+    vi_chk = zeros(numel(viClu), 1, 'int32');
+    nTot = 0;
+    for iClu = 1:nClu
+        vi = c{iClu};
+        if isempty(vi), continue; end
+        vi_chk(vi) = int32(iClu);          % errors on out-of-range/invalid indices -> caught below
+        nTot = nTot + numel(vi);
+    end
+    fOk = (nTot == sum(viClu > 0)) && isequal(vi_chk, int32(max(double(viClu), 0)));
+catch
+    fOk = false;
+end
+if fOk
+    cviSpk_clu = c;
+else
+    fprintf(2, ['\t%s: cviSpk_clu does NOT match viClu (desync) -- falling back to find(). ' ...
+        'Run check_jrc_sync/resync_clu on this file.\n'], vcCaller);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Post-condition for S_clu_merge_small_: verify the viClu <-> cviSpk_clu invariant by CONTENT and
+% roll back if it fails.
+%
+% Content, not length: S_clu_select_'s reconcile block actively force-fits wrong-length per-cluster
+% fields to nClu (see matlab/CLAUDE.md, "Never trust a LENGTH check on S_clu"), so a length test
+% here would pass on exactly the corruption it is meant to catch. S_clu_valid_ is vacuous for the
+% same reason.
+%
+% Rolling back beats committing: this is delete_clu_'s pattern (irc.m ~9140). On healthy input the
+% check always passes and the guard is dead code, so the normal path is unchanged.
+function S_clu = merge_small_verify_(S_clu, S_clu_bak, vcMode)
+nClu = double(max(S_clu.viClu));
+if numel(S_clu.cviSpk_clu) ~= nClu
+    nBad = -1;   % cache/label count disagree outright
+else
+    nBad = 0;
+    for iClu = 1:nClu
+        viSpk1 = S_clu.cviSpk_clu{iClu};
+        if ~isempty(viSpk1) && ~all(S_clu.viClu(viSpk1) == iClu), nBad = nBad + 1; end
+    end
+end
+% 'absorb' relabels spikes and must never lose one; 'discard' deliberately sends them to noise.
+[nAssigned, nAssigned0] = deal(sum(S_clu.viClu > 0), sum(S_clu_bak.viClu > 0));
+fLost = strcmpi(vcMode, 'absorb') && (nAssigned ~= nAssigned0);
+if nBad ~= 0 || fLost
+    fprintf(2, ['\tS_clu_merge_small_: POST-CHECK FAILED (%s) -- desync=%d, assigned %d->%d. ' ...
+        'ROLLING BACK, no change applied.\n'], vcMode, nBad, nAssigned0, nAssigned);
+    S_clu = S_clu_bak;
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function S_clu = post_merge_wav4_(S_clu, dist_merge_um, P)
 % use centroid based method
 % fRemove_duplicate = 1;
@@ -4351,7 +4686,13 @@ FRAC_NEAR = 1/2; % 1/2 is better than 1/4
 vcMode_dist = 'space'; % time, space, spacetime
 fUseFirstBurst = 1; % 9/14/2018 JJJ: only use the first spike in burst to compute ave waveform
 
+% INSTRUMENTATION (timers only, no logic change). The "Merged N waveforms ... took Xs" line at
+% the bottom reports toc(t1) with t1 started AFTER all of this setup, so the setup has always
+% been silent time. post_merge_wav4_ is ~31% of post_merge_ on the test recording and merges very
+% few clusters, so it is worth knowing which half is expensive.
+t_setup_ = tic;
 tnWav_spk = get_spkwav_(P, 0); % use raw waveform
+t_io_ = toc(t_setup_);
 [viSite_spk, mrPos_spk, dimm_fet, viTime_spk] = ...
     get0_('viSite_spk', 'mrPos_spk', 'dimm_fet', 'viTime_spk');
 viTime_spk = viTime_spk(:);
@@ -4369,7 +4710,9 @@ cviSpk_sub_clu = cellfun(@(x)subsample_vr_(x,MAX_SAMPLE), cviSpk_burst0_clu, 'Un
 cviSite_sub_clu = cellfun(@(x)viSite_spk(x), cviSpk_sub_clu, 'UniformOutput', 0);
 cmrPos_sub_clu = cellfun(@(x)mrPos_spk(x,:), cviSpk_sub_clu, 'UniformOutput', 0);
 cvrPos_sub_clu = cellfun(@(x)sum(x'.^2), cmrPos_sub_clu, 'UniformOutput', 0);
+t_wav_ = tic;
 ctrWav_sub_clu = cellfun(@(vi_)single(tnWav_spk(:,:,vi_)), cviSpk_sub_clu, 'UniformOutput', 0);
+t_build_ = toc(t_wav_);   % materialises up to MAX_SAMPLE spikes per cluster as single
 cviTime_sub_clu = cellfun(@(vi_)viTime_spk(vi_), cviSpk_sub_clu, 'UniformOutput', 0);
 
 % determine cluster centers
@@ -4386,7 +4729,9 @@ end
 mrDist_clu = squareform(pdist(mrPos_clu));
 % NaN distances (from empty/invalid clusters) will never match <= dist_merge_um
 
+t_setup_all_ = toc(t_setup_);
 t1=tic;
+[nPair_reached_, nPair_skip_, nPair_cmp_] = deal(0);
 mlWavCor_clu = set_diag_(false(nClu), true(nClu,1));
 miSites = P.miSites;
 diff_rat_ = @(x,y)abs(x-y)/max(x,y);
@@ -4404,19 +4749,28 @@ for iClu1 = 1:nClu
     [mrPos1_T, vrPos1] = deal(cmrPos_sub_clu{iClu1}', cvrPos_sub_clu{iClu1});
     vlWavCor1 = mlWavCor_clu(:,iClu1);
     
-    for iClu2_ = 1:numel(viClu2)            
+    for iClu2_ = 1:numel(viClu2)
         iClu2 = viClu2(iClu2_);
+        nPair_reached_ = nPair_reached_ + 1;
         vlWavCor2 = mlWavCor_clu(:,iClu2) | mlWavCor_clu(iClu2,:)';
         vlWavCor2 = any(mlWavCor_clu(:,vlWavCor2),2);
         vlWavCor1 = any(mlWavCor_clu(:,vlWavCor1),2);
         if any(vlWavCor2 & vlWavCor1)
             vlWavCor1(vlWavCor2) = true;
+            nPair_skip_ = nPair_skip_ + 1;
             continue;
-        end              
-        
+        end
+        nPair_cmp_ = nPair_cmp_ + 1;
+
         [viSpk2, viSite_spk2, trWav_spk2] = ...
             deal(cviSpk_sub_clu{iClu2}, cviSite_sub_clu{iClu2}, ctrWav_sub_clu{iClu2});
         [mrPos2, vrPos2] = deal(cmrPos_sub_clu{iClu2}, cvrPos_sub_clu{iClu2});
+        % PROFILED 2026-08-07: this matrix is 57% of the pair loop -- 22.2e9 single elements
+        % materialised across 3676 pairs (~6.05M, i.e. ~2460x2460, per pair) at ~24MB a time,
+        % purely to feed the two min() calls below. Only the row-minima and column-minima are
+        % ever used; the matrix itself is discarded. Bandwidth-bound, not compute-bound.
+        % Fixable exactly (min is order-independent, so column-blocking is bit-identical) --
+        % see logs/ironclust_post_merge_followup_2026-08-06.md section 3.8.
         switch vcMode_dist
             case 'space'
                 mrDist21 = bsxfun(@plus, vrPos1, bsxfun(@minus, vrPos2', 2*mrPos2*mrPos1_T));
@@ -4458,11 +4812,20 @@ end
 % fprintf('\n\t%0.1fs\n', toc(t1));
 
 % Generate a map and merge clusters by translating index
+% Cross-shank guard: post_merge_wav4_ ran S_clu_refresh_ above, so S_clu.viSite_clu is
+% nClu-aligned and mlWavCor_clu is nClu x nClu -> shank_clu_ aligns. No-op when
+% fMerge_across_shank=1 / single-shank / shank_clu_ returns [].
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 S_clu = S_clu_map_index_(S_clu, viMap_clu);
 S_clu = S_clu_refresh_(S_clu);
 nClu_post = numel(unique(viMap_clu));
 fprintf('\nMerged %d waveforms (%d->%d), took %0.1fs\n', nClu-nClu_post, nClu, nClu_post, toc(t1));
+fprintf(['\tpost_merge_wav4_ breakdown: setup %0.1fs (get_spkwav_ %0.1fs, ctrWav_sub build %0.1fs) ' ...
+    '+ pair loop %0.1fs | pairs: %d reached, %d skipped by transitive guard, %d compared | MAX_SAMPLE=%d\n'], ...
+    t_setup_all_, t_io_, t_build_, toc(t1), nPair_reached_, nPair_skip_, nPair_cmp_, MAX_SAMPLE);
 end %func
 
 
@@ -4925,11 +5288,14 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S_clu = S_clu_update_wav_(S_clu, P, S0)
+function S_clu = S_clu_update_wav_(S_clu, P, S0, viClu_update)
+% viClu_update: clusters whose membership actually changed. [] (the default, and what every
+% pre-existing caller passes) means "recompute every cluster", i.e. the original behaviour.
 if nargin<2, P = get0_('P'); end
-if nargin<3, S0 = get(0, 'UserData'); end
+if nargin<3 || isempty(S0), S0 = get(0, 'UserData'); end
+if nargin<4, viClu_update = []; end
 
-S_clu = S_clu_wav_(S_clu, [], [], S0);
+S_clu = S_clu_wav_(S_clu, viClu_update, [], S0);
 
 % compute raw waveform if not done yet
 if isempty(get_(S_clu, 'tmrWav_raw_clu'))
@@ -5033,14 +5399,14 @@ switch lower(P.vcCommonRef)
         if strcmpi(P.vcCommonRef, 'tmean')
             for iChan=1:size(mnWav1,2)
                 mnWav2 = sort(mnWav1_pre(:, miSite_ref(:,iChan)), 2);
-                gvr_tmean = sum(mnWav2(:,viChan_keep), 2); %may go out of range
+                gvr_tmean = sum(single(mnWav2(:,viChan_keep)), 2); % DI-16: single() before sum -- int16 sum saturates at +/-32767 during large correlated events
                 gvr_tmean = int16(single(gvr_tmean)/numel(viChan_keep));
                 mnWav1(:,iChan) = mnWav1_pre(:,iChan) - gvr_tmean;
                 fprintf('.');
             end
         else
             for iChan=1:size(mnWav1,2)
-                gvr_tmean = sum(mnWav1_pre(:, miSite_ref(:,iChan)), 2); %may go out of range
+                gvr_tmean = sum(single(mnWav1_pre(:, miSite_ref(:,iChan))), 2); % DI-16: single() before sum (int16 saturation)
                 gvr_tmean = int16(single(gvr_tmean)/size(miSite_ref,1));
                 mnWav1(:,iChan) = mnWav1_pre(:,iChan) - gvr_tmean;
                 fprintf('.');
@@ -5064,8 +5430,11 @@ switch lower(P.vcCommonRef)
             mnWav1 = bsxfun(@minus, mnWav1, vnWav1_mean);
         elseif strcmpi(P.vcCommonRef, 'whiten-median')
             vnWav1_mean = median_excl_(mnWav1, P);
-            mnWav1 = bsxfun(@minus, mnWav1, vnWav1_mean);   
+            mnWav1 = bsxfun(@minus, mnWav1, vnWav1_mean);
         end
+
+    case {'shankcmr', 'shankwhiten', 'shankcmrwhiten'} % per-shank CMR and/or whitening, never across shanks
+        [mnWav1, vnWav1_mean] = wav_car_shank_(mnWav1, P);
 end
 % viSiteZero should be treated carefully. try to repair using nearest sites?
 if get_(P, 'fMeanSite_drift')
@@ -5077,6 +5446,104 @@ else
     mnWav1(:, viSiteZero) = 0;
 end
 % fprintf('\n\ttook %0.1fs.\n', toc(t1));
+end %func
+
+
+%--------------------------------------------------------------------------
+% vcCommonRef = 'shankcmr' | 'shankwhiten' | 'shankcmrwhiten'
+%   shankcmr:       subtract, from each site, the median over the sites of its own shank
+%   shankwhiten:    spatial_whiten with neighbor lists restricted to the site's own shank
+%   shankcmrwhiten: shankcmr, then shankwhiten
+% Nothing from another shank enters any median or any whitening neighborhood.
+% vnWav1_ref (blanking reference for blank_thresh) = global median_excl_ of the INPUT, i.e. what
+% vcCommonRef='median' returns. A single shank (or no usable viShank_site) behaves as 'median'.
+% Shanks with < nSites_min_shank (default 16) usable sites are left untouched (warns once).
+function [mnWav1, vnWav1_ref] = wav_car_shank_(mnWav1, P)
+vcMode = lower(P.vcCommonRef);
+fCmr = any(strcmp(vcMode, {'shankcmr', 'shankcmrwhiten'}));
+fWhiten = any(strcmp(vcMode, {'shankwhiten', 'shankcmrwhiten'}));
+nSites_min_shank = get_set_(P, 'nSites_min_shank', 16);
+nSites = size(mnWav1, 2);
+viSiteZero = get_(P, 'viSiteZero');
+
+vnWav1_ref = median_excl_(mnWav1, P); % blanking reference, before any subtraction
+cviShank = shank_groups_(P, nSites);
+fSingle = numel(cviShank) == 1;
+cviUse = cellfun(@(vi)setdiff(vi(:)', viSiteZero), cviShank, 'UniformOutput', 0);
+vlOk = cellfun(@numel, cviUse) >= nSites_min_shank;
+if fSingle, vlOk(:) = true; end % same as 'median' / 'whiten': no size floor
+if ~all(vlOk), warn_once_('wav_car_shank_', sprintf( ...
+        'shank modes: %d shank(s) have < %d usable sites and are left untouched', nnz(~vlOk), nSites_min_shank)); end
+
+if fCmr
+    if fSingle
+        mnWav1 = bsxfun(@minus, mnWav1, vnWav1_ref); % identical to the 'median' case
+    else
+        fGpu = isGpu_(mnWav1);
+        for iShank = find(vlOk(:)')
+            viSite1 = cviShank{iShank};
+            try
+                vrRef1 = median(single(mnWav1(:, cviUse{iShank})), 2, 'omitnan');
+            catch % no gpu median: gather the shank subset only
+                vrRef1 = gpuArray_(median(single(gather_(mnWav1(:, cviUse{iShank}))), 2, 'omitnan'), fGpu);
+            end
+            mnWav1(:, viSite1) = cast(single(mnWav1(:, viSite1)) - vrRef1, 'like', mnWav1);
+        end
+    end
+end
+
+if fWhiten && any(vlOk)
+    nSites_whiten = min(get_set_(P, 'nSites_whiten', 32), size(P.miSites,1));
+    nSites_whiten = min([nSites_whiten, cellfun(@numel, cviUse(vlOk))]);
+    miSites_shank = shank_miSites_(P, cviShank, cviUse, vlOk, nSites_whiten);
+    mnWav1_ = mnWav1;
+    mnWav1 = spatial_whiten(mnWav1, miSites_shank, 1); % 1: re-key cache on miSites
+    viSite_skip = [cviShank{~vlOk}];
+    if ~isempty(viSite_skip), mnWav1(:, viSite_skip) = mnWav1_(:, viSite_skip); end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% site indices of each shank. One group (all sites) if viShank_site is empty, has the wrong
+% length, or holds a single shank.
+function cviShank = shank_groups_(P, nSites)
+viShank = get_(P, 'viShank_site');
+viShank = viShank(:)';
+if isempty(viShank) || numel(viShank) ~= nSites || numel(unique(viShank)) < 2
+    cviShank = {1:nSites};
+else
+    cviShank = arrayfun(@(i)find(viShank == i), unique(viShank), 'UniformOutput', 0);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% miSites_shank (n x nSites): column j = site j first (spatial_whiten uses row 1 as self), then its
+% n-1 nearest USABLE sites on the SAME shank. Same row count in every column. Sites on shanks that
+% are not usable (vlOk=0) get a placeholder list from all usable sites; their output is discarded.
+function miSites = shank_miSites_(P, cviShank, cviUse, vlOk, n)
+nSites = size(P.mrSiteXY, 1);
+miSites = zeros(n, nSites);
+viUse_all = unique([cviUse{vlOk}]);
+for iShank = 1:numel(cviShank)
+    if vlOk(iShank), viCand = cviUse{iShank}; else, viCand = viUse_all; end
+    for iSite = cviShank{iShank}(:)'
+        viCand1 = viCand(viCand ~= iSite);
+        [~, viSrt] = sort(sum((P.mrSiteXY(viCand1,:) - P.mrSiteXY(iSite,:)).^2, 2), 'ascend');
+        miSites(:, iSite) = [iSite; viCand1(viSrt(1:n-1))'];
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function warn_once_(vcKey, vcMsg)
+persistent csKey
+if isempty(csKey), csKey = {}; end
+if any(strcmp(csKey, [vcKey, vcMsg])), return; end
+csKey{end+1} = [vcKey, vcMsg];
+fprintf(2, 'Warning: %s\n', vcMsg);
 end %func
 
 
@@ -5655,13 +6122,17 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType)
+function mnWav1 = fread_(fid_bin, dimm_wav, vcDataType, fStrict)
 % Get around fread bug (matlab) where built-in fread resize doesn't work
+% DI-04: fStrict (optional, default false) -> error on a short read instead of silently
+% reshaping to a smaller array. Default-off keeps every current caller byte-identical; only
+% the load_spk*_ paths (where dimm from _jrc.mat is authoritative) will opt in (a later phase).
 
 % defensive programming practice
 if strcmpi(vcDataType, 'float'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float32'), vcDataType = 'single'; end
 if strcmpi(vcDataType, 'float64'), vcDataType = 'double'; end
+if nargin < 4, fStrict = false; end
 
 try
     if isempty(dimm_wav)
@@ -5672,6 +6143,10 @@ try
         if numel(mnWav1) == prod(dimm_wav)
             mnWav1 = reshape(mnWav1, dimm_wav);
         else
+            if fStrict
+                error('fread_: short read (%d of %d elements), dimm=[%s]', ...
+                    numel(mnWav1), prod(dimm_wav), sprintf('%d ', dimm_wav));
+            end
             dimm2 = floor(numel(mnWav1) / dimm_wav(1));
             if dimm2 >= 1
                 nSamples1 = dimm_wav(1) * dimm2;
@@ -5681,7 +6156,8 @@ try
             end
         end
     end
-catch
+catch hErr
+    if fStrict, rethrow(hErr); end   % DI-04: strict callers get a real error, not a swallow (this catch is layer 0 of the swallow chain)
     disperr_();
 end
 end %func
@@ -5959,6 +6435,16 @@ switch lower(vcMode)
                 S0 = set0_(P); %update the P structure
                 S0.S_clu = S_clu_update_wav_(S0.S_clu, P);
         end
+
+    case 'recurate'
+        % 'irc recurate': skip the load-vs-recompute prompt and ALWAYS recompute, i.e. the
+        % same two statements as the 'normal' -> 'no' branch above, behind explicit consent.
+        % Destructive: post_merge_ resets csNote_clu (the note=='single' labels that gate all
+        % downstream unit selection) and clear_log_ DELETES <prm>_log.mat from disk.
+        if ~confirm_recurate_(P), return; end
+        backup_log_file_(P);  % <prm>_log.mat holds csNote_clu/viClu; keep a copy before clear_log_
+        [S_clu, S0] = post_merge_(S0.S_clu, P);
+        S0 = clear_log_(S0);
         
     case 'debug'
         fDebug_ui = 1;
@@ -6009,13 +6495,95 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% Consent gate for 'irc recurate'. Returns TRUE only on an explicit OK.
+% Buttons are OK/Cancel rather than Yes/No on purpose: questdlg_ returns 'Yes' whenever the
+% global fDebug_ui==1, which with Yes/No would silently mean "proceed" in a headless/test run.
+% 'Yes' matches neither button here, so the answer falls through to Cancel (fail-safe).
+function fOk = confirm_recurate_(P)
+vcFile_log = strrep(P.vcFile_prm, '.prm', '_log.mat');
+% fLabelClu sorts skip postCluster_ in post_merge_, so viClu there is still the CURATED
+% labelling and viClu_premerge (irc.m: 'S_clu.viClu_premerge = S_clu.viClu') gets overwritten
+% with it -- which disables a later recover_from_snapshot. Warn only when that applies.
+fLabelClu = ismember(lower(get_set_(P, 'vcCluster', '')), ...
+    {'kmeans', 'hdbscan', 'isosplit', 'isosplit5', 'isosplit6', 'classix'});
+vcMsg = sprintf(['RECURATE discards the saved curation and restarts from the automatic clustering.\n\n', ...
+    'This will be lost:\n', ...
+    '  - all manual merges, splits and deletes\n', ...
+    '  - all unit notes (single/multi/noise). NOTE: note==''single'' is the only\n', ...
+    '    label that selects units for downstream analysis - a recurated sort exports\n', ...
+    '    zero neurons until it is curated again.\n', ...
+    '  - the curation log %s\n', ...
+    '    (a copy is kept as <..>_log.mat.bak_recurate)\n\n'], vcFile_log);
+if fLabelClu
+    vcMsg = [vcMsg, sprintf(['WARNING: this is a "%s" (label-based) sort, so recomputing also\n', ...
+        'OVERWRITES S_clu.viClu_premerge with the current labels - recover_from_snapshot\n', ...
+        'will no longer be able to restore a pristine baseline for this file.\n\n'], ...
+        get_set_(P, 'vcCluster', ''))];
+end
+vcMsg = [vcMsg, sprintf(['Sort: %s\n\n', ...
+    'The _jrc.mat is only overwritten if you save in the GUI. Continue?'], P.vcFile_prm)];
+fOk = strcmpi(questdlg_(vcMsg, 'Recurate - discard saved curation?', 'OK', 'Cancel', 'Cancel'), 'OK');
+if ~fOk, fprintf('recurate cancelled by user.\n'); end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Consent gate for 'irc reset-to-premerge' when the pre-merge baseline looks clobbered.
+% Returns TRUE only on an explicit OK. Buttons are OK/Cancel rather than Yes/No on purpose:
+% questdlg_ returns 'Yes' whenever the global fDebug_ui==1, which with Yes/No would silently
+% mean "proceed" in a headless run and overwrite a sort whose baseline is unreliable. 'Yes'
+% matches neither button here, so the answer falls through to Cancel (fail-safe).
+function fOk = confirm_premerge_baseline_(nClu_raw, nClu_cur, P)
+vcCluster = get_set_(P, 'vcCluster', '');
+vcMsg = sprintf(['The pre-merge baseline does not look like an automatic clustering.\n\n', ...
+    '  raw baseline (viClu_premerge): nClu = %d\n', ...
+    '  current (merged) viClu:        nClu = %d\n\n', ...
+    'An automatic sort over-segments, so the baseline should hold MANY more clusters than\n', ...
+    'the merged result. It does not, which usually means viClu_premerge was overwritten by\n', ...
+    'a prior auto/recurate - post_merge_ rewrites it on every run and save, and on a\n', ...
+    'label-based sort ("%s") the labels it stores are the CURATED ones.\n\n', ...
+    'Continuing will:\n', ...
+    '  - re-merge from that questionable baseline\n', ...
+    '  - OVERWRITE %s in place (a .bak is kept)\n', ...
+    '  - discard all manual merges, splits, deletes and unit notes\n\n', ...
+    'A full re-sort is the warranted action here: irc(''sort'', ''%s'').\n', ...
+    'To try merge settings without writing anything, use sweep_post_merge.m instead.\n\n', ...
+    'Continue anyway?'], ...
+    nClu_raw, nClu_cur, vcCluster, ...
+    strrep(P.vcFile_prm, '.prm', '_jrc.mat'), P.vcFile_prm);
+fOk = strcmpi(questdlg_(vcMsg, 'reset-to-premerge - baseline may be clobbered?', 'OK', 'Cancel', 'Cancel'), 'OK');
+end %func
+
+
+%--------------------------------------------------------------------------
+% Copy <prm>_log.mat aside before clear_log_ deletes it. The log is the only record of
+% csNote_clu/viClu outside the _jrc.mat (see save_log_), and clear_log_ removes it from disk
+% immediately -- before the user ever reaches the GUI's save prompt.
+function backup_log_file_(P)
+vcFile_log = strrep(P.vcFile_prm, '.prm', '_log.mat');
+if exist_file_(vcFile_log)
+    vcFile_bak = [vcFile_log, '.bak_recurate'];
+    try
+        copyfile(vcFile_log, vcFile_bak, 'f');
+        fprintf('recurate: backed up curation log -> %s\n', vcFile_bak);
+    catch
+        fprintf(2, 'recurate: WARNING could not back up %s (%s)\n', vcFile_log, lasterr());
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function S0 = figures_manual_(P)
 % 'iFig', [], 'name', '', 'pos', [], 'fToolbar', 0, 'fMenubar', 0);
 create_figure_('FigPos', [0 0 .15 .5], ['Unit position; ', P.vcFile_prm], 1, 0);
 create_figure_('FigMap', [0 .5 .15 .5], ['Probe map; ', P.vcFile_prm], 1, 0);  
 
 create_figure_('FigWav', [.15 .25 .35 .75],['Averaged waveform: ', P.vcFile_prm], 0, 1);
-create_figure_('FigTime', [.15 0 .7 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
+% The two time views split the bottom strip so they can be read side by side (same time
+% axis, different feature) without either covering FigDrift.
+create_figure_('FigTime', [.15 0 .35 .25], ['Time vs. Amplitude; (Sft)[Up/Down] channel; [h]elp; [a]uto scale; ', P.vcFile]);
+create_figure_('FigTime2', [.5 0 .35 .25], ['Time vs. Feature (2nd view); (Sft)[Up/Down] channel; [h]elp; ', P.vcFile]);
 
 create_figure_('FigDrift', [.5 .25 .35 .5], ['Drift view: ', P.vcFile_prm], 0, 0);
 create_figure_('FigWavCor', [.5 .75 .35 .25], ['Waveform correlation (click): ', P.vcFile_prm]);
@@ -6026,7 +6594,7 @@ create_figure_('FigCorr', [.85 .25 .15 .25], ['Time correlation: ', P.vcFile_prm
 create_figure_('FigRD', [.85 0 .15 .25], ['Cluster rho-delta: ', P.vcFile_prm]);
 
 % drawnow_();
-csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist'};
+csFig = {'FigPos', 'FigMap', 'FigTime', 'FigWav', 'FigWavCor', 'FigDrift', 'FigRD', 'FigCorr', 'FigIsi', 'FigHist', 'FigTime2'};
 cvrFigPos0 = cellfun(@(vc)get(get_fig_(vc), 'OuterPosition'), csFig, 'UniformOutput', 0);
 S0 = set0_(cvrFigPos0, csFig);
 end %func
@@ -6069,6 +6637,8 @@ function ui_show_elective_()
 plot_aux_rate_();
 ui_show_all_chan_();
 ui_show_drift_view_();
+ui_show_FigTime2_(); % 2nd time view; no-op while it is hidden
+ui_show_FigProj_(); % no-op unless the user opened it (View > Show projection view)
 end %func
 
 
@@ -6472,9 +7042,20 @@ uimenu_(mh_view,'Label', '[N]umbers (toggle)', 'Callback', @(h,e)keyPressFcn_cel
 uimenu_(mh_view,'Label', 'Show averaged waveforms on all channels','Callback', @(h,e)ui_show_all_chan_(1,h));
 uimenu_(mh_view,'Label', 'Show global drift','Callback', @(h,e)plot_drift_());
 uimenu_(mh_view,'Label', 'Show drift view','Callback', @(h,e)ui_show_drift_view_(1,h));
+uimenu_(mh_view,'Label', 'Show projection view','Callback', @(h,e)ui_show_FigProj_(1,h));
+mh_figtime2 = uimenu_(mh_view,'Label', 'Show 2nd time view', ...
+    'Callback', @(h,e)ui_show_FigTime2_(1,h), 'Checked', 'on', 'Tag', 'mh_figtime2');
+% FigTime2 must survive the window X: it is in S0.csFig, and reset_position_ /
+% save_figures_ resolve csFig tags through get_fig_cache_, which creates on miss -- a
+% deleted FigTime2 would come back as a blank, axis-less figure. Hide it instead.
+try
+    set(findobj('Tag', 'FigTime2', 'Type', 'figure'), 'CloseRequestFcn', ...
+        @(h,e)hide_figure_uncheck_menu_(h, mh_figtime2));
+catch
+end
 uimenu_(mh_view,'Label', 'Reset window positions[1]', 'Callback', @reset_position_);
 
-mh_proj = uimenu_(hFig,'Label','Projection'); 
+mh_proj = uimenu_(hFig,'Label','Projection');
 uimenu_(mh_proj, 'Label', 'vpp', 'Callback', @(h,e)proj_view_(h), ...
     'Checked', if_on_off_(P.vcFet_show, {'vpp', 'vmin'}));
 uimenu_(mh_proj, 'Label', 'pca', 'Callback', @(h,e)proj_view_(h), ...
@@ -6483,6 +7064,18 @@ uimenu_(mh_proj, 'Label', 'ppca', 'Callback', @(h,e)proj_view_(h), ...
     'Checked', if_on_off_(P.vcFet_show, {'ppca', 'private pca'}));
 % uimenu_(mh_proj, 'Label', 'cov', 'Callback', @(h,e)proj_view_(h), ...
 %     'Checked', if_on_off_(P.vcFet_show, {'cov', 'spacetime'}));
+
+% Same three features for the 2nd time view. proj_view2_ writes the choice into that
+% figure's own UserData and redraws only that window -- the menu above keeps driving
+% FigTime through the global P.vcFet_show, unchanged.
+vcFet_show2 = get_set_(P, 'vcFet_show2', 'pca');
+mh_proj2 = uimenu_(hFig,'Label','Projection (2nd time view)');
+uimenu_(mh_proj2, 'Label', 'vpp', 'Callback', @(h,e)proj_view2_(h), ...
+    'Checked', if_on_off_(vcFet_show2, {'vpp', 'vmin'}));
+uimenu_(mh_proj2, 'Label', 'pca', 'Callback', @(h,e)proj_view2_(h), ...
+    'Checked', if_on_off_(vcFet_show2, {'pca'}));
+uimenu_(mh_proj2, 'Label', 'ppca', 'Callback', @(h,e)proj_view2_(h), ...
+    'Checked', if_on_off_(vcFet_show2, {'ppca', 'private pca'}));
 
 mh_trials = uimenu_(hFig,'Label','Trials', 'Tag', 'mh_trials');
 set_userdata_(mh_trials, P);
@@ -6493,6 +7086,7 @@ uimenu_(mh_info, 'Label', 'Annotate unit', 'Callback', @unit_annotate_);
 uimenu_(mh_info, 'Label', 'single', 'Callback', @(h,e)unit_annotate_(h,e,'single'));
 uimenu_(mh_info, 'Label', 'multi', 'Callback', @(h,e)unit_annotate_(h,e,'multi'));
 uimenu_(mh_info, 'Label', 'noise', 'Callback', @(h,e)unit_annotate_(h,e,'noise'));
+uimenu_(mh_info, 'Label', 'collision', 'Callback', @(h,e)unit_annotate_(h,e,'collision'));
 uimenu_(mh_info, 'Label', 'clear annotation', 'Callback', @(h,e)unit_annotate_(h,e,''));
 uimenu_(mh_info, 'Label', 'equal to', 'Callback', @(h,e)unit_annotate_(h,e,'=%d'));
 
@@ -6980,6 +7574,7 @@ switch lower(event.Key)
     case '2', unit_annotate_([], [], 'multi'); % annotate as multi
     case '3', unit_annotate_([], [], 'noise'); % annotate as noise
     case '4', unit_annotate_([], [], 'axonal'); % annotate as axonal
+    case '5', unit_annotate_([], [], 'collision'); % annotate as spike collision
     otherwise, figure_wait_(0); %stop waiting
 end
 figure_(hObject); %change the focus back to the current object
@@ -7108,17 +7703,26 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function plot_FigTime_(S0)
+function plot_FigTime_(S0, vcTag)
 % plot FigTime window. Uses subsampled data
+% vcTag selects which time view to draw: 'FigTime' (default) or 'FigTime2', the second,
+% independently-scaled copy whose feature is chosen from its own Projection menu.
 
 if nargin<1, S0 = get(0, 'UserData'); end
-S_clu = S0.S_clu; P = S0.P; 
-[hFig, S_fig] = get_fig_cache_('FigTime');
+if nargin<2 || isempty(vcTag), vcTag = 'FigTime'; end
+S_clu = S0.S_clu; P = S0.P;
+[hFig, S_fig] = get_fig_cache_(vcTag);
+
+% Per-window feature (vpp/pca/ppca). Override a LOCAL copy of S0 rather than P: getFet_site_
+% and getFet_clu_ read P out of the S0 they are handed, so the two windows can plot different
+% features with no change to either function. Never write this back into the global P -- the
+% Projection menu, FigProj and plot_split_ all read P.vcFet_show.
+S0.P.vcFet_show = fet_show_(vcTag, S_fig, P);   % local copy only; P below stays untouched
 
 %----------------
 % collect info
 iSite = S_clu.viSite_clu(S0.iCluCopy);
-[vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background    
+[vrFet0, vrTime0] = getFet_site_(iSite, [], S0);    % plot background
 [vrFet1, vrTime1, vcYlabel, viSpk1] = getFet_site_(iSite, S0.iCluCopy, S0); % plot iCluCopy
 
 vcTitle = '[H]elp; (Sft)[Left/Right]:Sites/Features; (Sft)[Up/Down]:Scale; [B]ackground; [S]plit; [R]eset view; [P]roject; [M]erge; (sft)[Z] pos; [E]xport selected; [C]hannel PCA';
@@ -7199,6 +7803,25 @@ S_fig.csHelp = {...
     'Drag while pressing wheel: pan'};
         
 set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Which feature a time view puts on its y axis.
+% FigTime keeps reading the global P.vcFet_show, so the existing Projection menu drives it
+% exactly as before. FigTime2 carries its own choice in its figure UserData (set by the
+% 'Projection (2nd time view)' menu), falling back to vcFet_show2 (default 'pca') on the
+% first draw. Deriving it fresh on every draw is deliberate: plot_FigTime_'s struct_merge_
+% rewrites several S_fig fields per replot, so nothing here may depend on cached state
+% beyond the one field the menu owns.
+function vcFet_show = fet_show_(vcTag, S_fig, P)
+vcFet_show = get_(S_fig, 'vcFet_show');
+if ~isempty(vcFet_show), return; end
+if strcmpi(vcTag, 'FigTime2')
+    vcFet_show = get_set_(P, 'vcFet_show2', 'pca');
+else
+    vcFet_show = get_set_(P, 'vcFet_show', 'vpp');
+end
 end %func
 
 
@@ -7306,7 +7929,7 @@ switch lower(P.vcFet_show)
         vcXLabel = sprintf('Site # (%%0.0f %s; upper: %s1; lower: %s2)', P.vcFet_show, P.vcFet_show, P.vcFet_show);
         vcYLabel = sprintf('Site # (%%0.0f %s)', P.vcFet_show);    
 end
-vcTitle = '[H]elp; [S]plit; [B]ackground; (Sft)[Up/Down]:Scale; [Left/Right]:Sites; [M]erge; [F]eature';
+vcTitle = '[Q]render(toggle); [H]elp; [S]plit; [B]ackground; (Sft)[Up/Down]:Scale; [Left/Right]:Sites; [M]erge; [F]eature';
 
 %----------------
 % display
@@ -7320,6 +7943,7 @@ if isempty(S_fig)
     set([S_fig.hPlot0, S_fig.hPlot1, S_fig.hPlot2], cell_plot{:}); %common style
     S_fig.viSites_show = []; %so that it can update
     S_fig.vcFet_show = 'vpp';
+    S_fig.fRender = 0; % [Q] projection rendering toggle; default OFF (do not render)
     % plot boundary
     plotTable_([0, nSites], '-', 'Color', [.5 .5 .5]); %plot in one scoop
     plotDiag_([0, nSites], '-', 'Color', [0 0 0], 'LineWidth', 1.5); %plot in one scoop
@@ -7328,9 +7952,27 @@ if isempty(S_fig)
     S_fig.cvhHide_mouse = mouse_hide_(hFig, S_fig.hPlot0, S_fig);
     set_fig_(hFig, S_fig);
 end
+
+% [Q] projection rendering toggle (default OFF). The figure/axes/keypress are set up above,
+% so [Q] still works to turn it on; skip the expensive feature projection (fet2proj_) +
+% scatter (plot_proj_) when rendering is off. Clear any stale scatter and hint in the title.
+if ~get_set_(S_fig, 'fRender', 0)
+    try
+        update_plot_(S_fig.hPlot0, nan, nan);
+        update_plot_(S_fig.hPlot1, nan, nan);
+        update_plot_(S_fig.hPlot2, nan, nan);
+    catch
+    end
+    title_(S_fig.hAx, 'Projection rendering OFF - press [Q] to render');
+    set(hFig, 'UserData', S_fig);
+    return;
+end
 % get features for x0,y0,S_plot0 in one go
 %[mrMin, mrMax, vi0, vi1, vi2] = fet2proj_(S0, P.viSites_show);
-[mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, P.viSites_show);
+[mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2, viSpk1] = fet2proj_(S0, P.viSites_show);
+% Keep the ids behind hPlot1 so [S] can map a polygon selection back to spikes
+% (see plot_split_). Without this the mapping is unrecoverable.
+S_fig.viSpk1 = viSpk1;
 % S_fig.maxAmp %debug
 if ~isfield(S_fig, 'viSites_show'), S_fig.viSites_show = []; end
 if ~equal_vr_(S_fig.viSites_show, P.viSites_show) || ...
@@ -7357,6 +7999,7 @@ vcFet_show = P.vcFet_show;
 S_fig = struct_merge_(S_fig, ...
     makeStruct_(vcTitle, iClu1, iClu2, viSites_show, vcXLabel, vcYLabel, vcFet_show));
 S_fig.csHelp = { ...
+    '[Q] toggle projection rendering on/off (default OFF)', ...
     '[D]raw polygon', ...
     '[S]plit cluster', ...
     '(shift)+Up/Down: change scale', ...
@@ -7763,8 +8406,14 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, viSites0)
+function [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2, viSpk01] = fet2proj_(S0, viSites0)
 % show spikes excluding the clusters excluding clu1 and 2
+%
+% viSpk01 (7th output, added 2026/07/15): the GLOBAL spike indices behind mrMin1/mrMax1,
+% in plotted order. Previously this was computed and thrown away, which destroyed the
+% displayed-point -> spike mapping and left plot_split_ no choice but to recompute over a
+% different population than the one on screen. Callers that let the user select points
+% (plot_FigProj_ -> plot_split_) must use this to map a selection back to spikes.
 P = S0.P;
 S_clu = S0.S_clu;
 iClu1 = S0.iCluCopy;
@@ -7782,10 +8431,16 @@ if ~isempty(P.tlim_proj)
     viTime0 = viTime0(viSpk01);
 end
 viClu0 = S_clu.viClu(viSpk0);
+% Subsample the BACKGROUND only. The selected clusters are shown in full, matching
+% getFet_clu_/plot_FigTime_ (whose MAX_SAMPLE cap likewise applies to the background
+% branch only). Subsampling them to nShow_proj used to display ~50 dots of a cluster
+% while plot_split_ evaluated the polygon over ALL its spikes, so circling a third of
+% what was visible silently split a third of thousands. Showing them in full makes the
+% display and the split the same population by construction.
 viSpk00 = randomSelect_(viSpk0, P.nShow_proj*2);
-viSpk01 = randomSelect_(viSpk0(viClu0 == iClu1), P.nShow_proj);
+viSpk01 = viSpk0(viClu0 == iClu1);
 if ~isempty(iClu2)
-    viSpk02 = randomSelect_(viSpk0(viClu0 == iClu2), P.nShow_proj);
+    viSpk02 = viSpk0(viClu0 == iClu2);
 else
     [mrMin2, mrMax2] = deal([]);
 end
@@ -8137,12 +8792,16 @@ if isempty(S_fig)
     % cycle among them with the [C] key (see keyPressFcn_FigMap_).
     S_fig.csLabelMode = site_label_modes_(P);
     S_fig.iLabelMode = 1;
+    S_fig.vcColorSrc = '';  % '' = follow the label mode; [V] sets 'vpp' or 'region'
+    S_fig.fZoomSite = 0;    % 0 = whole shank (default); [B] zooms to the cluster site +/-5 sites
     csText = S_fig.csLabelMode(1).csText;
     S_fig.hText = text(P.mrSiteXY(:,1) + 20, P.mrSiteXY(:,2), csText, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
     xlabel('X Position (\mum)');
     ylabel('Y Position (\mum)');
     S_fig.csHelp = { ...
         '[C] cycle site labels: channel #, site #, region', ...
+        '[V] toggle box color: amplitude (Vpp) <-> region', ...
+        '[B] toggle zoom: current site +/-5 sites <-> whole shank', ...
         '[H] help', ...
         '------------------', ...
         'Region labels are read from the CSV named by the', ...
@@ -8150,11 +8809,15 @@ if isempty(S_fig)
     set(hFig, 'KeyPressFcn', @keyPressFcn_FigMap_);
 end
 try
-    iShank1 = P.viShank_site(S_clu.viSite_clu(S0.iCluCopy));
-    axis_(S_fig.hAx, S_fig.cell_alim{iShank1});
+    iSite1 = S_clu.viSite_clu(S0.iCluCopy);
+    S_fig.iSite_clu = iSite1; % center site for the [B] zoom
+    iShank1 = P.viShank_site(iSite1);
+    % [B] zoom: frame the cluster's site +/-5 sites, else the whole shank (default)
+    axis_(S_fig.hAx, FigMap_alim_(S_fig, P, iShank1));
     vcTitle = sprintf('Max: %0.1f uVpp (Shank %d)', max(vrVpp), iShank1);
 catch
-    axis_(S_fig.hAx, S_fig.alim);
+    % No shank info: full-probe extent (as before), still honoring the [B] zoom.
+    axis_(S_fig.hAx, FigMap_alim_(S_fig, P, 0));
     vcTitle = sprintf('Max: %0.1f uVpp', max(vrVpp));
 end
 S_fig.vcTitle_base = vcTitle;
@@ -8234,8 +8897,9 @@ end
 [vnKey, csLabel] = deal(vnKey(1:nRow), csLabel(1:nRow));
 
 csRegion = repmat({'?'}, nSites, 1); % '?' marks sites the CSV does not cover
-% Strategy 1: key = channel number (match against viSite2Chan).
-[vlHit, viLoc] = ismember(viChan(:), vnKey);
+% Strategy 1: key = 0-based channel number. viSite2Chan is 1-based, so
+% subtract 1 before matching the 0-based CSV key column.
+[vlHit, viLoc] = ismember(viChan(:) - 1, vnKey);
 csRegion(vlHit) = csLabel(viLoc(vlHit));
 % Strategy 2: key = 1-based site index (fill sites still uncovered).
 vlBlank = strcmp(csRegion, '?');
@@ -8248,7 +8912,43 @@ end %func
 
 
 %--------------------------------------------------------------------------
-% Probe-map (FigMap) key handler: [C] cycles the site labels, [H] shows help.
+% `irc probe`: add the region view to the static probe figure. P needs
+% mrSiteXY, viSite2Chan, vcFile_site_region. No-op (figure unchanged) when no
+% region CSV is available. Reuses the FigMap helpers: [C] cycles labels
+% (site/chan -> site # -> region), [V] toggles box color shank <-> region.
+function probe_region_keys_(hFig, hPatch, hText, P, viShank)
+S_fig = struct('hAx', get(hPatch, 'Parent'), 'hPatch', hPatch, 'hText', hText);
+S_fig.csLabelMode = site_label_modes_(P);
+if numel(S_fig.csLabelMode) < 3, return; end % no region CSV
+S_fig.csLabelMode(1).name = 'site/chan #';
+S_fig.csLabelMode(1).csText = get(hText, 'String'); % keep the original "site/chan" labels
+S_fig.iLabelMode = 1;
+S_fig.vcColorSrc = '';
+S_fig.vrVpp = viShank(:); % non-region color = shank index, as plot_probe_ draws it
+if isempty(S_fig.vrVpp), S_fig.vrVpp = zeros(size(P.mrSiteXY,1), 1); end
+S_fig.vcTitle_base = 'Site# / Chan# (zoom: wheel; pan: hold wheel & drag)';
+S_fig.csHelp = {'[C] cycle site labels: site/chan #, site #, region', ...
+    '[V] toggle box color: shank <-> region', '[H] help'};
+set(hFig, 'UserData', S_fig, 'KeyPressFcn', @keyPressFcn_FigProbe_);
+title_(S_fig.hAx, FigMap_title_(S_fig));
+end %func
+
+
+%--------------------------------------------------------------------------
+function keyPressFcn_FigProbe_(hObject, event)
+S_fig = get(hObject, 'UserData');
+if isempty(S_fig), return; end
+switch lower(event.Key)
+    case 'c', cycle_FigMap_label_(hObject, S_fig);
+    case 'v', toggle_FigMap_color_(hObject, S_fig);
+    case 'h', msgbox_(S_fig.csHelp, 1);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Probe-map (FigMap) key handler: [C] cycles the site labels, [V] toggles the
+% box color source (amplitude <-> region), [B] toggles the site zoom, [H] help.
 function keyPressFcn_FigMap_(hObject, event)
 hFig = hObject;
 S_fig = get(hFig, 'UserData');
@@ -8256,8 +8956,157 @@ if isempty(S_fig), return; end
 switch lower(event.Key)
     case 'c' % cycle site labels: channel # -> site # -> region
         cycle_FigMap_label_(hFig, S_fig);
+    case 'v' % toggle box color: amplitude (Vpp) <-> region
+        toggle_FigMap_color_(hFig, S_fig);
+    case 'b' % toggle zoom: current site +/-5 sites <-> whole shank
+        toggle_FigMap_zoom_(hFig, S_fig);
     case 'h'
         msgbox_(get_set_(S_fig, 'csHelp', {'[C] cycle site labels'}), 1);
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% [V] in the probe map: flip the box color source between the selected
+% cluster's amplitude (Vpp, jet) and the categorical region palette,
+% independently of the [C] label mode. No-op (with a note) when the recording
+% has no region labels, which also covers a stale/foreign S_fig.
+function S_fig = toggle_FigMap_color_(hFig, S_fig)
+if nargin<2, S_fig = get(hFig, 'UserData'); end
+if isempty(get_(S_fig, 'hPatch')), return; end
+if isempty(figmap_region_mode_(S_fig))
+    fprintf(2, 'toggle_FigMap_color_: no region labels (set ''vcFile_site_region'' in the .prm).\n');
+    return;
+end
+if strcmpi(figmap_color_src_(S_fig), 'region')
+    S_fig.vcColorSrc = 'vpp';
+else
+    S_fig.vcColorSrc = 'region';
+end
+apply_FigMap_color_(S_fig, get_set_(S_fig, 'vrVpp', []));
+title_(S_fig.hAx, FigMap_title_(S_fig));
+set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% [B] in the probe map: toggle between the whole-shank view (default) and a
+% zoom centered on the selected cluster's site (+/-5 sites in depth order).
+function S_fig = toggle_FigMap_zoom_(hFig, S_fig)
+if nargin<2, S_fig = get(hFig, 'UserData'); end
+if isempty(get_(S_fig, 'hAx')), return; end
+S_fig.fZoomSite = ~get_set_(S_fig, 'fZoomSite', 0);
+try
+    P = get0_('P');
+    iSite1 = get_set_(S_fig, 'iSite_clu', []);
+    iShank1 = 1;
+    if ~isempty(iSite1)
+        viShank_site = get_set_(P, 'viShank_site', []);
+        if ~isempty(viShank_site) && iSite1 <= numel(viShank_site)
+            iShank1 = viShank_site(iSite1);
+        end
+    end
+    axis_(S_fig.hAx, FigMap_alim_(S_fig, P, iShank1));
+catch
+    axis_(S_fig.hAx, get_set_(S_fig, 'alim', axis(S_fig.hAx)));
+end
+title_(S_fig.hAx, FigMap_title_(S_fig));
+set(hFig, 'UserData', S_fig);
+end %func
+
+
+%--------------------------------------------------------------------------
+% Axis limits for the probe map: the [B] zoom window when fZoomSite is set and
+% a center site is known, otherwise the shank's full extent (the default).
+function alim = FigMap_alim_(S_fig, P, iShank)
+alim = [];
+try
+    cell_alim = get_(S_fig, 'cell_alim');
+    if ~isempty(cell_alim) && iShank>=1 && iShank<=numel(cell_alim)
+        alim = cell_alim{iShank};
+    end
+catch
+end
+if isempty(alim), alim = get_set_(S_fig, 'alim', []); end
+if ~get_set_(S_fig, 'fZoomSite', 0), return; end
+iSite1 = get_set_(S_fig, 'iSite_clu', []);
+if isempty(iSite1), return; end
+alim1 = get_lim_site_(P, iSite1, 5, alim);
+if ~isempty(alim1), alim = alim1; end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Zoom window around iSite: keep the shank's X range (column geometry stays
+% put) and restrict Y to the nSite_pad sites above and below iSite in DEPTH
+% order (site numbering is not guaranteed monotonic in depth). Clipped at the
+% probe ends. Padding matches get_lim_shank_. Returns [] if it cannot resolve.
+function alim = get_lim_site_(P, iSite, nSite_pad, alim_shank)
+if nargin<3 || isempty(nSite_pad), nSite_pad = 5; end
+if nargin<4, alim_shank = []; end
+alim = [];
+try
+    vrSiteHW = get_set_(P, 'vrSiteHW', [12,12]);
+    nSites = size(P.mrSiteXY,1);
+    if isempty(iSite) || iSite<1 || iSite>nSites, return; end
+    viShank_site = get_set_(P, 'viShank_site', ones(nSites,1));
+    if isempty(viShank_site) || numel(viShank_site)~=nSites
+        viShank_site = ones(nSites,1);
+    end
+    viSite1 = find(viShank_site == viShank_site(iSite)); % sites on this shank
+    [~, viSrt] = sort(P.mrSiteXY(viSite1,2));            % depth order
+    viSite1 = viSite1(viSrt);
+    iRank = find(viSite1 == iSite, 1, 'first');
+    if isempty(iRank), return; end
+    viSite2 = viSite1(max(1,iRank-nSite_pad) : min(numel(viSite1),iRank+nSite_pad));
+    dy = abs(vrSiteHW(1));
+    ylim1 = [min(P.mrSiteXY(viSite2,2)), max(P.mrSiteXY(viSite2,2))] + [-1,2] * dy;
+    if isempty(alim_shank) || numel(alim_shank)~=4
+        dx = abs(vrSiteHW(2));
+        vrX1 = P.mrSiteXY(viSite1,1);
+        xlim1 = [min(vrX1), max(vrX1)] + [-1,2] * dx;
+    else
+        xlim1 = alim_shank(1:2); % keep the shank's X range
+    end
+    alim = [xlim1, ylim1];
+catch
+    alim = [];
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Return the region-label mode entry of S_fig.csLabelMode (the only one
+% carrying viColor/mrColormap), or [] when the recording has no region CSV.
+% The isfield test is at the struct-array level on purpose: without a region
+% CSV, site_label_modes_ builds a 2-element array where viColor is not a field
+% at all, so per-element dot-access would error.
+function S_mode = figmap_region_mode_(S_fig)
+S_mode = [];
+csLabelMode = get_(S_fig, 'csLabelMode');
+if isempty(csLabelMode) || ~isfield(csLabelMode, 'viColor'), return; end
+for iMode = 1:numel(csLabelMode)
+    if ~isempty(csLabelMode(iMode).viColor)
+        S_mode = csLabelMode(iMode);
+        return;
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Effective probe-map color source: the explicit [V] override when set,
+% otherwise the historical rule (region when the active label mode carries
+% region colors, else the selected cluster's Vpp).
+function vcSrc = figmap_color_src_(S_fig)
+vcSrc = get_set_(S_fig, 'vcColorSrc', '');
+if ~isempty(vcSrc), return; end
+vcSrc = 'vpp';
+csLabelMode = get_(S_fig, 'csLabelMode');
+if isempty(csLabelMode) || ~isfield(csLabelMode, 'viColor'), return; end
+iMode = get_set_(S_fig, 'iLabelMode', 1);
+if iMode>=1 && iMode<=numel(csLabelMode) && ~isempty(csLabelMode(iMode).viColor)
+    vcSrc = 'region';
 end
 end %func
 
@@ -8290,6 +9139,16 @@ iMode = get_set_(S_fig, 'iLabelMode', 1);
 if ~isempty(csLabelMode) && iMode>=1 && iMode<=numel(csLabelMode)
     vcTitle = sprintf('%s [%s]', vcTitle, csLabelMode(iMode).name);
 end
+% Only annotate the non-default states, so the historical title is unchanged.
+vcColorSrc = get_set_(S_fig, 'vcColorSrc', '');
+if strcmpi(vcColorSrc, 'vpp')
+    vcTitle = sprintf('%s (color: Vpp)', vcTitle);
+elseif strcmpi(vcColorSrc, 'region')
+    vcTitle = sprintf('%s (color: region)', vcTitle);
+end
+if get_set_(S_fig, 'fZoomSite', 0)
+    vcTitle = sprintf('%s (zoom +/-5 sites)', vcTitle);
+end
 end %func
 
 
@@ -8298,11 +9157,10 @@ end %func
 % mode is active, otherwise by the selected cluster's Vpp (jet colormap).
 function apply_FigMap_color_(S_fig, vrVpp)
 if nargin<2, vrVpp = get_set_(S_fig, 'vrVpp', []); end
-csLabelMode = get_(S_fig, 'csLabelMode');
-iMode = get_set_(S_fig, 'iLabelMode', 1);
+% Decide the color source first ([V] override, else the label mode), then draw.
 S_mode = [];
-if ~isempty(csLabelMode) && iMode>=1 && iMode<=numel(csLabelMode)
-    S_mode = csLabelMode(iMode);
+if strcmpi(figmap_color_src_(S_fig), 'region')
+    S_mode = figmap_region_mode_(S_fig); % [] when no region CSV -> falls back to Vpp
 end
 if ~isempty(S_mode) && isfield(S_mode, 'viColor') && ~isempty(S_mode.viColor)
     % region mode: one categorical color per region (direct colormap index)
@@ -8542,17 +9400,19 @@ end
 
 
 %--------------------------------------------------------------------------
-function rescale_FigTime_(event, S0, P)
+function rescale_FigTime_(event, S0, P, vcTag)
 % rescale_FigTime_(event, S0, P)
 % rescale_FigTime_(maxAmp, S0, P)
+% vcTag selects which time view to rescale ('FigTime' default, 'FigTime2' for the 2nd view).
 if nargin<2, S0 = []; end
 if nargin<3, P = []; end
+if nargin<4 || isempty(vcTag), vcTag = 'FigTime'; end
 
 if isempty(S0), S0 = get0_(); end
 if isempty(P), P = S0.P; end
 S_clu = S0.S_clu;
 
-[S_fig, maxAmp_prev] = set_fig_maxAmp_('FigTime', event);
+[S_fig, maxAmp_prev] = set_fig_maxAmp_(vcTag, event);
 ylim_(S_fig.hAx, [0, 1] * S_fig.maxAmp);
 imrect_set_(S_fig.hRect, [], [0, S_fig.maxAmp]);
 iSite = S_clu.viSite_clu(S0.iCluCopy);
@@ -8594,6 +9454,9 @@ function keyPressFcn_FigTime_(hObject, event, S0)
 if nargin<3, S0 = get(0, 'UserData'); end
 [P, S_clu, hFig] = deal(S0.P, S0.S_clu, hObject);
 S_fig = get(hFig, 'UserData');
+% Which time view got the keypress. This callback is attached to a figure only (see
+% plot_FigTime_), so hObject is the figure and its Tag is 'FigTime' or 'FigTime2'.
+vcTag = get(hFig, 'Tag');
 
 nSites = numel(P.viSite2Chan);
 switch lower(event.Key)
@@ -8607,14 +9470,14 @@ switch lower(event.Key)
         else
             S_fig.iSite = max(S_fig.iSite - factor, 1);
         end
-        set(hFig, 'UserData', S_fig);        
-        update_FigTime_();                
+        set(hFig, 'UserData', S_fig);
+        update_FigTime_(vcTag);
 
     case {'uparrow', 'downarrow'} %change ampl
         if ~isVisible_(S_fig.hAx)
-            msgbox_('Zoom is disabled in the position view'); return; 
+            msgbox_('Zoom is disabled in the position view'); return;
         end
-        rescale_FigTime_(event, S0, P);
+        rescale_FigTime_(event, S0, P, vcTag);
         
     case 'r' %reset view
         if ~isVisible_(S_fig.hAx), return; end
@@ -8636,14 +9499,21 @@ switch lower(event.Key)
         set(hFig, 'UserData', S_fig);
         
     case 't'
-        plot_FigTime_(S0);
-        
+        plot_FigTime_(S0, vcTag);
+
     case 's' %split. draw a polygon
         if ~isempty(S0.iCluPaste)
             msgbox_('Select one cluster'); return;
         end
         try
-            hPoly = impoly_();
+            % Draw the polygon on the SAME axes we read hPlot1 from. impoly_() with no
+            % argument targets gca, which is not kept in sync with the focused figure --
+            % harmless while FigTime was the only window of its kind, but with a second
+            % identical time view (FigTime2) a polygon drawn in one window would be
+            % evaluated against the other's data. Both plot the same cluster, so the
+            % numel() guard below matches and split_clu_by_id_ would commit the wrong
+            % split silently. show_drift_view.m:260 passes its axes for the same reason.
+            hPoly = impoly_(S_fig.hAx);
             if isempty(hPoly); return; end
             mrPolyPos = getPosition(hPoly);
             vrX1 = double(get(S_fig.hPlot1, 'XData'));
@@ -8651,7 +9521,17 @@ switch lower(event.Key)
             vlIn = inpolygon(vrX1, vrY1, mrPolyPos(:,1), mrPolyPos(:,2));
             hSplit = line(vrX1(vlIn), vrY1(vlIn), 'Color', [1 0 0], 'Marker', '.', 'LineStyle', 'none');
             if strcmpi(questdlg_('Split?', 'Confirmation', 'Yes'), 'yes')
-                split_clu_(S0.iCluCopy, vlIn);
+                % Split by absolute spike id, not by this plot's positional mask.
+                % plot_FigTime_ already stashes the ids behind hPlot1 as S_fig.viSpk1
+                % (one per plotted point, same order), so the selection cannot be
+                % misaligned onto a different spike set. Fall back to the positional
+                % path only for figures cached before viSpk1 was stored.
+                viSpk_plot1 = get_(S_fig, 'viSpk1');
+                if numel(viSpk_plot1) == numel(vlIn)
+                    split_clu_by_id_(S0.iCluCopy, viSpk_plot1(vlIn));
+                else
+                    split_clu_(S0.iCluCopy, vlIn);
+                end
             end
             delete_multi_(hPoly, hSplit);
         catch
@@ -8797,11 +9677,13 @@ switch lower(event.Key)
         if ~isempty(S0.iCluPaste)
             msgbox_('Select one cluster to split'); return;
         end
-        S_plot1 = select_polygon_(S_fig.hPlot1); 
+        S_plot1 = select_polygon_(S_fig.hPlot1);
         if ~isempty(S_plot1)
-            [fSplit, vlIn] = plot_split_(S_plot1);
+            [fSplit, vlIn, viSpk_in] = plot_split_(S_plot1);
             if fSplit
-                S_clu = split_clu_(S0.iCluCopy, vlIn);
+                % Split by absolute spike id so the selection cannot be misapplied to a
+                % different population than the one the polygon was drawn over.
+                S_clu = split_clu_by_id_(S0.iCluCopy, viSpk_in);
             else
                 update_plot2_proj_();
 %                 delete_multi_(S_plot1.hPoly);
@@ -8823,6 +9705,22 @@ switch lower(event.Key)
         
     case 'b' %background spikes
         toggleVisible_(S_fig.hPlot0);
+
+    case 'q' % [Q] toggle projection rendering on/off (default OFF); avoids expensive redraws
+        S_fig.fRender = ~get_set_(S_fig, 'fRender', 0);
+        set(hFig, 'UserData', S_fig);
+        if S_fig.fRender
+            plot_FigProj_(S0); % render now (and on later selections until toggled off)
+        else
+            update_plot2_proj_();
+            try
+                update_plot_(S_fig.hPlot0, nan, nan);
+                update_plot_(S_fig.hPlot1, nan, nan);
+                update_plot_(S_fig.hPlot2, nan, nan);
+            catch
+            end
+            title_(S_fig.hAx, 'Projection rendering OFF - press [Q] to render');
+        end
 
     case 'h' %help
         msgbox_(S_fig.csHelp, 1);
@@ -8994,6 +9892,7 @@ else
         tnWav_raw = [];
     end
     tnWav_spk = zeros(diff(spkLim_wav) + 1, nSites_spk, nSpks, 'like', mnWav_spk);
+    nFail_site = 0;   % DI-08: count per-site failures instead of silently swallowing (phantom zero waveforms)
     for iSite = 1:nSites
         viiSpk11 = find(viSite_spk == iSite);
         if isempty(viiSpk11), continue; end
@@ -9011,9 +9910,14 @@ else
             if ~isempty(mnWav_raw)
                 tnWav_raw(:,:,viiSpk11) = permute(mr2tr_(mnWav_raw, spkLim_raw, viTime_spk11, viSite11), [1,3,2]); %raw
             end
-        catch % GPU failure
-            disperr_('mn2tn_wav_: GPU failed'); 
+        catch ME   % DI-08: was a silent swallow that left phantom ZERO waveforms for this site's spikes
+            nFail_site = nFail_site + 1;
+            fprintf(2, '\n\tmn2tn_wav_: site %d failed (%s) -- %d spikes get zero waveforms.\n', ...
+                iSite, ME.message, numel(viiSpk11));
         end
+    end
+    if nFail_site > 0
+        fprintf(2, '\n\t*** mn2tn_wav_: %d site(s) failed; their spikes have ZERO waveforms/features -- unreliable. ***\n', nFail_site);
     end
 end
 if 1 %10/19/2018 JJJ
@@ -9060,9 +9964,16 @@ hFig_wait = figure_wait_(1);
 
 iClu_del = S0.iCluCopy;
 % hMsg = msgbox_open_('Deleting...');
-S0.S_clu = delete_clu_(S0.S_clu, S0.iCluCopy);
+[S0.S_clu, fOk] = delete_clu_(S0.S_clu, S0.iCluCopy);
+if ~fOk
+    % delete_clu_ rolled back (see its message); do NOT redraw as deleted or write a log
+    % entry. Close the wait cursor and return with no change.
+    fprintf(2, 'ui_delete_: delete of Clu %d aborted; no change.\n', iClu_del);
+    figure_wait_(0, hFig_wait);
+    return;
+end
 set(0, 'UserData', S0);
-plot_FigWav_(S0); %redraw plot 
+plot_FigWav_(S0); %redraw plot
 % S0.S_clu.mrWavCor = wavCor_delete_(S0.iCluCopy); 
 FigWavCor_update_(S0);
 S0.iCluCopy = min(S0.iCluCopy, S0.S_clu.nClu);
@@ -9092,14 +10003,63 @@ end %func
 
 %--------------------------------------------------------------------------
 % 10/27/17 JJJ: Delete multiple clusters
-function S_clu = delete_clu_(S_clu, viClu_delete)
+function [S_clu, fOk] = delete_clu_(S_clu, viClu_delete)
 % sets the cluster to zero
+% fOk (optional 2nd output): false if the delete was ABORTED (rolled back, S_clu returned
+% unchanged), true if it applied. Callers that shift pending-queue indices or append a log
+% entry MUST gate that bookkeeping on ~fOk, or the log/queue desync from reality on an abort
+% (see execute_pending_and_update_ / ui_delete_ / delete_auto_). Backward-compatible: existing
+% single-output callers request only S_clu and are unaffected. fOk starts false so both
+% rollback returns below leave it false without touching them.
+fOk = false;
 nClu_prev = S_clu.nClu;
 viClu_keep = setdiff(1:nClu_prev, viClu_delete);
+
+% ATOMICITY: viClu is remapped UNCONDITIONALLY below (see the S_clu_select_ CONTRACT
+% note). If the per-cluster remap above it only partly applied, viClu and cviSpk_clu end
+% up describing DIFFERENT clusters -- a silent, saved desync that corrupts every later
+% split/merge/delete and is NOT repairable after the fact. Snapshot first and roll back
+% rather than commit a half-applied remap.
+% See logs/issue_viclu_desync_20260715.md.
+S_clu_prev = S_clu;
 try
     S_clu = S_clu_select_(S_clu, viClu_keep); % remap all
-catch
-    fprintf(2, 'delete_clu_: error selecting');
+catch ME
+    S_clu = S_clu_prev; % roll back; leave viClu alone
+    fprintf(2, 'delete_clu_: S_clu_select_ failed (%s)\n', ME.message);
+    fprintf(2, '\tdelete ABORTED, no change made. Clusters are unchanged and consistent.\n');
+    return;
+end
+
+% The catch above is NOT sufficient on its own, and neither is a length check:
+%   1. S_clu_select_ delegates to struct_select_safe_, which SKIPS a field it cannot
+%      resize and returns NORMALLY -- no exception reaches the catch above.
+%   2. S_clu_select_ then force-"reconciles" any wrong-length v*_clu / c*_clu field by
+%      truncating or PADDING it (cviSpk_clu is padded with {[]}). So after a skip the
+%      length is right and the CONTENT is wrong -- the same blind spot that makes
+%      S_clu_valid_ useless here. Verified by scratchpad/verify_delete_clu.m: a length
+%      check does not fire on this path.
+% Verify the cache was ACTUALLY permuted: the new cache must equal the old cache indexed
+% by viClu_keep. Anything else means viClu is about to be remapped against a stale cache.
+if isfield(S_clu, 'cviSpk_clu')
+    fCache_ok = false;
+    try
+        if ~isempty(viClu_keep) && numel(S_clu_prev.cviSpk_clu) >= max(viClu_keep)
+            fCache_ok = isequal(reshape(S_clu.cviSpk_clu, [], 1), ...
+                                reshape(S_clu_prev.cviSpk_clu(viClu_keep), [], 1));
+        elseif isempty(viClu_keep)
+            fCache_ok = isempty(S_clu.cviSpk_clu); % deleting every cluster
+        end
+    catch
+        fCache_ok = false;
+    end
+    if ~fCache_ok
+        fprintf(2, 'delete_clu_: cviSpk_clu was NOT correctly remapped to the kept clusters.\n');
+        fprintf(2, '\tSee any struct_select_safe_ / "reconciled length" warnings above.\n');
+        fprintf(2, '\tdelete ABORTED, no change made, to avoid a silent viClu/cviSpk_clu desync.\n');
+        S_clu = S_clu_prev; % roll back
+        return;
+    end
 end
 
 iClu_del = min(S_clu.viClu) - 1;
@@ -9118,6 +10078,7 @@ S_clu.nClu = nClu_new;
 if ~S_clu_valid_(S_clu)
     fprintf(2, 'delete_clu_: cluster arrays still inconsistent after deleting (continuing)\n');
 end
+fOk = true; % reached only when neither rollback return fired above
 end %func
 
 
@@ -9226,7 +10187,18 @@ end
 hFig_wait = figure_wait_(1);
 iCluLog2 = S0.iCluPaste; % save for log before clearing
 iClu_deleted = max(S0.iCluCopy, S0.iCluPaste); % higher index gets deleted
-S0.S_clu = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
+[S0.S_clu, fOk] = merge_clu_(S0.S_clu, S0.iCluCopy, S0.iCluPaste, P);
+if ~fOk
+    % merge_clu_ rolled back OR rejected the merge (cross-shank guard, or a delete_clu_
+    % desync abort); see its console message for the reason. Do NOT touch the overlays,
+    % pending queue, or log. Return before the bookkeeping below and close the wait cursor.
+    % iCluPaste is left valid so the user can retry or pick a different target.
+    fprintf(2, 'ui_merge_: merge aborted (see above); no change made.\n');
+    msgbox_('Merge not applied (see console for reason). No change made.', 1);
+    figure_wait_(0, hFig_wait);
+    set(0, 'UserData', S0);
+    return;
+end
 S0.iCluCopy = min(S0.iCluCopy, iCluLog2);
 S0.iCluPaste = [];
 % Hide paste overlay and update copy overlay BEFORE redraw to avoid mismatch
@@ -9254,16 +10226,58 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S_clu = merge_clu_(S_clu, iClu1, iClu2, P)
+function [S_clu, fOk] = merge_clu_(S_clu, iClu1, iClu2, P)
+% fOk (optional 2nd output): false if the merge was ABORTED and rolled back (S_clu
+% unchanged), true if it applied. Callers doing overlay/index/log bookkeeping MUST gate on
+% ~fOk (see ui_merge_). Backward-compatible: single-output callers are unaffected. fOk starts
+% false so the rollback return leaves it false. (Note: the assert_ below still THROWS on an
+% invalid result -- that is a separate, pre-existing failure mode, not signalled via fOk.)
+fOk = false;
 if iClu1>iClu2, [iClu1, iClu2] = swap_(iClu1, iClu2); end
+
+% Cross-shank guard (Hook B): reject before ANY mutation. Covers the immediate merge paths
+% (Time/Proj/WavCor [m]) that bypass the pending queue. Returns with the default fOk=false
+% (already set above), so the sole caller ui_merge_ (irc.m ~9369) treats it exactly like a
+% rollback and makes no change. No-op when fMerge_across_shank=1 or shank_clu_ returns [].
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    viShank_clu = shank_clu_(S_clu, P);
+    if ~isempty(viShank_clu) && viShank_clu(iClu1) ~= viShank_clu(iClu2)
+        fprintf(2, ['merge_clu_: Clu %d (shank %d) and Clu %d (shank %d) are on different ' ...
+            'shanks; cross-shank merge rejected. No change made.\n'], ...
+            iClu1, viShank_clu(iClu1), iClu2, viShank_clu(iClu2));
+        return;
+    end
+end
+
+% ATOMICITY: a merge is two steps -- merge_clu_pair_ moves iClu2's spikes into iClu1, then
+% delete_clu_ removes the emptied iClu2. delete_clu_ now ABORTS (leaving S_clu untouched)
+% rather than commit a remap that would desync viClu from cviSpk_clu, which would strand
+% this merge half-applied: spikes moved, but iClu2 still present as an empty cluster --
+% and the caller (ui_merge_clu_) calls save_log_('merge %d %d') UNCONDITIONALLY, so the
+% log would record a merge that did not fully happen. Snapshot and roll the WHOLE merge
+% back, so the operation either completes or leaves nothing behind.
+% See logs/issue_viclu_desync_20260715.md.
+S_clu_prev = S_clu;
 
 S_clu = merge_clu_pair_(S_clu, iClu1, iClu2);
 S_clu = S_clu_refrac_(S_clu, P, iClu1); % remove refrac
 S_clu = S_clu_update_(S_clu, iClu1, P);
+nClu_pre_delete = S_clu.nClu;
 S_clu = delete_clu_(S_clu, iClu2);
+% delete_clu_ removes exactly one cluster on success, so an unchanged nClu means it
+% aborted. S_clu_valid_ below only checks lengths and passes either way, so it cannot
+% stand in for this.
+if S_clu.nClu == nClu_pre_delete
+    S_clu = S_clu_prev; % roll back the entire merge
+    fprintf(2, ['merge_clu_: could not remove Clu %d (see delete_clu_ above).\n' ...
+        '\tMERGE ABORTED and rolled back -- Clu %d and Clu %d are unchanged. ' ...
+        'No spikes were lost.\n'], iClu2, iClu1, iClu2);
+    return;
+end
 % S_clu = S_clu_remove_empty_(S_clu);
 assert_(S_clu_valid_(S_clu), 'Cluster number is inconsistent after merging');
 fprintf('%s [W] merging Clu %d and %d\n', datestr(now, 'HH:MM:SS'), iClu1, iClu2);
+fOk = true; % reached only when the rollback return above did not fire
 end %func
 
 
@@ -9410,6 +10424,21 @@ end
 iClu1 = S0.iCluCopy;
 iClu2 = S0.iCluPaste;
 
+% Cross-shank guard (Hook A): reject before anything enters the pending queue/log. This is
+% the only path where the check changes behavior -- a user could otherwise hand-queue two
+% clusters on physically different shanks (hundreds of um apart, never the same unit). No-op
+% when fMerge_across_shank=1 or shank_clu_ returns [] (single-shank / shank-less / bad
+% viSite_clu). Transitivity keeps every queued GROUP single-shank because add_pending_merge_
+% has this single caller, so a group can only ever grow by same-shank pairs.
+if ~get_set_(S0.P, 'fMerge_across_shank', 0)
+    viShank_clu = shank_clu_(S0.S_clu, S0.P);
+    if ~isempty(viShank_clu) && viShank_clu(iClu1) ~= viShank_clu(iClu2)
+        msgbox_(sprintf('Cannot merge across shanks (Clu %d shank %d, Clu %d shank %d).', ...
+            iClu1, viShank_clu(iClu1), iClu2, viShank_clu(iClu2)), 1);
+        return;
+    end
+end
+
 S0 = add_pending_merge_(iClu1, iClu2, S0);
 S0 = update_pending_markers_(S0);
 set(0, 'UserData', S0);
@@ -9493,10 +10522,19 @@ csLog = {}; % collect log entries
 viDelete = sort(S0.viDelete_pending, 'descend');
 for iDel = 1:numel(viDelete)
     iClu = viDelete(iDel);
-    fprintf('  Deleting Clu %d\n', iClu);
-    csLog{end+1} = sprintf('delete %d', iClu);
 
-    S0.S_clu = delete_clu_(S0.S_clu, iClu);
+    % delete_clu_ rolls back (returns fOk=false, S_clu unchanged) rather than commit a
+    % viClu/cviSpk_clu desync. On an abort, skip BOTH the log entry and the index shift:
+    % logging a delete that did not happen and shifting the pending queue as if a cluster
+    % were removed would desync the log/queue from the actual cluster set. (Previously the
+    % csLog append sat BEFORE the delete -- the phantom-log source.)
+    [S0.S_clu, fOk] = delete_clu_(S0.S_clu, iClu);
+    if ~fOk
+        fprintf(2, '  execute_pending_: delete of Clu %d aborted; skipping its log and index shift.\n', iClu);
+        continue;
+    end
+    fprintf('  Deleting Clu %d\n', iClu);
+    csLog{end+1} = sprintf('delete %d', iClu); % log only on success
 
     % Adjust cluster indices in pending merge groups
     S0.cviMerge_pending = adjust_pending_indices_(S0.cviMerge_pending, iClu);
@@ -9520,16 +10558,68 @@ for iGroup = 1:numel(S0.cviMerge_pending)
     vcGroupStr = vcGroupStr(1:end-1);
     fprintf('  Merging group [%s] -> Clu %d\n', vcGroupStr, iClu_target);
 
+    % ATOMIC GROUP: a group merge is one user action, but it is applied as a sequence of
+    % merge_clu_pair_ + delete_clu_ steps. merge_clu_pair_ mutates BEFORE delete_clu_, so a
+    % mid-group delete_clu_ abort would strand the group PARTIALLY merged. Snapshot the whole
+    % group up front and, on any sub-merge abort, restore it and log nothing for the group --
+    % all-or-nothing. Log entries are staged and committed only on full-group success (the
+    % previous per-step csLog append logged merges that could be rolled back).
+    S_clu_group_snap = S0.S_clu; % snapshot the whole group
+    csLog_group = {};            % stage this group's log entries
+    fGroupOk = true;
+
     % Merge all clusters in group into target (from highest to lowest)
     for j = numel(viClu_group):-1:2
         iClu_source = viClu_group(j);
-        csLog{end+1} = sprintf('merge %d %d', iClu_target, iClu_source);
+
+        % Cross-shank backstop (Hook C): Hook A already keeps every queued group single-shank
+        % (add_pending_merge_ only grows a group via same-shank pairs), so this normally never
+        % fires -- it exists to catch a cross-shank pair that slipped in (e.g. the flag toggled
+        % between queueing and executing). Recompute shank_clu_ FRESH each iteration: the loop
+        % renumbers iClu_target/viClu_group in place after every delete below, so a snapshot
+        % taken before the loop would index the wrong clusters. Reuse the group rollback path.
+        if ~get_set_(P, 'fMerge_across_shank', 0)
+            viShank_clu = shank_clu_(S0.S_clu, P);
+            if ~isempty(viShank_clu) && viShank_clu(iClu_target) ~= viShank_clu(iClu_source)
+                S0.S_clu = S_clu_group_snap; % undo the entire group
+                fprintf(2, ['  execute_pending_: merge group -> Clu %d aborted at source %d; ' ...
+                    'cross-shank (shank %d vs %d), rolled back, not logged.\n'], ...
+                    iClu_target, iClu_source, viShank_clu(iClu_target), viShank_clu(iClu_source));
+                msgbox_(sprintf(['Cannot merge across shanks: Clu %d (shank %d) and Clu %d ' ...
+                    '(shank %d). Merge group rolled back.'], ...
+                    iClu_target, viShank_clu(iClu_target), iClu_source, viShank_clu(iClu_source)), 1);
+                fGroupOk = false;
+                break;
+            end
+        end
 
         % Do the merge
         S0.S_clu = merge_clu_pair_(S0.S_clu, iClu_target, iClu_source);
-        S0.S_clu = delete_clu_(S0.S_clu, iClu_source);
+        [S0.S_clu, fOk] = delete_clu_(S0.S_clu, iClu_source);
+        if ~fOk
+            S0.S_clu = S_clu_group_snap; % undo the entire group
+            fprintf(2, '  execute_pending_: merge group -> Clu %d aborted at source %d; rolled back, not logged.\n', ...
+                iClu_target, iClu_source);
+            fGroupOk = false;
+            break;
+        end
+        csLog_group{end+1} = sprintf('merge %d %d', iClu_target, iClu_source); % stage, don't commit
 
-        % Adjust remaining indices in this group and other groups
+        % DI-01: reconcile the NOT-yet-processed pending groups for this in-group delete, so a
+        % later group's stored IDs aren't left stale after delete_clu_ renumbered clusters. Mirrors
+        % Step 1's adjust_pending_indices_ call (above). Use CONCATENATION, not
+        % `S0.cviMerge_pending(iGroup+1:end) = adjust_pending_indices_(...)`: adjust_pending_indices_
+        % DROPS sub-2-member groups, so the returned cell can be SHORTER than the LHS range and
+        % `A(idx)=B` would throw. (Pending groups are disjoint, so iClu_source never belongs to a
+        % later group -> the tail only gets decremented, never shrinks; the concat form is safe
+        % either way, and reshape(...,1,[]) preserves the row-cell convention.)
+        if iGroup < numel(S0.cviMerge_pending)
+            cviHead = reshape(S0.cviMerge_pending(1:iGroup), 1, []);
+            cviTail = reshape(adjust_pending_indices_(S0.cviMerge_pending(iGroup+1:end), iClu_source), 1, []);
+            S0.cviMerge_pending = [cviHead, cviTail];
+        end
+
+        % Adjust remaining indices in THIS group's local copy (other groups handled just above)
         for k = 1:numel(viClu_group)
             if viClu_group(k) > iClu_source
                 viClu_group(k) = viClu_group(k) - 1;
@@ -9540,7 +10630,10 @@ for iGroup = 1:numel(S0.cviMerge_pending)
         end
     end
 
-    viClu_affected = [viClu_affected, iClu_target];
+    if fGroupOk
+        csLog = [csLog, csLog_group];              % commit the group's log only on full success
+        viClu_affected = [viClu_affected, iClu_target];
+    end
 end
 
 % Step 3: Batch recomputation for all affected clusters
@@ -9762,6 +10855,54 @@ end %func
 
 
 %--------------------------------------------------------------------------
+function viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1)
+% Return cluster iClu1's spike indices, starting from the S_clu.cviSpk_clu cache
+% (what the rest of the GUI/display relies on) but cross-validated against the
+% per-spike label vector S_clu.viClu, which can disagree with the cache after
+% some merge/reorder operations. Intersecting with viClu can only shrink an
+% over-large/stale cache entry - it can never grow it - so this bounds a
+% destructive split at the cache size while still rejecting any spikes viClu no
+% longer attributes to this cluster.
+%
+% On TOTAL disagreement (empty intersection) the two arrays describe unrelated
+% spike sets, and one of them is wrong. This used to return the raw cache; that
+% is backwards. viClu is the authoritative source - every cache rebuild in this
+% file derives FROM it (S_clu_refresh_, S_clu_update_, merge_clu_pair_) - so a
+% cache that agrees with viClu on nothing is the stale one, and trusting it here
+% can resurrect the very corruption this helper exists to prevent. Prefer viClu,
+% loudly. The one exception: if viClu attributes no spikes at all to iClu1 we
+% keep the cache rather than return empty, preserving the original guarantee
+% that this never silently splits nothing.
+viSpk1 = [];
+if iClu1 <= numel(S_clu.cviSpk_clu)
+    viSpk1 = S_clu.cviSpk_clu{iClu1};
+end
+if isempty(viSpk1)
+    viSpk1 = find(S_clu.viClu==iClu1);
+    return;
+end
+viSpk1 = viSpk1(:);
+vlConfirmed = S_clu.viClu(viSpk1) == iClu1;
+if all(vlConfirmed), return; end
+if any(vlConfirmed)
+    viSpk1 = viSpk1(vlConfirmed);
+else
+    viSpk_viClu1 = find(S_clu.viClu == iClu1);
+    if isempty(viSpk_viClu1)
+        fprintf(2, ['get_clu_spk_confirmed_: Clu%d cache (%d spikes) disagrees with viClu ', ...
+            'entirely AND viClu claims no spikes for it; keeping the cache.\n'], iClu1, numel(viSpk1));
+    else
+        fprintf(2, ['get_clu_spk_confirmed_: Clu%d cache (%d spikes) disagrees with viClu ', ...
+            'entirely; using viClu (%d spikes). The cache is stale - check for an ', ...
+            'S_clu_select_ caller that failed to remap viClu.\n'], ...
+            iClu1, numel(viSpk1), numel(viSpk_viClu1));
+        viSpk1 = viSpk_viClu1;
+    end
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function auto_split_(fMulti, S0)
 % Auto-split feature that calls Hidehiko Inagaki's code
 % 20160426
@@ -9784,8 +10925,15 @@ else
     viSites1 = iSite1;
 end
 % mrSpkWav1 = tnWav2uV_(tnWav_sites_(tnWav_spk, S_clu.cviSpk_clu{iClu1}, viSites1));
-trSpkWav1 = tnWav2uV_(tnWav_spk_sites_(S_clu.cviSpk_clu{iClu1}, viSites1, S0), P, 0);
-% mrSpkWav1 = tnWav2uV_(tnWav_spk_sites_(find(S_clu.viClu==iClu1), viSites1, S0), P);
+% S_clu.cviSpk_clu (a cache) and S_clu.viClu (the per-spike label vector) can
+% disagree after certain operations. Cross-validate: start from the cache (the
+% source both the rest of the GUI and the previous behavior rely on), but keep
+% only spikes S_clu.viClu also confirms belong to this cluster - this can only
+% shrink an over-large/stale cache entry (fixing a split that silently pulled in
+% thousands of unrelated spikes), never empty it out when the two genuinely
+% disagree (falls back to the raw cache instead of splitting nothing).
+viSpk_split1 = get_clu_spk_confirmed_(S_clu, iClu1);
+trSpkWav1 = tnWav2uV_(tnWav_spk_sites_(viSpk_split1, viSites1, S0), P, 0);
 [vlSpkIn, mrFet_split, vhAx, hFigTemp] = auto_split_wav_(trSpkWav1, [], 2, viSites1);
 [hPoly, hFig_wav] = deal([]);
 try 
@@ -10080,7 +11228,13 @@ for iFig=1:numel(S0.csFig)
     hFig1 = get_fig_cache_(S0.csFig{iFig});
     if ishandle(hFig1)
         set(hFig1, 'OuterPosition', S0.cvrFigPos0{iFig});
-        figure(hFig1); %bring it to foreground
+        % Only raise what the user can see: figure() forces Visible='on', which would
+        % resurrect a deliberately hidden window (the 2nd time view) and leave it out of
+        % sync with its menu checkmark. Every other csFig window is always visible, so
+        % this is a no-op for them.
+        if strcmpi(get(hFig1, 'Visible'), 'on')
+            figure(hFig1); %bring it to foreground
+        end
     end
 end
 figure(get_fig_cache_('FigWav'));
@@ -10215,8 +11369,10 @@ end %func
 
 %--------------------------------------------------------------------------
 function S0 = reorder_clu_by_coords_(S0)
-% Reorder clusters by spatial coordinates (x, then y)
-% Based on vrPosX_clu and vrPosY_clu from S_clu_position_
+% Reorder clusters by spatial coordinates.
+% On a probe with >1 real shank: shank, then Y (depth), then X.
+% Otherwise (single-shank / no shank info): the original X, then Y.
+% Based on vrPosX_clu and vrPosY_clu from S_clu_position_ (and viShank_site/viSite_clu).
 if nargin<1, S0 = get(0, 'UserData'); end
 [S_clu, P] = deal(S0.S_clu, S0.P);
 
@@ -10228,18 +11384,69 @@ if ~isfield(S_clu, 'vrPosY_clu') || isempty(S_clu.vrPosY_clu)
     S_clu = S_clu_position_(S_clu);
 end
 
-% Sort by X coordinate first, then Y coordinate
-mrPosXY_clu = [S_clu.vrPosX_clu(:), S_clu.vrPosY_clu(:)];
-[~, viMap_clu] = sortrows(mrPosXY_clu, [1, 2]);
+% Sort key: shank first (only when the probe declares >1 real shank), then Y (depth),
+% then X; otherwise fall back to the original X-then-Y order, verbatim. Reuse
+% isSingleShank_ (irc.m ~16090) - the same predicate the traces view uses (irc.m ~16064) -
+% rather than re-deriving from viShank_site.
+%  * Use S_clu.nClu directly: the local `nClu` alias is not assigned until below.
+%  * (:) on every key column is REQUIRED, not cosmetic: viShank_site(viSite_clu) inherits
+%    viShank_site's probe-dependent orientation, so without (:) the horzcat can dimension-
+%    mismatch when viShank_site is a row.
+%  * All three key vectors are length-guarded to nClu. viSite_clu tracks nClu tightly
+%    (rebuilt from viClu), but vrPos*_clu is recomputed only when EMPTY above, so it can be
+%    stale at length M ~= nClu. Without the position-length guard a stale position would
+%    pass viSite_clu's check and crash in the concat; with it, the state falls through to
+%    the else and is skipped gracefully by the numel(viMap_clu)~=nClu guard below.
+%  * Tie-break Y-then-X in the shank branch (depth first once shank segregates X); the
+%    fallback keeps its original X-then-Y. The priority swap is deliberate.
+viShank_site = get_(P, 'viShank_site');
+fShankSort_clu = ~isSingleShank_(P) ...
+    && isfield(S_clu, 'viSite_clu') && numel(S_clu.viSite_clu) == S_clu.nClu ...
+    && numel(S_clu.vrPosX_clu) == S_clu.nClu && numel(S_clu.vrPosY_clu) == S_clu.nClu ...
+    && all(S_clu.viSite_clu(:) >= 1 & S_clu.viSite_clu(:) <= numel(viShank_site));
+if fShankSort_clu
+    viShank_clu = viShank_site(S_clu.viSite_clu);   % shank of each cluster's peak site
+    [~, viMap_clu] = sortrows([viShank_clu(:), S_clu.vrPosY_clu(:), S_clu.vrPosX_clu(:)], [1, 2, 3]);
+else
+    mrPosXY_clu = [S_clu.vrPosX_clu(:), S_clu.vrPosY_clu(:)];
+    [~, viMap_clu] = sortrows(mrPosXY_clu, [1, 2]);
+end
+
+% Remap the per-spike labels (viClu) in lockstep with the per-cluster arrays that
+% S_clu_select_ reindexes below. viClu is a per-spike field and does not match
+% S_clu_select_'s ^v\w*_clu$ pattern, so that function never remaps it - the caller
+% must, exactly as clu_reorder_ does before its own S_clu_select_ call. Omitting it
+% left cviSpk_clu/viSite_clu/vnSpk_clu/csNote_clu/mrWavCor on the new position-sorted
+% numbering while viClu kept the old one; the next split/merge then rebuilt the cache
+% from the stale viClu (S_clu_update_) and silently swapped cluster identity, which
+% surfaced as splits producing thousands of spikes at the wrong depth.
+nClu = S_clu.nClu;
+if numel(viMap_clu) ~= nClu % refuse to reorder rather than desync viClu
+    fprintf(2, 'reorder_clu_by_coords_: position array (%d) ~= nClu (%d), skipping reorder.\n', ...
+        numel(viMap_clu), nClu);
+    return;
+end
+viOld2New = zeros(1, nClu);
+viOld2New(viMap_clu) = 1:nClu; % viMap_clu(iClu_new) = iClu_old, so invert it
+vlRemap = S_clu.viClu >= 1 & S_clu.viClu <= nClu; % leave unassigned (<=0) spikes alone
+S_clu.viClu(vlRemap) = viOld2New(S_clu.viClu(vlRemap));
 
 % Reorder clusters using the mapping
 S_clu = S_clu_select_(S_clu, viMap_clu);
 S_clu.mrWavCor = set_diag_(S_clu.mrWavCor, S_clu_self_corr_(S_clu, [], S0));
 set0_(S_clu);
+% The [O] path writes straight to disk via save0_() below, bypassing S_clu_commit_ where
+% S_clu_assert_synced_ normally runs. Run the detector here too: this is the exact path the
+% original CID-01 desync lived on. Warn-only, never gates.
+S_clu_assert_synced_(S_clu, 'reorder_clu_by_coords_');
 S0 = gui_update_();
 save0_();
 
-msgbox_(sprintf('Reordered %d clusters by coordinates (X, then Y)', S_clu.nClu));
+if fShankSort_clu
+    msgbox_(sprintf('Reordered %d clusters by coordinates (shank, then Y, then X)', S_clu.nClu));
+else
+    msgbox_(sprintf('Reordered %d clusters by coordinates (X, then Y)', S_clu.nClu));
+end
 end %func
 
 
@@ -10405,15 +11612,21 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function update_FigTime_()
+function update_FigTime_(vcTag)
 % display features in a new site
+% vcTag selects which time view to refresh ('FigTime' default, 'FigTime2' for the 2nd view).
 
-[hFig, S_fig] = get_fig_cache_('FigTime');
+if nargin<1 || isempty(vcTag), vcTag = 'FigTime'; end
+[hFig, S_fig] = get_fig_cache_(vcTag);
 S0 = get(0, 'UserData');
 P = S0.P;
 if ~isVisible_(S_fig.hAx), return; end
 % P.vcFet_show = S_fig.csFet{S_fig.iFet};
 set0_(P);
+% Per-window feature override, on a LOCAL copy of S0. This MUST come after the set0_(P)
+% above: that line writes the whole P back to global state, so overriding before it would
+% leak this window's feature into the real FigTime, FigProj and the Projection menu.
+S0.P.vcFet_show = fet_show_(vcTag, S_fig, P);
 [vrFet0, vrTime0, vcYlabel] = getFet_site_(S_fig.iSite, [], S0);
 if ~isfield(S_fig, 'fPlot0'), S_fig.fPlot0 = 1; end
 toggleVisible_(S_fig.hPlot0, S_fig.fPlot0);
@@ -10453,14 +11666,10 @@ hFig_wait = figure_wait_(1);
 hMsg = msgbox_open_('Splitting...');
 figure(get_fig_cache_('FigWav'));
 
-% Get spikes belonging to this cluster - use cviSpk_clu to match auto_split_
-% Note: auto_split_ uses S_clu.cviSpk_clu{iClu1} to build waveforms for splitting,
-% so we must use the same source here to ensure vlIn indices match
-if iClu1 <= numel(S_clu.cviSpk_clu) && ~isempty(S_clu.cviSpk_clu{iClu1})
-    viSpk1 = S_clu.cviSpk_clu{iClu1};
-else
-    viSpk1 = find(S_clu.viClu==iClu1);
-end
+% Get spikes belonging to this cluster the same way auto_split_ built its
+% waveforms (get_clu_spk_confirmed_: cache cross-validated against S_clu.viClu),
+% so vlIn indices stay aligned with viSpk1 here.
+viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1);
 viSpk1 = viSpk1(:); % ensure column vector
 nSpk1 = numel(viSpk1);
 
@@ -10475,21 +11684,25 @@ if ~islogical(vlIn)
     vlIn = false(nSpk1, 1);
     vlIn(viIn_) = true;
 else
-    % Ensure vlIn matches the actual spike count
+    % Ensure vlIn matches the actual spike count. A mismatch means the caller built this mask
+    % against a DIFFERENT (or differently-ordered) spike list than split_clu_ re-derives via
+    % get_clu_spk_confirmed_. Silently truncating/zero-padding (the previous behavior) would
+    % misapply the mask to the wrong spikes -- splitting a different population than the user
+    % drew. Refuse loudly instead. Callers that hold absolute spike ids should use
+    % split_clu_by_id_, which makes numel(vlIn)==numel(viSpk1) true by construction. (X3.)
     nVlIn = numel(vlIn);
     if nVlIn ~= nSpk1
-        fprintf(2, 'split_clu_: vlIn length (%d) != nSpk1 (%d), adjusting...\n', nVlIn, nSpk1);
-        if nVlIn > nSpk1
-            vlIn = vlIn(1:nSpk1);
-        else
-            vlIn_new = false(nSpk1, 1);
-            vlIn_new(1:nVlIn) = vlIn;
-            vlIn = vlIn_new;
-        end
+        fprintf(2, ['split_clu_: vlIn length (%d) != nSpk1 (%d). The selection mask does not ' ...
+            'match this cluster''s spike list; refusing to split rather than cut the wrong ' ...
+            'spikes. Use split_clu_by_id_ for absolute-id selections.\n'], nVlIn, nSpk1);
+        msgbox_(sprintf('Split aborted: selection mask (%d) does not match cluster spikes (%d).', nVlIn, nSpk1), 1);
+        close_(hMsg);
+        figure_wait_(0, hFig_wait);
+        return;
     end
 end
 
-% Final safety check
+% Final safety check (defensive; the branches above now guarantee numel(vlIn)==nSpk1 or return)
 if numel(vlIn) ~= nSpk1
     msgbox_(sprintf('Split error: size mismatch (vlIn=%d, spikes=%d)', numel(vlIn), nSpk1), 1);
     close_(hMsg);
@@ -10504,7 +11717,12 @@ if n2 == 0 || n2 == nSpk1
     figure_wait_(0, hFig_wait);
     return;
 end
-iClu2 = max(S_clu.viClu) + 1;
+% Allocate the new cluster past BOTH the declared cluster count and the highest live
+% label. Using max(viClu)+1 alone silently overwrote an existing cluster whenever
+% max(viClu) < nClu (i.e. trailing empty clusters): nClu was then assigned a SMALLER
+% value below, leaving the per-cluster arrays longer than nClu, so S_clu_valid_ failed
+% and S_clu_commit_ discarded the entire split with only a console message.
+iClu2 = max(double(S_clu.nClu), double(max(S_clu.viClu))) + 1;
 
 % update cluster count and index
 S_clu.nClu = double(iClu2);
@@ -10547,23 +11765,72 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function [fSplit, vlIn] = plot_split_(S1)
+% 2026/07/15: split a cluster by ABSOLUTE spike indices rather than a positional mask.
+function S_clu = split_clu_by_id_(iClu1, viSpk_in)
+% [Usage]
+% -----
+% S_clu = split_clu_by_id_(iClu1, viSpk_in)
+%   iClu1:    cluster to split
+%   viSpk_in: GLOBAL spike indices (into S_clu.viClu / S0.viTime_spk) to split off.
+%             NOT positional indices into the cluster - use split_clu_ for those.
+%
+% Why this exists: split_clu_ takes a positional mask over a spike list that it
+% re-derives internally via get_clu_spk_confirmed_. The caller and callee must
+% therefore agree on both the population AND its order, with nothing enforcing it;
+% on mismatch split_clu_ silently truncates or zero-pads the mask, misapplying it to
+% a different spike set. Building the mask here by membership against the same list
+% split_clu_ uses makes numel(vlIn) == numel(viSpk1) unconditionally, so that whole
+% failure mode is structurally impossible regardless of how the caller obtained its
+% ids or how stale its plot data is. Callers that already hold absolute ids (the
+% polygon views all do) should prefer this entry point.
+%
+% split_clu_ is unchanged and remains valid for existing positional callers.
+S_clu = get0_('S_clu');
+viSpk1 = get_clu_spk_confirmed_(S_clu, iClu1);
+vlIn = ismember(viSpk1(:), viSpk_in(:)); % numel(vlIn) == numel(viSpk1) by construction
+if ~any(vlIn)
+    msgbox_('Cannot split: none of the selected spikes belong to this cluster', 1);
+    return;
+end
+S_clu = split_clu_(iClu1, vlIn);
+end %func
+
+
+%--------------------------------------------------------------------------
+function [fSplit, vlIn, viSpk_in] = plot_split_(S1)
+% [fSplit, vlIn, viSpk_in] = plot_split_(S1)
+%   vlIn:     positional mask over viSpk_show (kept for backward compatibility)
+%   viSpk_in: GLOBAL spike indices selected - pass these to split_clu_by_id_
+%
+% This evaluates the polygon over exactly the spikes FigProj DISPLAYED (S_fig.viSpk1,
+% stashed by plot_FigProj_), not over the whole cluster. It used to read
+% S_clu.cviSpk_clu{iClu1} directly, which was a different population than the one on
+% screen in two ways: the display is filtered to viSites0 (so spikes detected elsewhere
+% were invisible yet still selectable - they carry ~0 amplitude on site12 and pile at the
+% projection origin, so any polygon near the origin swept them in), and it used to be
+% subsampled to nShow_proj as well. Both are now aligned by construction.
 % find site
 mrPolyPos = getPosition(S1.hPoly);
 site12_show = floor(mean(mrPolyPos));
-site12 = S1.viSites_show(site12_show+1);  
+site12 = S1.viSites_show(site12_show+1);
 
 % get amp
 S0 = get(0, 'UserData');
 S_clu = S0.S_clu;
 P = S0.P;
 iClu1 = S0.iCluCopy;
+[~, S_fig_proj] = get_fig_cache_('FigProj');
+viSpk_show = get_(S_fig_proj, 'viSpk1');
+if isempty(viSpk_show) % pre-patch cached figure: fall back to the old population
+    viSpk_show = get_clu_spk_confirmed_(S_clu, iClu1);
+end
+viSpk_show = viSpk_show(:);
 if ismember(P.vcFet_show, {'pca', 'ppca', 'gpca'})
     fWav_raw_show = 0;
 else
     fWav_raw_show = get_set_(P, 'fWav_raw_show', 0);
 end
-trWav12 = tnWav2uV_(tnWav_spk_sites_(S_clu.cviSpk_clu{iClu1}, site12, S0, fWav_raw_show), P);
+trWav12 = tnWav2uV_(tnWav_spk_sites_(viSpk_show, site12, S0, fWav_raw_show), P);
 if diff(site12) == 0, trWav12(:,2,:) = trWav12(:,1,:); end
 vxPoly = (mrPolyPos([1:end,1],1) - site12_show(1)) * S1.maxAmp;
 vyPoly = (mrPolyPos([1:end,1],2) - site12_show(2)) * S1.maxAmp;
@@ -10583,7 +11850,7 @@ switch lower(P.vcFet_show)
         end  
         
     case {'cov', 'spacetime'}   
-        [mrAmin12, mrAmax12] = calc_cov_spk_(S_clu.cviSpk_clu{iClu1}, site12);
+        [mrAmin12, mrAmax12] = calc_cov_spk_(viSpk_show, site12);
         [mrAmin12, mrAmax12] = multifun_(@(x)abs(x'), mrAmin12, mrAmax12);
         vyPlot = mrAmin12(:,2);
         vcYlabel = sprintf('Site %d (cov1)', site12(2));
@@ -10598,9 +11865,9 @@ switch lower(P.vcFet_show)
     case {'pca', 'ppca', 'gpca'}
         if strcmpi(P.vcFet_show, 'ppca')
             [mrPv1, mrPv2] = pca_pv_clu_(site12, S0.iCluCopy, S0.iCluPaste);
-            [mrAmin12, mrAmax12] = pca_pc_spk_(S_clu.cviSpk_clu{iClu1}, site12, mrPv1, mrPv2);
+            [mrAmin12, mrAmax12] = pca_pc_spk_(viSpk_show, site12, mrPv1, mrPv2);
         else
-            [mrAmin12, mrAmax12] = pca_pc_spk_(S_clu.cviSpk_clu{iClu1}, site12);
+            [mrAmin12, mrAmax12] = pca_pc_spk_(viSpk_show, site12);
         end
         [mrAmin12, mrAmax12] = multifun_(@(x)x', mrAmin12, mrAmax12);
         vyPlot = mrAmin12(:,2);
@@ -10630,6 +11897,7 @@ switch lower(P.vcFet_show)
 end
 
 vlIn = inpolygon(vxPlot, vyPlot, vxPoly, vyPoly);
+viSpk_in = viSpk_show(vlIn); % global ids -> split_clu_by_id_
 
 % Plot temporary figure (auto-close)
 hFig = figure(10221); clf;
@@ -10638,7 +11906,9 @@ subplot(2,2,[1,3]); hold on;
 line(vxPlot, vyPlot, 'Color', P.mrColor_proj(2,:), 'Marker', 'o', 'MarkerSize', 2, 'LineStyle', 'none');
 hPlot = line(vxPlot(vlIn), vyPlot(vlIn), 'Color', P.mrColor_proj(3,:), 'Marker', 'o', 'MarkerSize', 2, 'LineStyle', 'none');
 % plot_(vxPoly, vyPoly, 'b+-'); %boundary
-title(sprintf('Cluster %d (%d spikes)', iClu1, S_clu.vnSpk_clu(iClu1)));
+% Count what is actually selectable here (the displayed population), not vnSpk_clu -
+% they differ whenever the cluster has spikes detected outside the shown sites.
+title(sprintf('Cluster %d (%d of %d spikes shown)', iClu1, numel(viSpk_show), S_clu.vnSpk_clu(iClu1)));
 xlabel(sprintf('Site %d', site12(1)));
 ylabel(vcYlabel);   xlabel(vcXlabel);
 grid on;
@@ -10758,7 +12028,7 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function hPatch = plot_probe_(mrSiteXY, vrSiteHW, viSite2Chan, vrVpp, hFig)
+function [hPatch, hText] = plot_probe_(mrSiteXY, vrSiteHW, viSite2Chan, vrVpp, hFig)
 if nargin<3, viSite2Chan=[]; end
 if nargin<4, vrVpp=[]; end
 if nargin<5, hFig=[]; end
@@ -10791,6 +12061,7 @@ else
 end
 hText = text(mrSiteXY(:,1), mrSiteXY(:,2), csText, ...
     'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
+hText = hText(:);
 axis_([min(mrPatchX(:)), max(mrPatchX(:)), min(mrPatchY(:)), max(mrPatchY(:))]);
 title('Site# / Chan# (zoom: wheel; pan: hold wheel & drag)');
 % vrPos = get(gcf, 'Position');
@@ -11200,7 +12471,29 @@ nClu = numel(setdiff(unique(S_clu.viClu), 0));
 
 mnKnn_clu = calc_dist_knn_clu(S_clu, P, run_mode);
 
-[viMap, viUniq_] = ml2map_(mnKnn_clu >= knn_merge_thresh);
+mlMerge_clu = mnKnn_clu >= knn_merge_thresh;
+% Cross-shank guard (the default DPC merge path -- the F1-relevant site). mnKnn_clu is
+% indexed by cluster LABEL 1..nClu (calc_dist_knn_clu builds it via viClu==iClu, size
+% numel(setdiff(unique(viClu),0))). This runs BEFORE S_clu_refresh_ in assign_clu_count_,
+% so S_clu.viSite_clu is NOT yet label-aligned -- shank_clu_ is the wrong source here.
+% Derive each label's peak-site shank from its center spike instead: S_clu.icl(i) is the
+% center of label i after assignCluster_, and viSite_spk(icl(i)) its peak site. Guard on
+% numel(icl)==size(mnKnn_clu,1); block_cross_shank_ additionally no-ops on any size
+% mismatch, so a misaligned derivation degrades to no protection, never a crash.
+if ~get_set_(P, 'fMerge_across_shank', 0) && ~isSingleShank_(P)
+    viShank_center = [];
+    viShank_site = get_(P, 'viShank_site');
+    viSite_spk = get0_('viSite_spk');
+    if ~isempty(viShank_site) && isfield(S_clu, 'icl') && ~isempty(S_clu.icl) ...
+            && numel(S_clu.icl) == size(mnKnn_clu, 1) && ~isempty(viSite_spk)
+        viSite_center = viSite_spk(S_clu.icl(:));
+        if all(viSite_center >= 1 & viSite_center <= numel(viShank_site))
+            viShank_center = reshape(viShank_site(viSite_center), 1, []);
+        end
+    end
+    mlMerge_clu = block_cross_shank_(mlMerge_clu, viShank_center);
+end
+[viMap, viUniq_] = ml2map_(mlMerge_clu);
 nClu_post = numel(viUniq_);
 viMap = viMap(:);
 fprintf('S_clu_peak_merge_: %d->%d cluster centers (knn_merge_thresh=%d)\n', ...
@@ -11328,10 +12621,19 @@ else
 end
 
 % Compute spkwav
+% INSTRUMENTATION (measurement only, no logic change): S_clu_wav_ is ~69% of post_merge_ and
+% runs twice, but nothing distinguished the two get_spkwav_ loads from the two per-cluster
+% loops. Needed before deciding whether a viClu_update (incremental) second call is worth it,
+% since the loads happen either way. Timers are gated on fVerbose, like the existing prints.
+[t_io_spk, t_loop_spk, t_io_raw, t_loop_raw, nUpdated] = deal(0);
+t_ = tic;
 tnWav_ = get_spkwav_(P, 0);
+t_io_spk = toc(t_);
 % if isempty(tnWav_), return; end
-for iClu=1:nClu       
+t_ = tic;
+for iClu=1:nClu
     if vlClu_update(iClu)
+        nUpdated = nUpdated + 1;
         [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0);
         if isempty(mrWav_clu1), continue; end
         [tmrWav_spk_clu(:,viSite_clu1,iClu), trWav_spk_clu(:,:,iClu)] = deal(bit2uV_(mrWav_clu1, P));
@@ -11341,21 +12643,26 @@ for iClu=1:nClu
             disperr_();
         end
         if fVerbose, fprintf('.'); end
-    end    
+    end
 end %clu
+t_loop_spk = toc(t_);
 
 % Compute spkraw
 if ~isempty(tmrWav_raw_clu)
     tnWav_ = []; % clear memory
+    t_ = tic;
     tnWav_ = get_spkwav_(P, 1);
-    for iClu=1:nClu       
+    t_io_raw = toc(t_);
+    t_ = tic;
+    for iClu=1:nClu
         if vlClu_update(iClu)
-            [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0);   
-            if isempty(mrWav_clu1), continue; end       
+            [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0);
+            if isempty(mrWav_clu1), continue; end
             [tmrWav_raw_clu(:,viSite_clu1,iClu), trWav_raw_clu(:,:,iClu)] = deal(mrWav_clu1 * P.uV_per_bit);
             if fVerbose, fprintf('.'); end
         end
     end %clu
+    t_loop_raw = toc(t_);
 end
 
 tmrWav_clu = tmrWav_spk_clu; %meanSubt_ after or before?
@@ -11368,7 +12675,11 @@ viSite_min_clu = viSite_min_clu(:);
 S_clu = struct_add_(S_clu, vrVmin_clu, viSite_min_clu, mrPos_clu, tmrWav_clu, ...
     trWav_spk_clu, tmrWav_spk_clu);
 if ~isempty(tmrWav_raw_clu), S_clu = struct_add_(S_clu, trWav_raw_clu, tmrWav_raw_clu); end
-if fVerbose, fprintf('\n\ttook %0.1fs\n', toc(t1)); end
+if fVerbose
+    fprintf('\n\ttook %0.1fs\n', toc(t1));
+    fprintf('\t  S_clu_wav_ breakdown: get_spkwav_ spk %0.1fs | loop spk %0.1fs | get_spkwav_ raw %0.1fs | loop raw %0.1fs | %d/%d clusters updated\n', ...
+        t_io_spk, t_loop_spk, t_io_raw, t_loop_raw, nUpdated, nClu);
+end
 end %func
 
 
@@ -11377,8 +12688,7 @@ end %func
 function [mrWav_clu1, viSite_clu1] = clu_wav_(S_clu, tnWav_, iClu, S0)
 if nargin<4, S0 = get(0, 'UserData'); end
 fUseCenterSpk = 0; % set to zero to use all spikes
-nSamples_max = 1000;
-fMedian = strcmpi(get_set_(S0.P, 'vcCluWavMode'), 'median');
+fMedian = strcmpi(get_set_(S0.P, 'vcCluWavMode', 'median'), 'median');
 fh1 = ifeq_(fMedian, @median, @mean);
 
 [mrWav_clu1, viSite_clu1] = deal([]);
@@ -11391,12 +12701,46 @@ if fUseCenterSpk
     viSpk_clu1 = viSpk_clu1(vlCentered_spk1);
     viSite_spk1 = viSite_spk1(vlCentered_spk1);
 end
+% OPT-IN: cap how many spikes the median below is taken over. 0 (the default) means "every
+% spike", i.e. byte-identical to the previous behaviour -- this is off unless a .prm asks for it.
+% Recommended value if enabled: 10000.
+%
+% WHAT THIS DOES NOT AFFECT: merge decisions. S_clu.mrWavCor is never a merge input anywhere in
+% this file. Everything that actually merges builds its own similarity matrix -- post_merge_wav4_
+% (used both by post_merge_ and by the GUI auto-merge via merge_auto_ -> post_merge_wav_ with
+% fMerge=1) loads waveforms itself and subsamples with its own MAX_SAMPLE=4000, and the mode
+% kernels use their own mrDist_clu. The one function that does merge from S_clu.mrWavCor,
+% S_clu_wavcor_merge_, is reachable only from post_merge_wav1_, which has no callers.
+% Note the corollary: merge decisions here have ALWAYS come from a 4000-spike subsample, so a
+% 10000 cap on the template is more conservative than what the merging already does.
+%
+% WHAT IT DOES AFFECT: the stored templates, S_clu.mrWavCor, vrVmin_clu and vrSnr_clu -- so the
+% quality CSV, and what a curator sees (plotted waveforms, the FigWavCor image, the pairwise
+% correlation readout, and which cluster the GUI pre-selects as comparison partner).
+%
+% Measured on 260324_afm18349_g0 (661 clusters, 16.9M spikes, largest 745k) against a full-median
+% baseline. See logs/ironclust_post_merge_followup_2026-08-06.md sections 3.7 and 3.7b:
+%
+%   value    loop time    spikes medianed    |d mrWavCor| near threshold
+%   0/full      77.1 s    100 %              --
+%   10000       20.6 s     25.4 %            median 0.00024, max 0.0112
+%    4000       10.2 s     12.0 %            median 0.00066, max 0.0136
+%    1000        3.0 s      3.3 %            median 0.0016,  max 0.030
+%
+% End-to-end at 10000: post_merge_ 178s -> 113s and the clustering is BYTE-IDENTICAL (viClu,
+% cviSpk_clu, vnSpk_clu, viSite_clu, nClu, mrPos_clu all unchanged). subsample_vr_ is
+% deterministic, so a given setting is reproducible run to run.
+nSamples_max = get_set_(S0.P, 'nSpk_max_clu_wav', 0);
+if nSamples_max > 0 && numel(viSpk_clu1) > nSamples_max
+    viSpk_clu1 = subsample_vr_(viSpk_clu1, nSamples_max);
+    viSite_spk1 = S0.viSite_spk(viSpk_clu1);   % keep the two in step for callers that use it
+end
 if isempty(tnWav_)
     get_wav_ = @(x)pc2wav_([],[],x);
 else
     get_wav_ = @(x)single(tnWav_(:,:,x));
 end
-if isempty(viSpk_clu1), return; end  
+if isempty(viSpk_clu1), return; end
 
 % viSpk_clu2 = spk_select_mid_(viSpk_clu1, S0.viTime_spk, S0.P); 
 mrWav_clu1 = fh1(get_wav_(viSpk_clu1), 3);
@@ -11434,7 +12778,7 @@ end %func
 
 %--------------------------------------------------------------------------
 function mrWav_clu1 = nanmean_int16_(tnWav0, dimm_mean, fUseCenterSpk, iSite1, viSite0, P) % * S0.P.uV_per_bit;
-fMedian = strcmpi(get_set_(P, 'vcCluWavMode'), 'median');
+fMedian = strcmpi(get_set_(P, 'vcCluWavMode', 'median'), 'median');
 nSites_spk = size(tnWav0,2);
 if fUseCenterSpk
     if fMedian
@@ -11523,9 +12867,25 @@ switch vcField_sort
     otherwise
         [~, viCluSort] = sort(S_clu.(vcField_sort), 'ascend');
 end
+% viClu must be remapped BEFORE S_clu_select_ -- that is S_clu_select_'s documented contract
+% (irc.m ~20561): it reindexes per-cluster fields only and cannot remap the per-spike labels.
 S_clu.viClu = mapIndex_(S_clu.viClu, viCluSort); % fixed
-S_clu = struct_reorder_(S_clu, viCluSort, ...
-    'cviSpk_clu', 'vrPosX_clu', 'vrPosY_clu', 'vnSpk_clu', 'viSite_clu', 'cviTime_clu', 'csNote_clu');
+% Reorder EVERY per-cluster field, not the seven that used to be hand-listed here. The old
+% struct_reorder_ list omitted all waveform and quality fields -- tmrWav_spk_clu, trWav_spk_clu,
+% tmrWav_raw_clu, trWav_raw_clu, tmrWav_clu, mrPos_clu, vrVmin_clu, viSite_min_clu, mrWavCor,
+% vrSnr_clu, vrIsoDist_clu, ... -- leaving them in the PRE-sort cluster order while viClu and
+% cviSpk_clu had already moved to the post-sort order.
+%   - In post_merge_ (irc.m:4024) that was masked: S_clu_update_wav_ at :4026 recomputes every
+%     one of those fields unconditionally, so the mis-ordering was overwritten before anything
+%     read it. Masked by accident, not by design -- and it forced that full recompute to stay
+%     full, because the carried-over fields could not be trusted.
+%   - In import_ksort_ (irc.m:13434) it was NOT masked: save0_ wrote the mis-ordered fields
+%     straight into _jrc.mat, so every unit's waveform, SNR and mrWavCor row belonged to a
+%     different unit than its viClu/cviSpk_clu.
+% S_clu_select_ reindexes by pattern (v*_clu / t*_clu / c*_clu / m*_clu), handles mrWavCor's
+% two cluster axes via S_clu_wavcor_remap_, and detects [X x nClu] vs [nClu x X] orientation --
+% i.e. exactly this operation, without a list that can rot again.
+S_clu = S_clu_select_(S_clu, viCluSort);
 S_clu = S_clu_refresh_(S_clu);
 end %func
 
@@ -12656,7 +14016,11 @@ try
     P = S0.P;
     set0_(P);
     
-    struct_save_(S0, vcFile_mat, 1);
+    fOk = struct_save_(S0, vcFile_mat, 1);
+    if ~fOk   % DI-02: do not report success / export params when the save actually failed
+        msgbox_(sprintf('SAVE FAILED: %s was NOT updated - curation is only in memory. Do not close MATLAB.', vcFile_mat), 1);
+        return;
+    end
     vcFile_prm = S0.P.vcFile_prm;
     export_prm_(vcFile_prm, strrep(vcFile_prm, '.prm', '_full.prm'), 0);    
 
@@ -12937,6 +14301,18 @@ catch
     disperr_();
 end
 if isfield(S0, 'S0'), S0 = rmfield(S0, 'S0'); end % Remove recursive saving
+% Load-time desync detection (CID-12): load0_ historically validated nothing, so a
+% viClu/cviSpk_clu desync present on disk reopened silently and was only surfaced when the
+% user next committed an operation. Run the cheap, warn-only sync check here so a corrupted
+% file announces itself at open time. Never gates; gated internally by fCheck_clu_sync
+% (default 1) and wrapped so it can never break a load.
+if isstruct(S0) && isfield(S0, 'S_clu') && ~isempty(S0.S_clu)
+    if S_clu_assert_synced_(S0.S_clu, ['load: ' vcFile_mat]) > 0
+        fprintf(2, ['\tThis file was saved with a viClu/cviSpk_clu desync. Curating it may ' ...
+            'compound the damage; re-sorting is the clean recovery. ' ...
+            'See logs/ISSUE_TRACKER_cluster_identity.md (CID-12).\n']);
+    end
+end
 end %func
 
 
@@ -12985,7 +14361,17 @@ else
     [viTime, viSite] = deal(gather_(viTime), gather_(viSite)); 
 end
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime));
+% DI-17 (349a0e1) used int64 here to avoid int32 index saturation on >~20h recordings -- int32
+% caps at 2.147e9 while 20h @ 30kHz is 2.16e9, so the concern is real. But gpuArray does NOT
+% support int64 arithmetic, and viTime is moved onto the GPU a few lines above whenever mr is a
+% gpuArray, so int64 broke `irc detect` with fGpu=1: mn2tn_wav_'s catch degraded 383/384 sites to
+% ZERO waveforms and mn2tn_wav_spk2_ then aborted outright. double keeps DI-17's intent (exact for
+% integers to 2^53), is MATLAB's natural index type, works on gpuArray, and is the same 8 bytes.
+% Measured 2026-08-07 over 200k spike times, spkLim [-6 11]: at 600s and 5267s all three types
+% give an ELEMENTWISE IDENTICAL miRange, so this is a no-op on any recording under ~20h; at 20h
+% int32 is wrong in 20880/3.6e6 entries (max drift 1.25e7 samples) while int64 and double agree.
+% On gpuArray: int32 OK, double OK and equal to the CPU result, int64 errors on 'plus'.
+miRange = bsxfun(@plus, double(viTime0), double(viTime));
 miRange = min(max(miRange, 1), N);
 miRange = miRange(:);
 if isempty(viSite)
@@ -13670,9 +15056,16 @@ nSpks = size(mrSpkWav,2);
 vlIn_spk = false(nSpks,1);
 vlIn_spk(1:end/2) = true;
 
-if isempty(mrFet)    
+if isempty(mrFet)
 %     [~,mrFet,vrD] = pca(double(mrSpkWav'), 'Centered', 1, 'NumComponents', 3);
-    [mrFet,~,vrD] = pca(double(mrSpkWav), 'NumComponents', 3);
+    % pca(X,'NumComponents',k) requires k <= min(size(X,1)-1, size(X,2)); requesting
+    % a fixed 3 throws outright once #spikes drops to 2 (empirically verified: for
+    % mrSpkWav = [nFeatures x nSpks], the achievable max is min(nFeatures-1, nSpks)).
+    % Cap the request so a tiny cluster degrades gracefully instead of erroring
+    % before the split-preview figure is even created. No-op for nSpks>=4 or the
+    % nSpks==3 boundary (both already achieve exactly 3, unchanged from before).
+    nPc_req = max(1, min([3, size(mrSpkWav,1)-1, size(mrSpkWav,2)]));
+    [mrFet,~,vrD] = pca(double(mrSpkWav), 'NumComponents', nPc_req);
 end
 % nSplit = preview_split_(mrSpkWav1);
 % if isnan(nSplit), return; end
@@ -13682,21 +15075,27 @@ vhAx = zeros(4,1);
 for iAx=1:numel(vhAx)
     vhAx(iAx) = subplot(2,2,iAx, 'Parent', hFig); hold on;
 end
-if size(mrFet,2) == 3
+nPc = size(mrFet,2);
+if nPc >= 3
     plot_(vhAx(1), mrFet(:,1), mrFet(:,2), '.'); xylabel_(vhAx(1), 'PC1', 'PC2', 'PC1 vs PC2');
     plot_(vhAx(2), mrFet(:,3), mrFet(:,2), '.'); xylabel_(vhAx(2), 'PC3', 'PC2', 'PC3 vs PC2');
     plot_(vhAx(3), mrFet(:,1), mrFet(:,3), '.'); xylabel_(vhAx(3), 'PC1', 'PC3', 'PC1 vs PC3');
     drawnow_();
+elseif nPc == 2
+    % too few spikes for a 3rd PCA component; still auto-split on the 2 available
+    plot_(vhAx(1), mrFet(:,1), mrFet(:,2), '.'); xylabel_(vhAx(1), 'PC1', 'PC2', 'PC1 vs PC2');
+    drawnow_();
 else
-    plot_(vhAx(1), mrFet(vlIn_spk,1), mrFet(vlIn_spk,2), 'b.', mrFet(~vlIn_spk,1), mrFet(~vlIn_spk,2), 'r.');
+    % too few spikes/features for even 2 PCA components; nothing meaningful to cluster on
+    plot_(vhAx(1), mrFet(vlIn_spk,1), zeros(sum(vlIn_spk),1), 'b.', mrFet(~vlIn_spk,1), zeros(sum(~vlIn_spk),1), 'r.');
     return;
 end
 
 % Ask how many clusters there are
-try    
+try
     % kmean clustering into 2
-    idx = kmeans(mrFet, nSplits);     
-    dist_mad = mad_dist_(mrFet(idx==1,:)', mrFet(idx==2,:)'); 
+    idx = kmeans(mrFet, nSplits);
+    dist_mad = mad_dist_(mrFet(idx==1,:)', mrFet(idx==2,:)');
 %     fprintf('mad_dist: %f\n', dist_mad);
 %     idx = kmeans([pca_1,pca_2], NUM_SPLIT);
     vlIn_spk = logical(idx-1);
@@ -13706,8 +15105,10 @@ catch
 end
 vlOut_spk = ~vlIn_spk;
 plot_(vhAx(1), mrFet(vlIn_spk,1), mrFet(vlIn_spk,2), 'b.', mrFet(vlOut_spk,1), mrFet(vlOut_spk,2), 'r.');
-plot_(vhAx(2), mrFet(vlIn_spk,3), mrFet(vlIn_spk,2), 'b.', mrFet(vlOut_spk,3), mrFet(vlOut_spk,2), 'r.');
-plot_(vhAx(3), mrFet(vlIn_spk,1), mrFet(vlIn_spk,3), 'b.', mrFet(vlOut_spk,1), mrFet(vlOut_spk,3), 'r.');
+if nPc >= 3
+    plot_(vhAx(2), mrFet(vlIn_spk,3), mrFet(vlIn_spk,2), 'b.', mrFet(vlOut_spk,3), mrFet(vlOut_spk,2), 'r.');
+    plot_(vhAx(3), mrFet(vlIn_spk,1), mrFet(vlIn_spk,3), 'b.', mrFet(vlOut_spk,1), mrFet(vlOut_spk,3), 'r.');
+end
 
 min_y=min(reshape(mrSpkWav,1,[]));
 max_y=max(reshape(mrSpkWav,1,[]));
@@ -14642,16 +16043,21 @@ end %func
 %--------------------------------------------------------------------------
 % 11/19/2018 JJJ: improved matlab version check
 % 7/13/17 JJJ: Version check routine
-function struct_save_(S, vcFile, fVerbose)
-nRetry = 3;
+function fOk = struct_save_(S, vcFile, fVerbose)
+% DI-02/DI-05: returns fOk (previously void), and writes atomically (temp file + movefile)
+% so an interrupted/failed save can never truncate the previously-good file. Adding the
+% output is additive -- every existing bare-statement caller stays legal.
+nRetry = 3; fOk = false; fSaved = false;
 if nargin<3, fVerbose = 0; end
+vcFile_tmp = tempname_sibling_(vcFile);
+if exist(vcFile_tmp, 'file'), delete(vcFile_tmp); end   % clear any stale temp so atomic_replace_ can't commit it
 if fVerbose
     fprintf('Saving a struct to %s...\n', vcFile); t1=tic;
 end
 if version_matlab_() >= 2017
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3', '-nocompression'); %faster    
+            save(vcFile_tmp, '-struct', 'S', '-v7.3', '-nocompression'); fSaved = true; %faster    
             break;
         catch
             pause(.5);
@@ -14661,7 +16067,7 @@ if version_matlab_() >= 2017
 else    
     for iRetry=1:nRetry
         try
-            save(vcFile, '-struct', 'S', '-v7.3');   
+            save(vcFile_tmp, '-struct', 'S', '-v7.3'); fSaved = true;
             break;
         catch
             pause(.5);
@@ -14669,8 +16075,45 @@ else
         fprintf(2, 'Saving failed: %s\n', vcFile);
     end    
 end
+if fSaved
+    fOk = atomic_replace_(vcFile_tmp, vcFile, true);   % DI-05: commit temp over the real file atomically
+end
+if ~fOk
+    fprintf(2, 'struct_save_: %s NOT updated (previous version preserved).\n', vcFile);
+end
 if fVerbose
     fprintf('\ttook %0.1fs.\n', toc(t1));
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+function vcFile_tmp = tempname_sibling_(vcFile_final)
+% DI-05 helper: same-directory temp path so movefile stays on one volume (atomicity needs same FS).
+vcFile_tmp = [vcFile_final, '.tmp'];
+end %func
+
+
+%--------------------------------------------------------------------------
+function fOk = atomic_replace_(vcFile_tmp, vcFile_final, fKeep_bak)
+% DI-05 helper: commit a fully-written temp over vcFile_final. REFUSES a missing/zero-byte temp
+% (never replaces a good file with a bad one). Optional .bak of the prior file. Uses fprintf (not
+% disperr_) on failure to avoid disperr_'s gpuDevice(1) reset side effect.
+if nargin<3, fKeep_bak = false; end
+fOk = false;
+try
+    S_dir = dir(vcFile_tmp);
+    if isempty(S_dir) || S_dir(1).bytes == 0
+        fprintf(2, 'atomic_replace_: refusing to commit missing/empty temp: %s\n', vcFile_tmp);
+        return;
+    end
+    if fKeep_bak && exist(vcFile_final, 'file')
+        try copyfile(vcFile_final, [vcFile_final, '.bak'], 'f'); catch, end   % best-effort backup
+    end
+    movefile(vcFile_tmp, vcFile_final, 'f');
+    fOk = (exist(vcFile_final, 'file') == 2);
+catch hErr
+    fprintf(2, 'atomic_replace_ failed (%s): %s\n', vcFile_final, hErr.message);
 end
 end %func
 
@@ -15558,6 +17001,26 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% Feature selector for the 2nd time view (FigTime2). Unlike proj_view_ this touches neither
+% the global P nor any other figure: the choice lives in FigTime2's own UserData (read back
+% by fet_show_) and only that window is redrawn.
+function proj_view2_(hMenu)
+vcFet_show = lower(get(hMenu, 'Label'));
+hFig = findobj('Tag', 'FigTime2', 'Type', 'figure');
+if isempty(hFig), return; end
+hFig = hFig(end);
+S_fig = get(hFig, 'UserData');
+S_fig.vcFet_show = vcFet_show;
+set(hFig, 'UserData', S_fig);
+vhMenu = hMenu.Parent.Children;
+for iMenu = 1:numel(vhMenu)
+    vhMenu(iMenu).Checked = if_on_off_(vhMenu(iMenu).Label, vcFet_show);
+end
+ui_show_FigTime2_();
+end %func
+
+
+%--------------------------------------------------------------------------
 function P = struct_default_(P, csName, def_val)
 % Set to def_val if empty or field does not exist
 % set the field(s) to default val
@@ -15730,6 +17193,64 @@ end
 
 
 %--------------------------------------------------------------------------
+function viShank_clu = shank_clu_(S_clu, P)
+% Per-cluster shank index (shank of each cluster's PEAK site). Returns [] to mean
+% "do not guard" whenever real usable shank data is absent -- this is what makes the
+% cross-shank merge guard a byte-identical no-op on single-shank / shank-less probes.
+%
+% Mirrors the defensive gating already in reorder_clu_by_coords_ (irc.m ~10510-10515);
+% [] is returned when ANY of these holds:
+%   * isSingleShank_(P) -- no shank field, empty viShank_site, or all values identical
+%     (e.g. the all-1s CID-14 case);
+%   * viShank_site empty, or S_clu missing viSite_clu / nClu;
+%   * viSite_clu wrong length (~= nClu), or any value out of [1, numel(viShank_site)].
+% The bound is numel(viShank_site) (NOT nSites) because viShank_site indexes by SITE.
+%
+% Row-normalized via reshape so a concatenating caller cannot hit the viShank_site-
+% orientation trap (see the (:) note at irc.m ~10499); block_cross_shank_ below relies
+% on it being a plain vector for the (:) ~= (:)' outer product.
+viShank_clu = [];
+if isSingleShank_(P), return; end
+viShank_site = get_(P, 'viShank_site');
+if isempty(viShank_site) || ~isfield(S_clu, 'viSite_clu') || ~isfield(S_clu, 'nClu')
+    return;
+end
+viSite_clu = S_clu.viSite_clu;
+if numel(viSite_clu) ~= S_clu.nClu, return; end
+if ~all(viSite_clu(:) >= 1 & viSite_clu(:) <= numel(viShank_site)), return; end
+viShank_clu = reshape(viShank_site(viSite_clu(:)), 1, []);
+end %func
+
+
+%--------------------------------------------------------------------------
+function ml = block_cross_shank_(ml, viShank_clu)
+% Zero out cross-shank entries of a cluster x cluster boolean merge-adjacency matrix so
+% the downstream ml2map_ collapse (irc.m ~4808) never joins clusters on different shanks.
+%
+% MUST stay symmetric: ml2map_ does mlConn = ml | ml' internally (irc.m ~4812), and the
+% source similarity matrices are populated in only ONE triangle (e.g.
+% waveform_similarity_clu_), so masking a single triangle would be silently undone by the
+% transpose-OR. The (:) ~= (:)' outer product is symmetric by construction.
+%
+% No-op (returns ml unchanged) when viShank_clu is [] -- the single-shank / shank-less /
+% guard-disabled path -- so the mask is a true no-op there. Strictly subtractive: it only
+% flips true->false, so ml2map_ collapses FEWER clusters (a still-valid surjective relabel
+% map); no viClu/cviSpk_clu desync is reachable by removing edges.
+%
+% Size fail-safe: if ml is not a square matrix whose side equals numel(viShank_clu), the
+% shank labels are not aligned with ml's cluster axis, so masking would be meaningless (or
+% error on the logical index). Return ml unchanged instead. This turns "the caller must
+% confirm ml is nClu x nClu" into a runtime guarantee -- a misaligned automated site
+% degrades to NO protection, never a crash or a wrong mask.
+if isempty(viShank_clu), return; end
+if ~ismatrix(ml) || size(ml,1) ~= size(ml,2) || numel(viShank_clu) ~= size(ml,1)
+    return;
+end
+ml(viShank_clu(:) ~= viShank_clu(:)') = false;
+end %func
+
+
+%--------------------------------------------------------------------------
 % 12/21/17 JJJ: Annotate on the x-axis intead of floating text box (faster)
 % function vhText = text_nClu_(S_clu, hAx)
 % % update x label
@@ -15863,7 +17384,9 @@ viTime = gpuArray_(viTime, fGpu);
 spkLim = gpuArray_(spkLim, fGpu);
 
 viTime0 = [spkLim(1):spkLim(end)]'; %column
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime));
+% See the note at the sibling site in mr2tr_: DI-17's int64 is unsupported by gpuArray arithmetic,
+% and this function is the GPU path by name. double preserves the anti-saturation intent.
+miRange = bsxfun(@plus, double(viTime0), double(viTime));
 miRange = min(max(miRange, 1), nT);
 tr = zeros([numel(viTime0), numel(viTime), nSites], vcDataType);
 dimm_tr = size(tr);
@@ -15876,6 +17399,27 @@ for iSite = 1:nSites
         tr(:,:,iSite) = reshape(mr(miRange, iSite), dimm_tr(1:2));
     end
 end
+end %func
+
+
+%--------------------------------------------------------------------------
+function nMax = max_workers_(P)
+% Hard cap on the parfor worker-pool width this file creates: floor(factor * cores),
+% using the same probe cluster_labels_persite_ already used (parcluster('local').NumWorkers,
+% falling back to feature('numcores')). Default factor 0.85 is a flat safety margin
+% (leaves ~15% of cores for OS/GUI/other processes) -- NOT a fix for BLAS-thread
+% oversubscription under parfor (see logs/investigation_maxSpk_persite_clust.md, which
+% found fParfor=1 itself a ~3x pessimization on the per-site label-clustering workload
+% regardless of worker count); override via P.parfor_core_factor if a machine needs a
+% different margin.
+if nargin < 1, P = []; end
+nCores = feature('numcores');
+try
+    nCores = parcluster('local').NumWorkers;
+catch
+end
+factor = get_set_(P, 'parfor_core_factor', 0.85);
+nMax = max(1, floor(factor * nCores));
 end %func
 
 
@@ -16536,8 +18080,14 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S0 = auto_(P)
-if get_set_(P, 'fRepeat_clu', 0) || ~is_sorted_(P) 
+function S0 = auto_(P, fReset_premerge)
+% fReset_premerge (default 0): 'auto' re-merges on TOP of the current viClu and compounds.
+% 'reset-to-premerge' passes 1 to re-merge from the RAW pre-cluster baseline (viClu_premerge)
+% so a changed post_merge_mode/maxWavCor is applied from scratch, not stacked on prior merges.
+% It DISCARDS curation (like a fresh auto). post_merge_ re-stores viClu_premerge from the reset
+% viClu (irc.m ~3973) before merging, so repeating this is idempotent w.r.t. the baseline.
+if nargin<2, fReset_premerge = 0; end
+if get_set_(P, 'fRepeat_clu', 0) || ~is_sorted_(P)
     S0 = sort_(P);
     return;
 end
@@ -16546,9 +18096,56 @@ end
 S_clu = get_(S0, 'S_clu');
 S_clu.P = P;
 
+if fReset_premerge
+    if ~isfield(S_clu, 'viClu_premerge') || isempty(S_clu.viClu_premerge)
+        error('reset-to-premerge: S_clu.viClu_premerge is absent/empty -- re-sort instead (irc sort).');
+    end
+    nClu_raw = double(max(S_clu.viClu_premerge(:)));
+    nClu_cur = double(max(S_clu.viClu(:)));
+    fprintf('reset-to-premerge: viClu <- viClu_premerge (merged nClu=%d -> raw baseline nClu=%d); curation discarded.\n', ...
+        nClu_cur, nClu_raw);
+    % Heuristic: a label-based sort over-segments, so the raw baseline should hold MANY more
+    % clusters than the merged result. If not, viClu_premerge was likely overwritten by a prior
+    % auto/recurate (rewritten on every post_merge_) -> the baseline may not be the original labels.
+    if nClu_raw <= nClu_cur * 1.05
+        fprintf(2, ['WARNING: viClu_premerge (nClu=%d) is not larger than the merged viClu (nClu=%d). ', ...
+            'It may have been overwritten by a prior auto/recurate; the baseline may not be the ', ...
+            'original clustering. If unsure, run a full irc(''sort'') instead.\n'], nClu_raw, nClu_cur);
+        % A clobbered baseline is precisely the case where a re-sort is warranted, and this
+        % command overwrites the _jrc.mat in place. Stop and require an explicit OK rather
+        % than merging from labels that are probably curated ones.
+        if ~confirm_premerge_baseline_(nClu_raw, nClu_cur, P)
+            fprintf('reset-to-premerge cancelled by user. Run irc(''sort'', ...) for a full re-sort.\n');
+            return; % nothing computed, nothing written
+        end
+    end
+    S_clu.viClu = S_clu.viClu_premerge;
+end
+
 t_automerge = tic;
 fprintf('Automatic merging...\n');
-[S_clu, S0] = post_merge_(S_clu, P);
+% post_merge_chain (optional .prm field): an Nx2 [post_merge_mode maxWavCor; ...] matrix applied
+% in sequence, so a chained merge picked with sweep_post_merge (e.g. [4 .985; 17 .985]) can be
+% baked in -- post_merge_mode alone is scalar and cannot express a chain. Empty/absent (default)
+% => the ordinary single-stage post_merge_ using post_merge_mode + maxWavCor (byte-identical to
+% before). Each stage re-runs post_merge_ on the previous stage's result; stages compound, no
+% reset between them. Intended with fReset_premerge=1 (reset-to-premerge) so the chain starts
+% from the raw baseline; on plain 'auto' it chains from the current viClu (compounds, like auto).
+mnChain = get_set_(P, 'post_merge_chain', []);
+if isempty(mnChain)
+    [S_clu, S0] = post_merge_(S_clu, P);
+else
+    fprintf('post_merge_chain: %d stages\n', size(mnChain,1));
+    for iStage = 1:size(mnChain,1)
+        P.post_merge_mode  = mnChain(iStage,1);   % scalar (DI-18)
+        P.post_merge_mode0 = mnChain(iStage,1);   % inert on label sorts; keep consistent
+        P.maxWavCor        = mnChain(iStage,2);
+        S_clu.P = P;
+        fprintf('  stage %d/%d: post_merge_mode=%d maxWavCor=%.3g\n', ...
+            iStage, size(mnChain,1), mnChain(iStage,1), mnChain(iStage,2));
+        [S_clu, S0] = post_merge_(S_clu, P);
+    end
+end
 t_automerge = toc(t_automerge);
 fprintf('\n\ttook %0.1fs\n', t_automerge);
 S0.runtime_sort = S0.S_clu.t_runtime + t_automerge;
@@ -17087,7 +18684,13 @@ if isempty(viTime_spk), return; end
 %-----
 % Extract spike waveforms and build a spike table
 fprintf('\tExtracting features'); t_fet = tic;
-if get_set_(P, 'fRaw_feature', 0), mnWav2 = mnWav1; end
+if get_set_(P, 'fRaw_feature', 0)
+    mnWav2 = mnWav1;
+    % raw features still honor per-shank CMR/whitening (median/whiten stay raw, unchanged)
+    if any(strcmpi(P.vcCommonRef, {'shankcmr', 'shankwhiten', 'shankcmrwhiten'}))
+        mnWav2 = wav_car_(cast_(mnWav1, vcDataType_filter), P);
+    end
+end
 vcFilter_feature = get_set_(P, 'vcFilter_feature', '');
 if ~isempty(vcFilter_feature)
     [mnWav2, nShift_post] = filter_detect_(mnWav1, P, vcFilter_feature); % pass raw trace
@@ -17620,6 +19223,9 @@ nFiles = numel(csFile_merge);
 [vrFilt_spk, mrPv_global] = deal([]); % reset the template
 set0_(mrPv_global, vrFilt_spk); % reeset mrPv_global and force it to recompute
 write_spk_(P);
+oc_spk_ = onCleanup(@() write_spk_());   %#ok<NASGU> DI-13: close the .jrc handles even if the loop throws (unbuffered 'W' fids would otherwise leak + lose buffered data)
+S_dimm_ = [];   % DI-03: shape/dtype template from the first chunk WITH spikes (the last chunk may be
+                % empty -- a quiet tail -- which would zero dims 1-2 and corrupt every reshape of the on-disk data)
 for iFile=1:nFiles
     clear load_file_
     fprintf('File %d/%d: detecting spikes from %s\n', iFile, nFiles, csFile_merge{iFile});
@@ -17645,7 +19251,17 @@ for iFile=1:nFiles
         [viTime_spk11, viSite_spk11] = filter_spikes_(viTime_spk0, viSite_spk0, nSamples_total + [1, nSamples11]);
         [tnWav_raw_, tnWav_spk_, trFet_spk_, miSite_spk{end+1}, viTime_spk{end+1}, vrAmp_spk{end+1}, vnThresh_site{end+1}, P.fGpu] ...
                 = wav2spk_(mnWav11, P, viTime_spk11, viSite_spk11, mnWav11_pre, mnWav11_post);
-        write_spk_(tnWav_raw_, tnWav_spk_, trFet_spk_);
+        if ~write_spk_(tnWav_raw_, tnWav_spk_, trFet_spk_)   % DI-07: a silent short/failed write leaves
+            % empty/truncated .jrc while _jrc.mat records in-memory dims. Abort loudly -- chunks already
+            % written stay readable; fix the disk/lock and re-run.
+            error('file2spk_: spike write failed at file %d/%d, chunk %d/%d (see fwrite_ warning above).', ...
+                iFile, nFiles, iLoad1, nLoad1);
+        end
+        if isempty(S_dimm_) && ~isempty(trFet_spk_)   % DI-03: capture template from the first non-empty chunk
+            S_dimm_ = struct('dimm_raw', size(tnWav_raw_), 'type_raw', class(tnWav_raw_), ...
+                'dimm_spk', size(tnWav_spk_), 'type_spk', class(tnWav_spk_), ...
+                'dimm_fet', size(trFet_spk_), 'type_fet', class(trFet_spk_));
+        end
         viTime_spk{end} = viTime_spk{end} + nSamples_total;
         nSamples_total = nSamples_total + nSamples11;
         nSamples_file1 = nSamples_file1 + nSamples11;
@@ -17674,9 +19290,22 @@ else
 end
 
 % set S0
-[dimm_raw, dimm_spk, dimm_fet] = deal(size(tnWav_raw_), size(tnWav_spk_), size(trFet_spk_));
-[type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
+% DI-03: if the LAST chunk was empty (size([])=[0 0]) dims 1-2 would zero out and corrupt every reshape
+% of the on-disk waveforms/features. Prefer the first-non-empty-chunk template captured in the loop.
+if ~isempty(trFet_spk_)
+    [dimm_raw, dimm_spk, dimm_fet] = deal(size(tnWav_raw_), size(tnWav_spk_), size(trFet_spk_));
+    [type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
+elseif ~isempty(S_dimm_)
+    [dimm_raw, dimm_spk, dimm_fet] = deal(S_dimm_.dimm_raw, S_dimm_.dimm_spk, S_dimm_.dimm_fet);
+    [type_raw, type_spk, type_fet] = deal(S_dimm_.type_raw, S_dimm_.type_spk, S_dimm_.type_fet);
+else
+    [dimm_raw, dimm_spk, dimm_fet] = deal(size(tnWav_raw_), size(tnWav_spk_), size(trFet_spk_));
+    [type_raw, type_spk, type_fet] = deal(class(tnWav_raw_), class(tnWav_spk_), class(trFet_spk_));
+end
 [dimm_raw(3), dimm_spk(3), dimm_fet(3)] = deal(numel(viTime_spk));
+if numel(viTime_spk) > 0 && (dimm_fet(1)==0 || dimm_fet(2)==0)   % DI-03 safety net
+    error('file2spk_: %d spikes detected but the feature template is degenerate -- aborting to avoid a corrupt _jrc.mat.', numel(viTime_spk));
+end
 nSites = numel(P.viSite2Chan);
 cviSpk_site = arrayfun(@(iSite)find(miSite_spk(:,1) == iSite), 1:nSites, 'UniformOutput', 0);
 if size(miSite_spk,2) >= 2
@@ -17796,14 +19425,14 @@ nTime_clu = get_set_(S0.P, 'nTime_clu', 4);
 nSamples_max = 1000;
 miSites = S0.P.miSites;
 
-if isempty(viT)
-    spkLim_raw = get_(S0.P, 'spkLim_raw');
-    nSamples_raw = diff(spkLim_raw) + 1;
-%     viT = 1:nSamples_raw;
-    spkLim_factor_merge = get_set_(S0.P, 'spkLim_factor_merge', 1);
-    spkLim_merge = round(S0.P.spkLim * spkLim_factor_merge);
-    viT = (spkLim_merge(1) - spkLim_raw(1) + 1):(nSamples_raw - spkLim_raw(2) + spkLim_merge(2));
-end
+% DI-20: recompute viT every call. It derives from S0.P.spkLim_raw/spkLim/spkLim_factor_merge, which
+% can differ between files in one session; the old persistent cache never invalidated (and its
+% nargin==0 reset hook has no callers). The computation is trivial, so caching bought nothing.
+spkLim_raw = get_(S0.P, 'spkLim_raw');
+nSamples_raw = diff(spkLim_raw) + 1;
+spkLim_factor_merge = get_set_(S0.P, 'spkLim_factor_merge', 1);
+spkLim_merge = round(S0.P.spkLim * spkLim_factor_merge);
+viT = (spkLim_merge(1) - spkLim_raw(1) + 1):(nSamples_raw - spkLim_raw(2) + spkLim_merge(2));
 [mrPos_spk1, mrPos_spk2] = deal(S0.mrPos_spk(viSpk1,:), S0.mrPos_spk(viSpk2,:));
 if 0
     mrDist12 = eucl2_dist_(mrPos_spk1', mrPos_spk2');
@@ -18526,7 +20155,16 @@ if nargin<2, fPlot = 0; end
 autoscale_pct = get_set_(S0.P, 'autoscale_pct', 99.5);
 
 % FigProj auto-scaling (skip if FigProj replaced by FigDrift)
-[hFig_proj, S_fig_proj] = get_fig_cache_('FigProj');
+% findobj, not get_fig_cache_: that creates the figure on miss, which popped a blank
+% FigProj window on every cluster selection even for users who never opened the view.
+% Both uses below are already isstruct/isfield-guarded, so [] is handled.
+hFig_proj = findobj('Tag', 'FigProj', 'Type', 'figure');
+if isempty(hFig_proj)
+    [hFig_proj, S_fig_proj] = deal([], []);
+else
+    hFig_proj = hFig_proj(end);
+    S_fig_proj = get(hFig_proj, 'UserData');
+end
 if isstruct(S_fig_proj) && isfield(S_fig_proj, 'viSites_show')
     [mrMin0, mrMax0, mrMin1, mrMax1, mrMin2, mrMax2] = fet2proj_(S0, S_fig_proj.viSites_show);
     if isempty(mrMin2) || isempty(mrMax2)
@@ -19235,11 +20873,17 @@ if numel(viClu_delete) >= S_clu.nClu, msgbox_('Cannot delete all clusters.'); re
 
 % Auto delete
 hFig_wait = figure_wait_(1);
-S_clu = delete_clu_(S_clu, viClu_delete);
+% delete_auto_ deletes the whole viClu_delete vector in ONE atomic delete_clu_ call, so an
+% abort means nothing was removed. Gate the "Deleted N clusters" message and the log on fOk
+% -- otherwise the msgbox would claim a deletion that was rolled back.
+[S_clu, fOk] = delete_clu_(S_clu, viClu_delete);
 set0_(S_clu);
 S0 = gui_update_();
 figure_wait_(0, hFig_wait);
-
+if ~fOk
+    msgbox_('Auto-delete aborted (cluster cache inconsistent); no clusters removed. See console.', 1);
+    return;
+end
 msgbox_(sprintf('Deleted %d clusters <%0.1f SNR or <%d spikes/unit.', numel(viClu_delete), snr_min_thresh, count_thresh));
 save_log_(sprintf('delete-auto <%0.1f SNR or <%d spikes/unit', snr_min_thresh, count_thresh), S0);
 end %func
@@ -19336,18 +20980,30 @@ end %func
 
 
 %--------------------------------------------------------------------------
-function S = struct_select_safe_(S, csNames, viKeep, iDimm)
+function S = struct_select_safe_(S, csNames, viKeep, iDimm, csCritical)
 % Per-field resilient wrapper around struct_select_. Resizes each field on its
 % own; a field that cannot be resized is skipped (with a warning) instead of
 % aborting the whole selection. This prevents a single malformed per-cluster
 % field from leaving the other fields (e.g. viSite_clu, mrWavCor) un-remapped,
 % which would desync them from nClu and crash later cluster operations.
+%
+% csCritical (optional): field names for which a resize failure must NOT be
+% swallowed. For an identity-bearing field like cviSpk_clu, silently skipping the
+% resize is exactly what turns a loud crash into a silent viClu/cviSpk_clu desync:
+% struct_select_ throws, this wrapper swallows it, and S_clu_select_'s length-
+% reconcile then pads the field to the right length with stale/empty content
+% (CID-11). Re-throw instead, so the caller either handles it (delete_clu_ rolls
+% back) or fails loudly rather than committing a half-applied remap.
 if nargin<4, iDimm = 1; end
+if nargin<5, csCritical = {}; end
 if ischar(csNames), csNames = {csNames}; end
 for i = 1:numel(csNames)
     try
         S = struct_select_(S, csNames(i), viKeep, iDimm);
     catch ME
+        if any(strcmp(csNames{i}, csCritical))
+            rethrow(ME); % identity-bearing field: fail loudly rather than silently desync
+        end
         fprintf(2, 'struct_select_safe_: skipped field "%s": %s\n', csNames{i}, ME.message);
     end
 end
@@ -19359,6 +21015,15 @@ function S_clu = S_clu_select_(S_clu, viKeep_clu)
 % automatically trim clusters
 % 7/20/17 JJJ: auto selecting vectors and matrics
 % excl vnSpk_clu, viSite_clu, vrPosX_clu, vrPosY_clu
+%
+% CONTRACT: this reindexes the per-CLUSTER fields only (v*_clu, c*_clu, t*_clu,
+% m*_clu). It does NOT touch S_clu.viClu, the per-SPIKE label vector - that name
+% ends in 'Clu', not '_clu', so it matches none of the patterns below, and by
+% design this function cannot remap it. If viKeep_clu changes cluster IDENTITY
+% (a permutation, not just dropping trailing empties), the CALLER MUST remap
+% S_clu.viClu with the same mapping BEFORE calling this. See clu_reorder_ for the
+% correct pattern. reorder_clu_by_coords_ omitted it and produced a silent, saved
+% viClu/cviSpk_clu desync that corrupted every later split and merge.
 
 % Quality
 csNames = fieldnames(S_clu);
@@ -19374,7 +21039,11 @@ viMatch_t = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^t\w*_clu$'), cs
 S_clu = struct_select_safe_(S_clu, csNames(viMatch_t), viKeep_clu, 3);
 
 viMatch_c = cellfun(@(vi)~isempty(vi), cellfun(@(cs)regexp(cs, '^c\w*_clu$'), csNames, 'UniformOutput', false));
-S_clu = struct_select_safe_(S_clu, csNames(viMatch_c), viKeep_clu, 1);
+% cviSpk_clu is IDENTITY-bearing: mark it critical so a resize failure re-throws instead of
+% being skipped-and-padded into a silent desync (CID-11). delete_clu_'s try/catch turns this
+% re-throw into a clean rollback; the other callers run on consistent state where it never
+% fires (see logs/plan_cluster_identity_hardening_20260716.md P3b).
+S_clu = struct_select_safe_(S_clu, csNames(viMatch_c), viKeep_clu, 1, {'cviSpk_clu'});
 
 % Handle matrix fields (m*_clu)
 % mrWavCor: special remapping for [nClu x nClu] correlation matrix
@@ -19524,6 +21193,78 @@ end %func
 
 
 %--------------------------------------------------------------------------
+% 2026/07/15: content-level consistency check for the cviSpk_clu cache.
+function nBad_clu = S_clu_assert_synced_(S_clu, vcCaller)
+% Report (do NOT fix, do NOT gate) any disagreement between S_clu.viClu - the
+% authoritative per-spike label vector - and the derived S_clu.cviSpk_clu cache.
+%
+% Why this exists: S_clu_valid_ only compares array LENGTHS to nClu, so a cache that
+% describes a completely different set of spikes than viClu passes it silently. That is
+% exactly how the reorder_clu_by_coords_ desync went undetected: a single [O] press
+% renumbered every per-cluster array without remapping viClu, and the next split rebuilt
+% the cache from the stale labels, swapping cluster identity - with the corrupted result
+% saved to disk. See logs/changes_log20260715.md.
+%
+% Why it only WARNS: S_clu_commit_ reverts the caller's work when S_clu_valid_ returns
+% false. Folding a content check into that verdict would mean a desync silently discards
+% the operation - reproducing the silent-data-loss failure mode this is meant to expose,
+% and potentially wedging a session where every action appears to do nothing. Warn loudly,
+% let the user decide.
+%
+% Never throws: a diagnostic that breaks the GUI is worse than the bug it reports.
+nBad_clu = 0;
+try
+    if ~get_set_(get0_('P'), 'fCheck_clu_sync', 1), return; end
+    if ~isfield(S_clu, 'cviSpk_clu') || ~isfield(S_clu, 'viClu'), return; end
+    nClu = get_(S_clu, 'nClu');
+    viClu = S_clu.viClu;
+    if isempty(nClu) || isempty(viClu), return; end
+    nClu_chk = min(double(nClu), numel(S_clu.cviSpk_clu));
+    if nClu_chk < 1, return; end
+
+    % Count spikes per label from viClu ONCE: O(nSpk), vs O(nSpk*nClu) for per-cluster find()
+    vlPos = viClu(:) >= 1 & viClu(:) <= nClu_chk;
+    vnSpk_viClu = accumarray(double(viClu(vlPos)), 1, [nClu_chk, 1]);
+    nSpk_max = numel(viClu);
+    csMsg = {};
+    for iClu = 1:nClu_chk
+        viCache1 = S_clu.cviSpk_clu{iClu};
+        viCache1 = viCache1(:);
+        nCache1 = numel(viCache1);
+        if nCache1 > 0 && (min(viCache1) < 1 || max(viCache1) > nSpk_max)
+            nBad_clu = nBad_clu + 1;
+            csMsg{end+1} = sprintf('\tClu%d: cache holds out-of-range spike indices.', iClu); %#ok<AGROW>
+            continue;
+        end
+        % nForeign: cached spikes viClu attributes to some OTHER cluster
+        % nMiss:    spikes viClu attributes here that the cache omits
+        nForeign = 0;
+        if nCache1 > 0, nForeign = sum(viClu(viCache1) ~= iClu); end
+        nMiss = vnSpk_viClu(iClu) - (nCache1 - nForeign);
+        if nForeign == 0 && nMiss == 0, continue; end
+        nBad_clu = nBad_clu + 1;
+        csMsg{end+1} = sprintf(...
+            '\tClu%d: %d cached spikes belong elsewhere, %d missing (cache=%d, viClu=%d).', ...
+            iClu, nForeign, nMiss, nCache1, vnSpk_viClu(iClu)); %#ok<AGROW>
+    end
+    if nBad_clu > 0
+        fprintf(2, ['S_clu_assert_synced_ (%s): %d/%d clusters have a STALE cviSpk_clu ', ...
+            'cache. viClu is authoritative - look for an S_clu_select_ caller that failed ', ...
+            'to remap it (see the S_clu_select_ contract note). Splitting or merging these ', ...
+            'clusters will corrupt cluster identity.\n'], vcCaller, nBad_clu, nClu_chk);
+        nShow = min(numel(csMsg), 10);
+        fprintf(2, '%s\n', csMsg{1:nShow});
+        if numel(csMsg) > nShow
+            fprintf(2, '\t... and %d more (set fCheck_clu_sync=0 to silence).\n', numel(csMsg)-nShow);
+        end
+    end
+catch
+    ; % diagnostic only - never break the caller
+end
+end %func
+
+
+%--------------------------------------------------------------------------
 function [S_clu, S0] = S_clu_commit_(S_clu, vcMsg)
 if nargin<2, vcMsg = ''; end
 if ~S_clu_valid_(S_clu)
@@ -19531,6 +21272,8 @@ if ~S_clu_valid_(S_clu)
     S0 = get(0, 'UserData');
     S_clu = get_(S0, 'S_clu');
 else
+    % Length-valid but possibly content-stale: warn, never gate (see the function header).
+    S_clu_assert_synced_(S_clu, vcMsg);
     S0 = set0_(S_clu);
 end
 end %func
@@ -19652,6 +21395,24 @@ else
     fprintf(2, '%s:\n', vcMsg);
 end
 try gpuDevice(1); disp('GPU device reset'); catch, end
+end %func
+
+
+%--------------------------------------------------------------------------
+function disperr_strict_(vcMsg, hErr)
+% Like disperr_ (print + log via save_err_) but RETHROWS. For sites that must fail loud (a later
+% phase wires DI-08/DI-09 to this). Do NOT overload disperr_ itself -- dozens of legitimately
+% swallowing cosmetic callers rely on its console-only behavior.
+if nargin<1, vcMsg = ''; end
+if nargin<2, hErr = []; end
+if isempty(hErr)
+    disperr_(vcMsg);
+    if isempty(vcMsg), vcMsg = 'disperr_strict_'; end
+    error('%s', vcMsg);
+else
+    disperr_(vcMsg, hErr);
+    rethrow(hErr);
+end
 end %func
 
 
@@ -20624,7 +22385,7 @@ function [vcFile_meta, S_meta, vcFile_gt_mat] = raw2meta_(vcFile_raw)
 %     MC_REC file = "E:\MC_Rack Data\20160415\patch_2_MEA.mcd"
 %     Sample rate = 20000
 %     ADC zero = 32768
-%     El = 0.1042�V/AD
+%     El = 0.1042 V/AD
 %     Streams = El_01;El_02;El_03;El_04;El_05;El_06;El_07;El_08;El_09;El_10;El_11;El_12;El_13;El_14;El_15;El_16;El_17;El_18;El_19;El_20;El_21;El_22;El_23;El_24;El_25;El_26;El_27;El_28;El_29;El_30;El_31;El_32;El_33;El_34;El_35;El_36;El_37;El_38;El_39;El_40;El_41;El_42;El_43;El_44;El_45;El_46;El_47;El_48;El_49;El_50;El_51;El_52;El_53;El_54;El_55;El_56;El_57;El_58;El_59;El_60;El_61;El_62;El_63;El_64;El_65;El_66;El_67;El_68;El_69;El_70;El_71;El_72;El_73;El_74;El_75;El_76;El_77;El_78;El_79;El_80;El_81;El_82;El_83;El_84;El_85;El_86;El_87;El_88;El_89;El_90;El_91;El_92;El_93;El_94;El_95;El_96;El_97;El_98;El_99;El_100;El_101;El_102;El_103;El_104;El_105;El_106;El_107;El_108;El_109;El_110;El_111;El_112;El_113;El_114;El_115;El_116;El_117;El_118;El_119;El_120;El_121;El_122;El_123;El_124;El_125;El_126;El_127;El_128;El_129;El_130;El_131;El_132;El_133;El_134;El_135;El_136;El_137;El_138;El_139;El_140;El_141;El_142;El_143;El_144;El_145;El_146;El_147;El_148;El_149;El_150;El_151;El_152;El_153;El_154;El_155;El_156;El_157;El_158;El_159;El_160;El_161;El_162;El_163;El_164;El_165;El_166;El_167;El_168;El_169;El_170;El_171;El_172;El_173;El_174;El_175;El_176;El_177;El_178;El_179;El_180;El_181;El_182;El_183;El_184;El_185;El_186;El_187;El_188;El_189;El_190;El_191;El_192;El_193;El_194;El_195;El_196;El_197;El_198;El_199;El_200;El_201;El_202;El_203;El_204;El_205;El_206;El_207;El_208;El_209;El_210;El_211;El_212;El_213;El_214;El_215;El_216;El_217;El_218;El_219;El_220;El_221;El_222;El_223;El_224;El_225;El_226;El_227;El_228;El_229;El_230;El_231;El_232;El_233;El_234;El_235;El_236;El_237;El_238;El_239;El_240;El_241;El_242;El_243;El_244;El_245;El_246;El_247;El_248;El_249;El_250;El_251;El_252;El_253;El_254;El_255;El_256
 %     EOH
 %     '
@@ -21078,7 +22839,10 @@ end %func
 function P = edit_prm_file_(P, vcFile_prm)
 % Modify the parameter file using the variables in the P struct
 
-csLines = file2cellstr_(vcFile_prm); %read to cell string
+[csLines, fReadOk] = file2cellstr_(vcFile_prm); %read to cell string
+if ~fReadOk   % DI-06: a failed read reads as an empty file -- refuse to truncate a live .prm
+    error('edit_prm_file_: could not read %s; refusing to truncate a live file.', vcFile_prm);
+end
 csLines_var = first_string_(csLines);
 
 csName = fieldnames(P);
@@ -21104,17 +22868,31 @@ end %func
 
 %--------------------------------------------------------------------------
 % 8/2/17 JJJ: Documentation and test
-function csLines = file2cellstr_(vcFile)
+function [csLines, fOk] = file2cellstr_(vcFile)
 % read text file to a cell string
-try
-    fid = fopen(vcFile, 'r');
-    csLines = {};
-    while ~feof(fid), csLines{end+1} = fgetl(fid); end
-    fclose(fid);
-    csLines = csLines';
-catch
-    csLines = {};
+% DI-06: fOk distinguishes (real read OR legitimately-absent file = true) from a read FAILURE on
+% an EXISTING file (locked/permission = false). The failure case is otherwise indistinguishable
+% from an empty file, which let a transient lock on a .prm silently truncate it (see
+% edit_prm_file_). A nonexistent target stays fOk=true so edit_prm_file_ can still create a prm
+% from scratch. Existing single-output callers are unaffected (they ignore fOk, still get {}).
+csLines = {}; fOk = false;
+if exist(vcFile, 'file') ~= 2
+    fOk = true;   % absent (or not a plain file) -> legitimately empty, not a failure
+    return;
 end
+fid = fopen(vcFile, 'r');
+if fid < 0
+    fprintf(2, 'file2cellstr_: %s exists but could not be opened for reading (locked?)\n', vcFile);
+    return;   % fOk stays false -> a real read failure on an existing file
+end
+try
+    while ~feof(fid), csLines{end+1} = fgetl(fid); end
+    fOk = true;
+catch
+    csLines = {}; fOk = false;
+end
+fclose(fid);
+csLines = csLines';
 end %func
 
 
@@ -21183,6 +22961,13 @@ switch class(val)
             vcStr = '0';
         end
         return;
+    case 'string'   % DI-12: MATLAB string class (double-quoted) -> format like a char literal
+        if fDoubleQuote
+            vcStr = sprintf('"%s"', char(val));
+        else
+            vcStr = sprintf('''%s''', char(val));
+        end
+        return;
     otherwise
         vcStr = '';
         fprintf(2, 'field2str_: unsupported format: %s\n', class(val));
@@ -21212,11 +22997,25 @@ function cellstr2file_(vcFile, csLines, fVerbose)
 if nargin<3, fVerbose = 0; end
 vcDir = fileparts(vcFile);
 mkdir_(vcDir);
-fid = fopen(vcFile, 'w');
+% DI-06: write to a sibling temp then atomically rename, so a transient failure / interrupted
+% write can't leave the live file truncated. movefile (not atomic_replace_) because a text file
+% may legitimately be empty, which atomic_replace_ deliberately refuses to commit.
+vcFile_tmp = tempname_sibling_(vcFile);
+fid = fopen(vcFile_tmp, 'w');
+if fid < 0
+    fprintf(2, 'cellstr2file_: could not open %s for writing\n', vcFile_tmp);
+    return;
+end
 for i=1:numel(csLines)
     fprintf(fid, '%s\n', csLines{i});
 end
 fclose(fid);
+try
+    movefile(vcFile_tmp, vcFile, 'f');
+catch ME
+    fprintf(2, 'cellstr2file_: could not commit %s (%s)\n', vcFile, ME.message);
+    if exist(vcFile_tmp, 'file'), try delete(vcFile_tmp); catch, end, end
+end
 if fVerbose
     fprintf('Wrote to %s\n', vcFile);
 end
@@ -22617,10 +24416,17 @@ function export_prm_(vcFile_prm, vcFile_out_prm, fShow)
 if nargin<3, fShow = 1; end
 
 if isempty(vcFile_out_prm), vcFile_out_prm = vcFile_prm; end
-copyfile(ircpath_(read_cfg_('default_prm')), vcFile_out_prm, 'f');
+% DI-15: read P from the SOURCE before touching the target. In a fresh session get0_('P') is
+% empty, so P falls back to file2struct_(vcFile_prm); if vcFile_out_prm == vcFile_prm (the
+% documented standalone form), clobbering the target FIRST -- as the old code did -- made that
+% read return the bare default template, PERMANENTLY losing the user's settings. Build the full
+% prm into a temp, then atomically replace the target (with a .bak of the prior file).
 P = get0_('P');
 if isempty(P), P = file2struct_(vcFile_prm); end
-edit_prm_file_(P, vcFile_out_prm);
+vcFile_tmp = tempname_sibling_(vcFile_out_prm);
+copyfile(ircpath_(read_cfg_('default_prm')), vcFile_tmp, 'f');
+edit_prm_file_(P, vcFile_tmp);
+atomic_replace_(vcFile_tmp, vcFile_out_prm, true);
 vcMsg = sprintf('Full parameter settings are exported to %s', vcFile_out_prm);
 fprintf('%s\n', vcMsg);
 if fShow
@@ -23449,7 +25255,7 @@ function trFet_spk = load_spkfet_(S0, P)
 if nargin<1, S0 = get(0, 'UserData'); end
 if nargin<2, P = S0.P; end
 type_fet = get_set_(S0, 'type_fet', 'single');
-trFet_spk = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), type_fet, S0.dimm_fet);
+trFet_spk = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), type_fet, S0.dimm_fet, 0, true); % DI-04: strict -- features feed clustering; a short read must not silently misalign
 end %func
 
 
@@ -23457,6 +25263,8 @@ end %func
 % 10/10/17 JJJ: created and tested. 
 function tnWav_spk1 = fread_spkwav_(viSpk1, fRamCache)
 % Read spikes from file
+% DI-21: DEAD CODE (no callers -- grep-confirmed). fid_/dimm_ are keyed by nothing; if reactivated,
+% add a P.vcFile_prm key (see get_spkfet_ / DI-11) before reusing fid_ across files.
 persistent fid_ dimm_
 if nargin<2, P = get0_('P'); fRamCache = get_set_(P, 'fRamCache', 1); end
 
@@ -23490,6 +25298,8 @@ end %func
 % 10/10/17 JJJ: created and tested
 function tnWav_spk1 = fread_spkraw_(viSpk1, fRamCache)
 % Read spikes from file
+% DI-21: DEAD CODE (no callers -- grep-confirmed). fid_/dimm_ are keyed by nothing; if reactivated,
+% add a P.vcFile_prm key (see get_spkfet_ / DI-11) before reusing fid_ across files.
 persistent fid_ dimm_
 if nargin<2, P = get0_('P'); fRamCache = get_set_(P, 'fRamCache'); end
 
@@ -23536,20 +25346,23 @@ end %func
 
 %--------------------------------------------------------------------------
 % 10/11/17 JJJ: created and tested
-function write_spk_(varargin)
+function fOk = write_spk_(varargin)
 % [Usage]
 % write_spk_(vcFile_prm) %open file
 % write_spk_(P) %open file
 % write_spk_(tnWav_raw, tnWav_spk, trFet_spk)
 % write_spk_() % close and clear
+% DI-07: returns fOk (previously void) -- open failures and short/failed writes are reported so the
+% caller can abort instead of the run "succeeding" while writing empty/truncated .jrc.
 
 persistent fid_raw fid_spk fid_fet
+fOk = true;
 
 switch nargin
     case 0
-        fid_raw = fclose_(fid_raw); 
-        fid_spk = fclose_(fid_spk); 
-        fid_fet = fclose_(fid_fet); 
+        fid_raw = fclose_(fid_raw);
+        fid_spk = fclose_(fid_spk);
+        fid_fet = fclose_(fid_fet);
     case 1
         vcFile_prm = varargin{1};
         if ischar(vcFile_prm)
@@ -23565,14 +25378,16 @@ switch nargin
             else
                 [fid_raw, fid_spk] = deal([]);
             end
-            fid_fet = fopen(strrep(vcFile_prm, '.prm', '_spkfet.jrc'), 'W'); 
+            fid_fet = fopen(strrep(vcFile_prm, '.prm', '_spkfet.jrc'), 'W');
         else
             error('write_spk_: invalid format');
         end
+        % DI-07: fail fast if any output file could not be opened ([] means "not saved", not a failure)
+        if isequal(fid_raw,-1) || isequal(fid_spk,-1) || isequal(fid_fet,-1)
+            error('write_spk_: could not open spike output file(s) for %s (locked / permission / disk?)', vcFile_prm);
+        end
     case 3
-        fwrite_(fid_raw, varargin{1});
-        fwrite_(fid_spk, varargin{2});
-        fwrite_(fid_fet, varargin{3});
+        fOk = fwrite_(fid_raw, varargin{1}) & fwrite_(fid_spk, varargin{2}) & fwrite_(fid_fet, varargin{3});
     otherwise
         disperr_('write_spk_:invalid nargin');
 end %switch
@@ -23582,11 +25397,17 @@ end %func
 %--------------------------------------------------------------------------
 % 10/11/17 JJJ: created 
 function fSuccess = fwrite_(fid, vr)    
+fSuccess = 0;
 try
     if ~isempty(fid)
-        fwrite(fid, vr, class_(vr));
+        nWritten = fwrite(fid, vr, class_(vr));
+        fSuccess = (nWritten == numel(vr));   % DI-07: a disk-full short write returns a small count, not a throw
+        if ~fSuccess
+            fprintf(2, 'fwrite_: short write (%d of %d elements), fid=%d\n', nWritten, numel(vr), fid);
+        end
+    else
+        fSuccess = 1;   % no fid = nothing to write, not a failure (unchanged)
     end
-    fSuccess = 1;
 catch
     fSuccess = 0;
 end
@@ -23598,9 +25419,18 @@ end %func
 function tnWav_ = get_spkwav_(P, fRaw)
 % if ~fRamCache, only keep one of the tnWav_raw or tnWav_spk in memory
 global tnWav_spk tnWav_raw
+persistent vcFile_prm_   % DI-11: file key (mirrors get_spkfet_'s persistent-key idiom)
 if nargin<1, P = []; end
 if isempty(P), P = get0_('P'); end
 if nargin<2, fRaw = P.fWav_raw_show; end
+
+% DI-11: these globals were keyed by nothing -- a caller reaching here without load_cached_ having
+% cleared them on a file switch would serve the PREVIOUS file's waveforms. Invalidate on a
+% vcFile_prm change so a new recording reloads instead of reusing stale global data.
+if ~strcmpi(get_(P, 'vcFile_prm'), vcFile_prm_)
+    [tnWav_spk, tnWav_raw] = deal([]);
+    vcFile_prm_ = get_(P, 'vcFile_prm');
+end
 
 try
     fRamCache = get_set_(P, 'fRamCache', 1);
@@ -23636,7 +25466,7 @@ else
 end
 if fLoad
     vcFile_prm_ = P.vcFile_prm;
-    trWav_fet_ = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), 'single', get0_('dimm_fet'));
+    trWav_fet_ = load_bin_(strrep(P.vcFile_prm, '.prm', '_spkfet.jrc'), 'single', get0_('dimm_fet'), 0, true); % DI-04: strict
 end
 trWav_fet = trWav_fet_;
 end %func
@@ -26057,6 +27887,9 @@ if fGpu
             vrKnn = zeros([n1, 1], 'single', 'gpuArray');
             vnConst = int32([n2, n1, nC, knn]);            
             miKnn = zeros([knn, n1], 'int32', 'gpuArray'); 
+            % DI-10: recompute launch config every call (depends on nC_max/nThreads/CHUNK).
+            CK.ThreadBlockSize = [nThreads, 1];
+            CK.SharedMemorySize = 4 * CHUNK * (nC_max + nThreads*2);
             [vrKnn, miKnn] = feval(CK, vrKnn, miKnn, gmrFet2, gmrFet1, vnConst);
             miKnn = vi2(miKnn);
             return;
@@ -26124,6 +27957,9 @@ if fGpu
             CK.GridSize = [ceil(n1 / CHUNK / CHUNK), CHUNK]; %MaxGridSize: [2.1475e+09 65535 65535]    
             vrKnn = zeros([n1, 1], 'single', 'gpuArray');
             vnConst = int32([n2, n1, nC, knn]);            
+            % DI-10: recompute launch config every call (depends on nC_max/nThreads/CHUNK).
+            CK.ThreadBlockSize = [nThreads, 1];
+            CK.SharedMemorySize = 4 * CHUNK * (nC_max + nThreads);
             vrKnn = feval(CK, vrKnn, gmrFet2, gmrFet1, vnConst);
 %             miKnn = zeros([knn, n1], 'int32', 'gpuArray'); 
             %[vrKnn, miKnn] = feval(CK, vrKnn, miKnn, gmrFet2, gmrFet1, vnConst);
@@ -26209,6 +28045,9 @@ if fGpu
             vrDelta1 = zeros([n1, 1], 'single', 'gpuArray'); 
             viNneigh1 = zeros([n1, 1], 'uint32', 'gpuArray'); 
             vnConst = int32([n2, n1, nC]);
+            % DI-10: recompute launch config every call (depends on nC_max/nThreads/CHUNK).
+            CK.ThreadBlockSize = [nThreads, 1];
+            CK.SharedMemorySize = 4 * CHUNK * (nC_max + nThreads*2 + 1);
             [vrDelta1, viNneigh1] = feval(CK, vrDelta1, viNneigh1, gmrFet2, gmrFet1, gvrRho2, gvrRho1, vnConst);
             viNneigh1 = uint32(vi2(viNneigh1));
             return;
@@ -26303,6 +28142,9 @@ CK.GridSize = [ceil(n1 / CHUNK / CHUNK), CHUNK]; %MaxGridSize: [2.1475e+09 65535
 vrRho1 = zeros([1, n1], 'single', 'gpuArray'); 
 vnConst = int32([n1, n12, nC]);
 %vrRho1 = feval(CK, vrRho1, miSite12, mrFet1, mrFet2, vnConst, dc2);
+% DI-10: recompute launch config every call (depends on nThreads/CHUNK/nC_max).
+CK.ThreadBlockSize = [nThreads, 1];
+CK.SharedMemorySize = 4 * CHUNK * (nC_max + 1 + 2 * nThreads);
 vrRho1 = feval(CK, vrRho1, miSite12, mrFet1, mrFet2, vnConst, dc2);
 vrRho1 = gather_(vrRho1);
 end %func
@@ -26331,6 +28173,9 @@ CK.GridSize = [ceil(n1 / CHUNK / CHUNK), CHUNK]; %MaxGridSize: [2.1475e+09 65535
 vrDelta1 = zeros([1, n1], 'single', 'gpuArray'); 
 viNneigh1 = zeros([1, n1], 'uint32', 'gpuArray'); 
 vnConst = int32([n1, n12, nC]);
+% DI-10: recompute launch config every call (depends on nThreads/CHUNK/nC_max).
+CK.ThreadBlockSize = [nThreads, 1];
+CK.SharedMemorySize = 4 * CHUNK * (nC_max + 2 + 2 * nThreads);
 [vrDelta1, viNneigh1] = feval(CK, vrDelta1, viNneigh1, miSite12, mrFet1, mrFet2, gpuArray(vrRho1), vnConst, dc2);
 vrDelta1 = gather_(vrDelta1);
 viNneigh1 = gather_(viNneigh1);
@@ -31202,7 +33047,14 @@ function tr = mr2tr4_(mr_T, spkLim, viTime)
 nSpk = numel(viTime);
 
 viTime0 = [spkLim(1):spkLim(end)]';
-miRange = bsxfun(@plus, int32(viTime0), int32(viTime(:)'));
+% DI-17 fixed int32 index saturation in mr2tr_ and mn2tn_gpu_ but MISSED this site, which is
+% more exposed than either: mr_T here is the FULL recording (load_bin_T_ at :32612, :32711) and
+% viTime is the ABSOLUTE viTime_spk (:32619, :32736), where the two DI-17 sites index a loaded
+% chunk. int32 caps at 2.147e9 and 20h @ 30kHz is 2.16e9, so past ~20h the indices wrap and the
+% wrong samples are read -- silently, since these feed medians. double is exact to 2^53. See the
+% note in mr2tr_ for why double rather than int64. miRange is tiny here (<=2^12 spikes), so the
+% wider type costs nothing.
+miRange = bsxfun(@plus, double(viTime0), double(viTime(:)'));
 miRange = min(max(miRange, 1), nSamples);
 tr = mr_T(:, miRange(:));
 tr = reshape(tr, [nChans, numel(viTime0), numel(viTime)]);
@@ -31275,6 +33127,11 @@ end %for
 
 % merge
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -31325,8 +33182,15 @@ nSpk_min = get_set_(P, 'knn', 30);
 fprintf('\tComputing template\n\t'); t_template = tic;
 
 mrMean_site = zeros(nDrift, S_clu.nClu);
+% D5: cviSpk_clu holds exactly these lists and is rebuilt from viClu by S_clu_refresh_ just before
+% post_merge_ reaches here (irc.m:3966, and again via S_clu_sort_ -> :12315); vi2cell_ yields the
+% same ascending indices find() would, so this is exact. Replaces an O(nClu * nSpk) scan -- measured
+% at ~66% of the equivalent loop in clu_wave_similarity_paged.m. Falls back to find() when the cache
+% is missing or short, so a stale S_clu degrades instead of erroring on cviSpk_clu{iClu}.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'post_merge template build');
+fCache_ = ~isempty(cviSpk_clu_);
 for iClu = 1:S_clu.nClu
-    viSpk1 = find(S_clu.viClu == iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu == iClu); end
     viSpk1 = viSpk1(:);
     if isempty(viSpk1), continue; end   % 0-spike cluster: leave empty cells, skip (else viSpk1(vii1) errors)
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
@@ -31512,6 +33376,13 @@ if isempty(mrDist_clu)
 end
 nClu_pre = S_clu.nClu;
 mlWavCor_clu = mrDist_clu >= MERGE_THRESH;
+% Cross-shank guard (default post_merge_mode=1). mlWavCor_clu is nClu x nClu (mrDist_clu =
+% nan(S_clu.nClu)), so shank_clu_ aligns. Defensive: waveform_similarity_clu_ already only
+% populates same-site pairs, so cross-shank bits are ~never set -- this makes the guarantee
+% explicit. No-op when fMerge_across_shank=1 / single-shank / shank_clu_ returns [].
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -31546,6 +33417,11 @@ mlWavCor_clu = mrSimilarity_clu >= get_set_(P, 'maxWavCor', .985) | mrCC_clu >= 
 nClu_pre = S_clu.nClu;
 
 % merge
+% Cross-shank guard (defensive; mode 15). No-op unless viSite_clu is nClu-aligned and the
+% probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -31605,8 +33481,12 @@ nSpk_min = get_set_(P, 'knn', 30);
 fprintf('\tComputing template\n\t'); t_template = tic;
 
 
+% D5: see waveform_similarity_clu_ -- cviSpk_clu is the same list, rebuilt from viClu by
+% S_clu_refresh_ before post_merge_ reaches here, with a find() fallback if it is short/absent.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'post_merge template build');
+fCache_ = ~isempty(cviSpk_clu_);
 for iClu = 1:S_clu.nClu
-    viSpk1 = find(S_clu.viClu == iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu == iClu); end
     viSpk1 = viSpk1(:);
     if isempty(viSpk1), continue; end   % 0-spike cluster: leave empty cells, skip (else viSpk1(vii1) errors)
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
@@ -31691,6 +33571,11 @@ for iClu1 = 1:S_clu.nClu
 %     fprintf('.');
 end %for
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -31722,8 +33607,11 @@ fh_vec = @(x)x(:);
 cm_miSpk_knn = cell(nDrift, nClu);
 cviSpk_knn = cell(nDrift, nClu);
 vnSpk_clu = zeros(nClu,1);
+% D5: see waveform_similarity_clu_ -- cviSpk_clu is the same list, with a find() fallback.
+cviSpk_clu_ = get_cviSpk_clu_checked_(S_clu, 'graph_merge_');
+fCache_ = ~isempty(cviSpk_clu_);
 for iClu = 1:nClu
-    viSpk1 = find(S_clu.viClu==iClu);
+    if fCache_, viSpk1 = cviSpk_clu_{iClu}; else, viSpk1 = find(S_clu.viClu==iClu); end
     miSpk1 = sort(miKnn(:,viSpk1));
     viiSpk1 = round(linspace(1, numel(viSpk1), nDrift+1));
     vnSpk_clu = numel(viSpk1);
@@ -31766,6 +33654,11 @@ for iClu1 = 1:nClu-1
 end 
 
 mlWavCor_clu = mrDist_clu >= get_set_(P, 'frac_knn_merge', .90);
+% Cross-shank guard (defensive; non-default mode 4). No-op unless viSite_clu is nClu-aligned
+% and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32229,6 +34122,11 @@ for iClu1 = 1:S_clu.nClu
 %     fprintf('.');
 end %for
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32331,6 +34229,11 @@ fprintf('\n\t\ttook %0.1fs\n', toc(t2));
 
 % merge waveforms
 mlWavCor_clu = mrDist_clu >= P.maxWavCor;
+% Cross-shank guard (defensive; non-default post-merge mode). block_cross_shank_ + shank_clu_
+% both no-op unless S_clu.viSite_clu is nClu-aligned and the probe declares >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32372,6 +34275,127 @@ end
 try
     mouse_figure(hFig);
 catch
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Second time-vs-feature view (FigTime2). Same window as FigTime in every respect -- same
+% plot_FigTime_, same keyPressFcn_FigTime_, so [S] split, [M] merge, [B], [R], [T] and the
+% site/scale keys all behave identically -- differing only in which feature it puts on the
+% y axis (its own Projection menu; see fet_show_ / proj_view2_).
+%
+% Called with no arguments from ui_show_elective_, i.e. on every cluster selection, which is
+% what keeps the two windows in tandem.
+%
+% Three invariants, each load-bearing:
+%  - Resolve with findobj, never get_fig_/get_fig_cache_: those create on miss (the FigProj
+%    bug), which here would produce a blank, axis-less window.
+%  - The toggle hides, it never closes. FigTime2 is in S0.csFig, and reset_position_ /
+%    save_figures_ resolve csFig tags through get_fig_cache_ -- so a closed FigTime2 would be
+%    resurrected as a bare figure by "Reset window positions". Keeping the handle alive also
+%    means plot_/update_/rescale_FigTime_ are never called on a missing tag.
+%  - Whole body in try/catch: this sits on the critical path of every cluster selection, so a
+%    failure in an optional window must not break selection.
+function ui_show_FigTime2_(fToggle, hMenu)
+if nargin<2, hMenu = []; end
+if nargin<1, fToggle = 0; end
+hFig = findobj('Tag', 'FigTime2', 'Type', 'figure');
+if isempty(hFig), return; end
+hFig = hFig(end);
+if fToggle
+    fVisible = ~strcmpi(get(hFig, 'Visible'), 'on');
+    vcVisible = ifeq_(fVisible, 'on', 'off');
+    set(hFig, 'Visible', vcVisible);
+    if ~isempty(hMenu), set(hMenu, 'Checked', vcVisible); end
+    if ~fVisible, return; end % just hidden - nothing to draw
+elseif ~strcmpi(get(hFig, 'Visible'), 'on')
+    return; % hidden - costs nothing until the user opens it
+end
+try
+    S0 = get0_();
+    plot_FigTime_(S0, 'FigTime2');
+    autoscale_FigTime2_(hFig, S0);
+catch
+    disperr_();
+end
+end %func
+
+
+%--------------------------------------------------------------------------
+% Autoscale FigTime2 to the autoscale_pct quantile of what it just plotted.
+% Deliberately reads the y data straight off hPlot1/hPlot2 instead of recomputing features
+% the way auto_scale_proj_time_ does for FigTime: plot_FigTime_ has just filled those with
+% exactly the vrFet1/vrFet2 it computed, so this is the same number for none of the cost --
+% and selected clusters are NOT subsampled, so a second feature pass is not cheap.
+% Runs only after a draw, and returns before writing UserData if the figure was never drawn:
+% promoting an empty S_fig to a struct holding only maxAmp would make plot_FigTime_'s
+% isempty(S_fig) init gate false and leave the figure permanently unusable.
+function autoscale_FigTime2_(hFig, S0)
+S_fig = get(hFig, 'UserData');
+if ~isstruct(S_fig) || ~isfield(S_fig, 'hAx') || ~isfield(S_fig, 'hPlot1'), return; end
+autoscale_pct = get_set_(S0.P, 'autoscale_pct', 99.5);
+cvrFet = {double(get(S_fig.hPlot1, 'YData'))};
+if ~isempty(S0.iCluPaste) && isfield(S_fig, 'hPlot2')
+    cvrFet{end+1} = double(get(S_fig.hPlot2, 'YData'));
+end
+cvrFet = cvrFet(~cellfun(@(x)isempty(x) || all(isnan(x(:))), cvrFet));
+if isempty(cvrFet), return; end
+maxAmp = max(cellfun(@(x)quantile(x(:), autoscale_pct/100), cvrFet));
+if isnan(maxAmp) || isempty(maxAmp) || maxAmp <= 0, return; end
+rescale_FigTime_(maxAmp, S0, S0.P, 'FigTime2');
+end %func
+
+
+%--------------------------------------------------------------------------
+% CloseRequestFcn for windows that must survive being "closed" (see ui_show_FigTime2_).
+function hide_figure_uncheck_menu_(hFig, hMenu)
+try set(hMenu, 'Checked', 'off'); catch, end
+try set(hFig, 'Visible', 'off'); catch, end
+end %func
+
+
+%--------------------------------------------------------------------------
+% 2026/07/15: optional projection view (FigProj).
+% FigProj is deliberately NOT created at startup - the drift view replaced it as the
+% default (see the create_figure_ block and the [J] key), so its figure never existed
+% and its [S] split was unreachable. It is restored here as an opt-in view, following
+% ui_show_all_chan_'s toggle pattern: the menu item opens/closes it, and thereafter
+% ui_show_elective_ refreshes it on every cluster selection. Called with no arguments
+% it is a no-op unless the figure is already open, so users who never open it pay
+% nothing - which matters because FigProj now draws every spike of the selected
+% clusters rather than a 50-spike sample (see fet2proj_).
+function ui_show_FigProj_(fNewFig, hMenu)
+if nargin<2, hMenu = []; end
+if nargin<1, fNewFig = 0; end
+% Resolve with findobj, NOT get_fig_: get_fig_ CREATES the figure when findobj misses
+% (see its create_figure_ fallback). That made hFig always valid, so the "not open" guard
+% below could never fire and the first cluster selection popped an unwanted projection
+% window, while the menu item could only ever take the toggle-off branch. findobj makes
+% both the opt-in guard and the two-way toggle work as the comment above always claimed.
+hFig = findobj('Tag', 'FigProj', 'Type', 'figure');
+if isempty(hFig), hFig = []; else, hFig = hFig(end); end
+if fNewFig
+    if isvalid_(hFig) % toggle off
+        close_(hFig);
+        if ~isempty(hMenu), set(hMenu, 'Checked', 'off'); end
+        return;
+    end
+    P = get0_('P');
+    hFig = create_figure_('FigProj', [.5 .25 .35 .5], ['Projection view: ', P.vcFile_prm], 0, 1);
+    if ~isempty(hMenu)
+        set(hMenu, 'Checked', 'on');
+        % Closing via the window X must also clear the menu check. close_figure_uncheck_menu_
+        % was written for exactly this and had never been wired up.
+        set(hFig, 'CloseRequestFcn', @(h,e)close_figure_uncheck_menu_(h, hMenu));
+    end
+elseif ~isvalid_(hFig)
+    return; % not open - nothing to refresh
+end
+try
+    plot_FigProj_(get0_());
+catch
+    disperr_();
 end
 end %func
 
@@ -32626,6 +34650,11 @@ end %switch
 
 fprintf('post_merge_cc_\n'); t_merge = tic;
 nClu_pre = S_clu.nClu;
+% Cross-shank guard (defensive; mode 14 second correlogram stage -- NOT covered by the inner
+% templateMatch_post_ mask). No-op unless viSite_clu is nClu-aligned and >1 shank.
+if ~get_set_(P, 'fMerge_across_shank', 0)
+    mlWavCor_clu = block_cross_shank_(mlWavCor_clu, shank_clu_(S_clu, P));
+end
 viMap_clu = int32(ml2map_(mlWavCor_clu));
 vlPos = S_clu.viClu > 0;
 S_clu.viClu(vlPos) = viMap_clu(S_clu.viClu(vlPos)); %translate cluster number
@@ -32883,8 +34912,9 @@ switch lower(vcMode)
         zlabel('log power');
     case 'probe'
         hFig = create_figure_([], [0 0 .5 1], P.vcFile, 1, 1);
-        plot_probe_(P.mrSiteXY, [12 12], P.viSite2Chan, get_(P, 'viShank_site'));
+        [hPatch, hText] = plot_probe_(P.mrSiteXY, [12 12], P.viSite2Chan, get_(P, 'viShank_site'));
         axis equal;
+        probe_region_keys_(hFig, hPatch, hText, P, get_(P, 'viShank_site'));
     case {'verify', 'validate'}
         validate_(P, [], S0);
     otherwise

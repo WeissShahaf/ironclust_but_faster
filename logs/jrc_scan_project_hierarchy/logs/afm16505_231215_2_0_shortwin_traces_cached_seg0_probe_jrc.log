@@ -1,0 +1,6 @@
+session : afm16505_231215_2_0#shortwin_traces_cached_seg0_probe_jrc
+file    : \\gpfs.corp.brain.mpg.de\stem\data\project_hierarchy\data\afm16505\231215\ephys\preprocessed\spk\shortwin_traces_cached_seg0_probe_jrc.mat
+verdict : PASS
+nClu=491  nSpk=5349176
+nCluDesync=0  nCacheMixLabels=0  pctSpkWrong=0.000%
+nCluSpatialFlag=1  worstSiteSpan=18

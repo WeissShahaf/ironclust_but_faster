@@ -107,6 +107,10 @@ for iTab = 1:2
     end
     set(hPlot0, 'XData', single(viTime0)/P.sRateHz, 'YData', mrPos0(:,iTab));
     set(hPlot1, 'XData', single(viTime1)/P.sRateHz, 'YData', mrPos1(:,iTab));
+    % Stash the absolute spike ids behind hPlot1 (one per plotted point, same order) so
+    % the [S] split can select by spike id instead of by a positional mask that has to
+    % stay length-aligned with whatever split_clu_ re-derives later.
+    set_userdata_(hAx_, viSpk1);
     if isempty(iClu2)
         set(hPlot2, 'XData', nan, 'YData', nan);
     else
@@ -246,16 +250,31 @@ switch lower(event.Key)
             msgbox_('Select one cluster'); return;
         end
         try
-            hPoly = impoly_();
+            % Draw the polygon on the SAME axes we read hPlot1 from. impoly_() with no
+            % argument targets gca, which is NOT kept in sync with the selected tab: the
+            % two tabs' axes share an identical Position, so a polygon drawn against the
+            % X-position axes while reading the Y-position data (or vice versa) looked
+            % correct but was calibrated in the wrong units on the vertical axis. Only the
+            % vertical diverges (both tabs share the time x-range), so the selection
+            % silently degenerated into a time band spanning the cluster's full depth.
+            hPoly = impoly_(hAx);
             if isempty(hPoly); return; end
             mrPolyPos = getPosition(hPoly);
             hPlot1 = get_userdata_(hAx, 'hPlot1');
             vrX1 = double(get(hPlot1, 'XData'));
             vrY1 = double(get(hPlot1, 'YData'));
             vlIn = inpolygon(vrX1, vrY1, mrPolyPos(:,1), mrPolyPos(:,2));
-            hSplit = line(vrX1(vlIn), vrY1(vlIn), 'Color', [1 0 0], 'Marker', '.', 'LineStyle', 'none');
+            hSplit = line(hAx, vrX1(vlIn), vrY1(vlIn), 'Color', [1 0 0], 'Marker', '.', 'LineStyle', 'none');
             if strcmpi(questdlg_('Split?', 'Confirmation', 'Yes'), 'yes')
-                split_clu_(S0.iCluCopy, vlIn);
+                % Split by absolute spike id (stashed alongside hPlot1) rather than by
+                % this plot's positional mask, so the selection cannot be misaligned onto
+                % a different spike set. Fall back for figures cached before viSpk1 existed.
+                viSpk_plot1 = get_userdata_(hAx, 'viSpk1');
+                if numel(viSpk_plot1) == numel(vlIn)
+                    split_clu_by_id_(S0.iCluCopy, viSpk_plot1(vlIn));
+                else
+                    split_clu_(S0.iCluCopy, vlIn);
+                end
             end
             delete_multi_(hPoly, hSplit);
         catch
@@ -273,6 +292,7 @@ function ui_merge_(varargin), fn=dbstack(); irc('call', fn(1).name, varargin); e
 function toggleVisible_(varargin), fn=dbstack(); irc('call', fn(1).name, varargin); end
 function grid_(varargin), fn=dbstack(); irc('call', fn(1).name, varargin); end
 function split_clu_(varargin), fn=dbstack(); irc('call', fn(1).name, varargin); end
+function split_clu_by_id_(varargin), fn=dbstack(); irc('call', fn(1).name, varargin); end
 function delete_multi_(varargin), fn=dbstack(); irc('call', fn(1).name, varargin); end
 
 function out1 = axes_new_(varargin), fn=dbstack(); out1 = irc('call', fn(1).name, varargin); end
