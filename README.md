@@ -588,9 +588,12 @@ irc2 version
 ```
 
 ## Authors
+- original:
+-- James Jun, Center for Computational Mathematics, Flatiron Institute
+-- Jeremy Magland, Center for Computational Mathematics, Flatiron Institute
+-Modifications:
+-- Shahaf Weiss, Max-planck institure for brain research
 
-- James Jun, Center for Computational Mathematics, Flatiron Institute
-- Jeremy Magland, Center for Computational Mathematics, Flatiron Institute
 
 ## License
 
